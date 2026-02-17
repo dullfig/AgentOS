@@ -316,6 +316,60 @@ mod tests {
     }
 
     #[test]
+    fn retention_sweep_retain_days_expired() {
+        let dir = TempDir::new().unwrap();
+        let mut journal = Journal::open(&dir.path().join("journal.bin")).unwrap();
+
+        // Entry dispatched 10 days ago with retain_days: 7
+        let ten_days_ago = now_millis() - (10 * 24 * 60 * 60 * 1000);
+        journal.log_dispatch(JournalEntry {
+            message_id: "old-msg".into(),
+            thread_id: "t1".into(),
+            from: "a".into(),
+            to: "b".into(),
+            status: MessageStatus::Delivered,
+            dispatched_at: ten_days_ago,
+            delivered_at: ten_days_ago + 1000,
+            retention: RetentionPolicy::RetainDays(7),
+            failure_reason: None,
+        });
+
+        // Entry dispatched 3 days ago with retain_days: 7 — should survive
+        let three_days_ago = now_millis() - (3 * 24 * 60 * 60 * 1000);
+        journal.log_dispatch(JournalEntry {
+            message_id: "recent-msg".into(),
+            thread_id: "t2".into(),
+            from: "a".into(),
+            to: "c".into(),
+            status: MessageStatus::Delivered,
+            dispatched_at: three_days_ago,
+            delivered_at: three_days_ago + 1000,
+            retention: RetentionPolicy::RetainDays(7),
+            failure_reason: None,
+        });
+
+        // Forever entry — should always survive
+        journal.log_dispatch(JournalEntry {
+            message_id: "forever-msg".into(),
+            thread_id: "t3".into(),
+            from: "a".into(),
+            to: "d".into(),
+            status: MessageStatus::Delivered,
+            dispatched_at: ten_days_ago,
+            delivered_at: ten_days_ago + 1000,
+            retention: RetentionPolicy::Forever,
+            failure_reason: None,
+        });
+
+        let removed = journal.sweep(now_millis());
+        assert_eq!(removed, 1); // only old-msg expired
+        assert_eq!(journal.count(), 2);
+        assert!(journal.get("old-msg").is_none());
+        assert!(journal.get("recent-msg").is_some());
+        assert!(journal.get("forever-msg").is_some());
+    }
+
+    #[test]
     fn wal_replay_recovers_journal() {
         let dir = TempDir::new().unwrap();
         let mut journal = Journal::open(&dir.path().join("journal.bin")).unwrap();
