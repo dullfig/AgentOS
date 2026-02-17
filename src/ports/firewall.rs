@@ -147,6 +147,7 @@ mod tests {
             peers: vec![],
             model: None,
             ports: vec![],
+            librarian: false,
         })
         .unwrap();
         org.register_listener(ListenerDef {
@@ -158,6 +159,7 @@ mod tests {
             peers: vec![],
             model: None,
             ports: vec![],
+            librarian: false,
         })
         .unwrap();
 

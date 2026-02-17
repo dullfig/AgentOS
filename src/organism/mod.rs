@@ -30,6 +30,8 @@ pub struct ListenerDef {
     pub peers: Vec<String>,
     pub model: Option<String>,
     pub ports: Vec<PortDef>,
+    /// Whether this LLM listener auto-curates via the librarian before API calls.
+    pub librarian: bool,
 }
 
 /// Result of a hot-reload diff.
@@ -202,6 +204,7 @@ mod tests {
             peers: vec![],
             model: None,
             ports: vec![],
+            librarian: false,
         }
     }
 

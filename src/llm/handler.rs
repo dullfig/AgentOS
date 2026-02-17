@@ -11,24 +11,38 @@ use tokio::sync::Mutex;
 
 use super::types::Message;
 use super::LlmPool;
+use crate::librarian::Librarian;
 
 /// Pipeline handler that wraps an LlmPool.
+/// Optionally holds a Librarian for auto-curation before API calls.
 pub struct LlmHandler {
     pool: Arc<Mutex<LlmPool>>,
+    librarian: Option<Arc<Mutex<Librarian>>>,
 }
 
 impl LlmHandler {
     pub fn new(pool: Arc<Mutex<LlmPool>>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            librarian: None,
+        }
+    }
+
+    /// Create an LlmHandler with auto-curation via the Librarian.
+    pub fn with_librarian(pool: Arc<Mutex<LlmPool>>, librarian: Arc<Mutex<Librarian>>) -> Self {
+        Self {
+            pool,
+            librarian: Some(librarian),
+        }
     }
 }
 
 #[async_trait]
 impl Handler for LlmHandler {
-    async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
+    async fn handle(&self, payload: ValidatedPayload, ctx: HandlerContext) -> HandlerResult {
         // Parse XML request
         let xml_str = String::from_utf8_lossy(&payload.xml);
-        let request = match parse_llm_request(&xml_str) {
+        let mut request = match parse_llm_request(&xml_str) {
             Ok(r) => r,
             Err(e) => {
                 let error_xml = format!(
@@ -40,6 +54,25 @@ impl Handler for LlmHandler {
                 });
             }
         };
+
+        // Auto-curation: if librarian is attached, curate context before the API call
+        if let Some(ref librarian) = self.librarian {
+            let lib = librarian.lock().await;
+            let token_budget = request.max_tokens.saturating_sub(1000) as usize;
+            let curation = lib
+                .curate(&ctx.thread_id, &request.messages, token_budget)
+                .await;
+
+            if let Ok(result) = curation {
+                if let Some(sys) = result.system_context {
+                    request.system = Some(match request.system {
+                        Some(existing) => format!("{existing}\n\n{sys}"),
+                        None => sys,
+                    });
+                }
+            }
+            // If curation fails, proceed without it (graceful degradation)
+        }
 
         // Call the pool
         let pool = self.pool.lock().await;
@@ -282,5 +315,35 @@ mod tests {
             Some("user".into())
         );
         assert_eq!(extract_attribute("<message>", "role"), None);
+    }
+
+    #[test]
+    fn handler_without_librarian() {
+        let pool = Arc::new(Mutex::new(crate::llm::LlmPool::with_base_url(
+            "k".into(),
+            "opus",
+            "http://localhost:1".into(),
+        )));
+        let handler = LlmHandler::new(pool);
+        assert!(handler.librarian.is_none());
+    }
+
+    #[test]
+    fn handler_with_librarian() {
+        let pool = Arc::new(Mutex::new(crate::llm::LlmPool::with_base_url(
+            "k".into(),
+            "haiku",
+            "http://localhost:1".into(),
+        )));
+        let kernel =
+            crate::kernel::Kernel::open(&tempfile::TempDir::new().unwrap().path().join("data"))
+                .unwrap();
+        let kernel = Arc::new(Mutex::new(kernel));
+        let lib = Arc::new(Mutex::new(crate::librarian::Librarian::new(
+            pool.clone(),
+            kernel,
+        )));
+        let handler = LlmHandler::with_librarian(pool, lib);
+        assert!(handler.librarian.is_some());
     }
 }

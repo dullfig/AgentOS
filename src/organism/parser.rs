@@ -40,6 +40,8 @@ struct ListenerYaml {
     model: Option<String>,
     #[serde(default)]
     ports: Vec<PortYaml>,
+    #[serde(default)]
+    librarian: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +133,7 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
             peers: l.peers,
             model: l.model,
             ports,
+            librarian: l.librarian,
         })?;
     }
 
@@ -316,6 +319,41 @@ profiles:
         // Public profile has empty network
         let public = org.get_profile("public").unwrap();
         assert!(public.network.is_empty());
+    }
+
+    #[test]
+    fn parse_librarian_flag() {
+        let yaml = r#"
+organism:
+  name: test-librarian
+
+listeners:
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM pool"
+    librarian: true
+
+  - name: echo
+    payload_class: handlers.echo.Greeting
+    handler: handlers.echo.handle
+    description: "Echo"
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [llm-pool, echo]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+
+        // llm-pool has librarian: true
+        let llm = org.get_listener("llm-pool").unwrap();
+        assert!(llm.librarian);
+
+        // echo defaults to librarian: false
+        let echo = org.get_listener("echo").unwrap();
+        assert!(!echo.librarian);
     }
 
     #[test]

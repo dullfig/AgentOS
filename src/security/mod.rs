@@ -90,6 +90,7 @@ mod tests {
                 peers: vec![],
                 model: None,
                 ports: vec![],
+                librarian: false,
             })
             .unwrap();
         }

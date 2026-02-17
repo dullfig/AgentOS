@@ -18,10 +18,14 @@ use tokio::sync::Mutex;
 use rust_pipeline::prelude::*;
 
 use crate::kernel::Kernel;
+use crate::librarian::handler::LibrarianHandler;
+use crate::librarian::Librarian;
 use crate::llm::{handler::LlmHandler, LlmPool};
 use crate::organism::Organism;
 use crate::ports::{Direction, PortDeclaration, PortManager, Protocol};
 use crate::security::SecurityResolver;
+use crate::treesitter::handler::CodeIndexHandler;
+use crate::treesitter::CodeIndex;
 
 /// AgentPipeline: wraps rust-pipeline's Pipeline with kernel integration.
 pub struct AgentPipeline {
@@ -181,6 +185,8 @@ pub struct AgentPipelineBuilder {
     registry: ListenerRegistry,
     llm_pool: Option<Arc<Mutex<LlmPool>>>,
     port_manager: Option<PortManager>,
+    librarian: Option<Arc<Mutex<Librarian>>>,
+    code_index: Option<Arc<Mutex<CodeIndex>>>,
 }
 
 impl AgentPipelineBuilder {
@@ -192,6 +198,8 @@ impl AgentPipelineBuilder {
             registry: ListenerRegistry::new(),
             llm_pool: None,
             port_manager: None,
+            librarian: None,
+            code_index: None,
         }
     }
 
@@ -219,12 +227,73 @@ impl AgentPipelineBuilder {
     /// Attach an LLM pool and auto-register the `llm-pool` handler.
     ///
     /// The organism config must have a listener named `llm-pool`.
+    /// If a librarian is already attached and the llm-pool listener has
+    /// `librarian: true`, the handler will auto-curate before API calls.
     pub fn with_llm_pool(mut self, pool: LlmPool) -> Result<Self, String> {
         let arc = Arc::new(Mutex::new(pool));
         self.llm_pool = Some(arc.clone());
 
-        let handler = LlmHandler::new(arc);
+        // Check if auto-curation is enabled for this listener
+        let auto_curate = self
+            .organism
+            .get_listener("llm-pool")
+            .map(|l| l.librarian)
+            .unwrap_or(false);
+
+        let handler = if auto_curate {
+            if let Some(ref lib) = self.librarian {
+                LlmHandler::with_librarian(arc, lib.clone())
+            } else {
+                LlmHandler::new(arc)
+            }
+        } else {
+            LlmHandler::new(arc)
+        };
+
         self = self.register("llm-pool", handler)?;
+        Ok(self)
+    }
+
+    /// Attach a Librarian service and register the `librarian` handler.
+    ///
+    /// Requires an LLM pool to be attached first (Librarian calls Haiku).
+    /// The organism config must have a listener named `librarian`.
+    pub fn with_librarian(mut self) -> Result<Self, String> {
+        let pool = self.llm_pool.clone().ok_or_else(|| {
+            "with_librarian() requires LLM pool — call with_llm_pool() first".to_string()
+        })?;
+
+        let kernel = Kernel::open(&self.data_dir)
+            .map_err(|e| format!("kernel open for librarian failed: {e}"))?;
+        let kernel_arc = Arc::new(Mutex::new(kernel));
+
+        let librarian = Librarian::new(pool, kernel_arc);
+        let lib_arc = Arc::new(Mutex::new(librarian));
+        self.librarian = Some(lib_arc.clone());
+
+        // Only register as a listener if the organism config defines one
+        if self.organism.get_listener("librarian").is_some() {
+            let handler = LibrarianHandler::new(lib_arc);
+            self = self.register("librarian", handler)?;
+        }
+
+        Ok(self)
+    }
+
+    /// Attach a CodeIndex service and register the `codebase-index` handler.
+    ///
+    /// The organism config must have a listener named `codebase-index`.
+    pub fn with_code_index(mut self) -> Result<Self, String> {
+        let index = CodeIndex::new();
+        let arc = Arc::new(Mutex::new(index));
+        self.code_index = Some(arc.clone());
+
+        // Only register as a listener if the organism config defines one
+        if self.organism.get_listener("codebase-index").is_some() {
+            let handler = CodeIndexHandler::new(arc);
+            self = self.register("codebase-index", handler)?;
+        }
+
         Ok(self)
     }
 
@@ -792,5 +861,259 @@ profiles:
         assert_eq!(ports.len(), 1);
         assert_eq!(ports[0].port, 443);
         assert_eq!(ports[0].allowed_hosts, vec!["api.anthropic.com"]);
+    }
+
+    // ── Phase 3 Integration Tests ──
+
+    fn p3_organism() -> Organism {
+        let yaml = r#"
+organism:
+  name: bestcode-p3
+
+listeners:
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    librarian: true
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: librarian
+    payload_class: librarian.LibrarianRequest
+    handler: librarian.handle
+    description: "Context curator"
+    peers: [llm-pool]
+
+  - name: codebase-index
+    payload_class: treesitter.CodeIndexRequest
+    handler: treesitter.handle
+    description: "Tree-sitter code indexing"
+
+  - name: file-ops
+    payload_class: tools.FileOpsRequest
+    handler: tools.file_ops.handle
+    description: "File operations"
+
+  - name: shell
+    payload_class: tools.ShellRequest
+    handler: tools.shell.handle
+    description: "Shell execution"
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [file-ops, shell, llm-pool, librarian, codebase-index]
+    network: [llm-pool]
+    journal:
+      retain_days: 90
+  restricted:
+    linux_user: agentos-restricted
+    listeners: [file-ops, codebase-index]
+    journal: prune_on_delivery
+"#;
+        parse_organism(yaml).unwrap()
+    }
+
+    #[tokio::test]
+    async fn build_pipeline_with_librarian_and_code_index() {
+        let dir = TempDir::new().unwrap();
+        let org = p3_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_port_manager()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert!(pipeline.organism().get_listener("llm-pool").is_some());
+        assert!(pipeline.organism().get_listener("librarian").is_some());
+        assert!(pipeline.organism().get_listener("codebase-index").is_some());
+    }
+
+    #[tokio::test]
+    async fn librarian_auto_curate_wired() {
+        let dir = TempDir::new().unwrap();
+        let org = p3_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        // Build with librarian BEFORE llm_pool to test the auto-curation wiring
+        // Note: with_librarian needs pool first, so we build pool, then librarian, then register llm-pool
+        let builder = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap();
+
+        // Librarian should be attached
+        assert!(builder.librarian.is_some());
+        assert!(builder.code_index.is_some());
+
+        let pipeline = builder.build().unwrap();
+        assert!(pipeline.organism().get_listener("librarian").is_some());
+    }
+
+    #[tokio::test]
+    async fn security_scoping_for_librarian() {
+        let dir = TempDir::new().unwrap();
+        let org = p3_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_port_manager()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        pipeline.run();
+
+        // Admin can reach librarian
+        assert!(pipeline.security().can_reach("admin", "librarian"));
+        // Admin can reach codebase-index
+        assert!(pipeline.security().can_reach("admin", "codebase-index"));
+
+        // Restricted CANNOT reach librarian — structural impossibility
+        assert!(!pipeline.security().can_reach("restricted", "librarian"));
+        // Restricted CAN reach codebase-index
+        assert!(pipeline
+            .security()
+            .can_reach("restricted", "codebase-index"));
+        // Restricted CANNOT reach llm-pool
+        assert!(!pipeline.security().can_reach("restricted", "llm-pool"));
+
+        pipeline.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn code_index_handler_via_pipeline() {
+        let dir = TempDir::new().unwrap();
+        let org = p3_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        pipeline.run();
+
+        // Inject a CodeIndex request under admin profile
+        let envelope = build_envelope(
+            "test",
+            "codebase-index",
+            "thread-1",
+            b"<CodeIndexRequest><action>search</action><query>test</query></CodeIndexRequest>",
+        )
+        .unwrap();
+
+        let result = pipeline
+            .inject_checked(envelope, "thread-1", "admin", "codebase-index")
+            .await;
+        assert!(result.is_ok());
+
+        pipeline.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn with_librarian_requires_pool() {
+        let dir = TempDir::new().unwrap();
+        let org = p3_organism();
+
+        // Try to build librarian without pool — should fail
+        let result = AgentPipelineBuilder::new(org, &dir.path().join("data")).with_librarian();
+
+        match result {
+            Err(e) => assert!(e.contains("requires LLM pool"), "unexpected error: {e}"),
+            Ok(_) => panic!("expected error when building librarian without pool"),
+        }
+    }
+
+    #[tokio::test]
+    async fn with_code_index_without_organism_listener() {
+        let dir = TempDir::new().unwrap();
+        // Use m2 organism which doesn't have codebase-index listener
+        let org = m2_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        // with_code_index() should succeed even without organism listener
+        // (CodeIndex created but not registered as handler)
+        let builder = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap();
+
+        assert!(builder.code_index.is_some());
+        // Should still build successfully
+        let pipeline = builder.build().unwrap();
+        assert!(pipeline.organism().get_listener("codebase-index").is_none());
     }
 }

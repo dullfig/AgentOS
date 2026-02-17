@@ -29,8 +29,15 @@ pub enum EntryType {
 
     // Context ops
     ContextAllocate = 10,
-    ContextAppend = 11,
+    ContextAppend = 11, // Legacy — replaced by segment ops in Phase 3
     ContextRelease = 12,
+
+    // Context segment ops (Phase 3)
+    ContextSegmentAdd = 13,
+    ContextSegmentRemove = 14,
+    ContextSegmentPageIn = 15,
+    ContextSegmentPageOut = 16,
+    ContextSegmentRelevance = 17,
 
     // Journal ops
     JournalDispatched = 20,
@@ -51,6 +58,11 @@ impl EntryType {
             10 => Some(Self::ContextAllocate),
             11 => Some(Self::ContextAppend),
             12 => Some(Self::ContextRelease),
+            13 => Some(Self::ContextSegmentAdd),
+            14 => Some(Self::ContextSegmentRemove),
+            15 => Some(Self::ContextSegmentPageIn),
+            16 => Some(Self::ContextSegmentPageOut),
+            17 => Some(Self::ContextSegmentRelevance),
             20 => Some(Self::JournalDispatched),
             21 => Some(Self::JournalDelivered),
             22 => Some(Self::JournalFailed),
