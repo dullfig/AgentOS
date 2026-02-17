@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::profile::{RetentionPolicy, SecurityProfile};
-use super::{ListenerDef, Organism};
+use super::{ListenerDef, Organism, PortDef};
 
 /// Top-level YAML structure.
 #[derive(Debug, Deserialize)]
@@ -38,6 +38,17 @@ struct ListenerYaml {
     peers: Vec<String>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    ports: Vec<PortYaml>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PortYaml {
+    port: u16,
+    direction: String,
+    protocol: String,
+    #[serde(default)]
+    hosts: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +57,8 @@ struct ProfileYaml {
     listeners: ListenersSpec,
     #[serde(default)]
     journal: JournalSpec,
+    #[serde(default)]
+    network: Vec<String>,
 }
 
 /// Listeners can be "all" or a list of names.
@@ -98,6 +111,17 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
             .unwrap_or(&l.payload_class)
             .to_string();
 
+        let ports = l
+            .ports
+            .into_iter()
+            .map(|p| PortDef {
+                port: p.port,
+                direction: p.direction,
+                protocol: p.protocol,
+                hosts: p.hosts,
+            })
+            .collect();
+
         org.register_listener(ListenerDef {
             name: l.name,
             payload_tag,
@@ -106,6 +130,7 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
             is_agent: l.agent,
             peers: l.peers,
             model: l.model,
+            ports,
         })?;
     }
 
@@ -139,6 +164,7 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
             allowed_listeners,
             allow_all,
             journal_retention,
+            network: p.network,
         })?;
     }
 
@@ -225,6 +251,71 @@ listeners: []
         let org = parse_organism(yaml).unwrap();
         assert_eq!(org.name, "minimal");
         assert_eq!(org.listener_names().len(), 0);
+    }
+
+    #[test]
+    fn parse_organism_with_ports_and_network() {
+        let yaml = r#"
+organism:
+  name: bestcode-m2
+
+listeners:
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    peers: [coding-agent]
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: file-ops
+    payload_class: tools.FileOpsRequest
+    handler: tools.file_ops.handle
+    description: "File operations"
+
+  - name: shell
+    payload_class: tools.ShellRequest
+    handler: tools.shell.handle
+    description: "Shell execution"
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [file-ops, shell, llm-pool]
+    network: [llm-pool]
+    journal:
+      retain_days: 90
+  public:
+    linux_user: agentos-public
+    listeners: [file-ops]
+    journal: prune_on_delivery
+"#;
+
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.name, "bestcode-m2");
+
+        // LLM pool has port declarations
+        let llm = org.get_listener("llm-pool").unwrap();
+        assert_eq!(llm.ports.len(), 1);
+        assert_eq!(llm.ports[0].port, 443);
+        assert_eq!(llm.ports[0].direction, "outbound");
+        assert_eq!(llm.ports[0].protocol, "https");
+        assert_eq!(llm.ports[0].hosts, vec!["api.anthropic.com"]);
+
+        // File-ops has no ports
+        let fops = org.get_listener("file-ops").unwrap();
+        assert!(fops.ports.is_empty());
+
+        // Admin profile has network field
+        let admin = org.get_profile("admin").unwrap();
+        assert_eq!(admin.network, vec!["llm-pool"]);
+
+        // Public profile has empty network
+        let public = org.get_profile("public").unwrap();
+        assert!(public.network.is_empty());
     }
 
     #[test]

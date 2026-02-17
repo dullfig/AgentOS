@@ -30,6 +30,9 @@ pub struct SecurityProfile {
     pub allow_all: bool,
     /// Journal retention policy for messages under this profile.
     pub journal_retention: RetentionPolicy,
+    /// Which listeners' ports this profile can use (for network access).
+    /// Empty means no network restrictions beyond listener access.
+    pub network: Vec<String>,
 }
 
 /// A materialized dispatch table for a specific profile.
@@ -74,6 +77,7 @@ mod tests {
                 is_agent: false,
                 peers: vec![],
                 model: None,
+                ports: vec![],
             },
         );
 

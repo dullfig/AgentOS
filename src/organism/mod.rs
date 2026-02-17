@@ -10,6 +10,15 @@ use std::collections::HashMap;
 
 use profile::{DispatchTable, SecurityProfile};
 
+/// Port declaration on a listener (from organism config).
+#[derive(Debug, Clone)]
+pub struct PortDef {
+    pub port: u16,
+    pub direction: String,
+    pub protocol: String,
+    pub hosts: Vec<String>,
+}
+
 /// Definition of a listener (from organism config).
 #[derive(Debug, Clone)]
 pub struct ListenerDef {
@@ -20,6 +29,7 @@ pub struct ListenerDef {
     pub is_agent: bool,
     pub peers: Vec<String>,
     pub model: Option<String>,
+    pub ports: Vec<PortDef>,
 }
 
 /// Result of a hot-reload diff.
@@ -191,6 +201,7 @@ mod tests {
             is_agent: false,
             peers: vec![],
             model: None,
+            ports: vec![],
         }
     }
 
@@ -201,6 +212,7 @@ mod tests {
             allowed_listeners: listeners.into_iter().map(|s| s.to_string()).collect(),
             allow_all: false,
             journal_retention: RetentionPolicy::Forever,
+            network: vec![],
         }
     }
 
@@ -256,6 +268,7 @@ mod tests {
             allowed_listeners: HashSet::new(),
             allow_all: true,
             journal_retention: RetentionPolicy::Forever,
+            network: vec![],
         };
         org.add_profile(profile).unwrap();
 

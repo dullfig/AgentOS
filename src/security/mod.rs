@@ -89,6 +89,7 @@ mod tests {
                 is_agent: false,
                 peers: vec![],
                 model: None,
+                ports: vec![],
             })
             .unwrap();
         }
@@ -103,6 +104,7 @@ mod tests {
                 .collect(),
             allow_all: false,
             journal_retention: RetentionPolicy::RetainDays(90),
+            network: vec![],
         })
         .unwrap();
 
@@ -116,6 +118,7 @@ mod tests {
                 .collect(),
             allow_all: false,
             journal_retention: RetentionPolicy::PruneOnDelivery,
+            network: vec![],
         })
         .unwrap();
 
@@ -126,6 +129,7 @@ mod tests {
             allowed_listeners: HashSet::new(),
             allow_all: true,
             journal_retention: RetentionPolicy::Forever,
+            network: vec![],
         })
         .unwrap();
 
@@ -217,6 +221,7 @@ mod tests {
             allowed_listeners: new_allowed,
             allow_all: false,
             journal_retention: RetentionPolicy::PruneOnDelivery,
+            network: vec![],
         })
         .unwrap();
 
