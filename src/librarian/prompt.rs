@@ -39,10 +39,11 @@ pub fn build_curation_prompt(
     // Incoming messages
     prompt.push_str("  <incoming_messages>\n");
     for msg in incoming_messages {
+        let text = msg.content.text().unwrap_or_default();
         prompt.push_str(&format!(
             "    <message role=\"{}\">{}</message>\n",
             msg.role,
-            truncate(&msg.content, 500)
+            truncate(&text, 500)
         ));
     }
     prompt.push_str("  </incoming_messages>\n");
@@ -228,10 +229,7 @@ mod tests {
     #[test]
     fn build_curation_prompt_includes_inventory() {
         let inv = sample_inventory();
-        let msgs = vec![Message {
-            role: "user".into(),
-            content: "What does the parser do?".into(),
-        }];
+        let msgs = vec![Message::text("user", "What does the parser do?")];
 
         let prompt = build_curation_prompt(&inv, &msgs, 8000);
         assert!(prompt.contains("<CurationRequest>"));

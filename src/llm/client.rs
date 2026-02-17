@@ -116,12 +116,10 @@ mod tests {
         let req = MessagesRequest {
             model: "claude-opus-4-20250514".into(),
             max_tokens: 1024,
-            messages: vec![Message {
-                role: "user".into(),
-                content: "Hello".into(),
-            }],
+            messages: vec![Message::text("user", "Hello")],
             system: None,
             temperature: Some(0.7),
+            tools: None,
         };
 
         let json = serde_json::to_value(&req).unwrap();

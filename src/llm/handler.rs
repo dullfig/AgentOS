@@ -190,7 +190,7 @@ fn parse_messages(xml: &str) -> Result<Vec<Message>, String> {
 
         let content = xml_unescape(&xml[content_start..content_end]);
 
-        messages.push(Message { role, content });
+        messages.push(Message::text(&role, &content));
 
         search_from = content_end + "</message>".len();
     }
@@ -245,9 +245,9 @@ mod tests {
         assert_eq!(req.system, Some("You are a helpful assistant.".into()));
         assert_eq!(req.messages.len(), 3);
         assert_eq!(req.messages[0].role, "user");
-        assert_eq!(req.messages[0].content, "Hello");
+        assert_eq!(req.messages[0].content.text(), Some("Hello".into()));
         assert_eq!(req.messages[1].role, "assistant");
-        assert_eq!(req.messages[2].content, "What is 2+2?");
+        assert_eq!(req.messages[2].content.text(), Some("What is 2+2?".into()));
     }
 
     #[test]

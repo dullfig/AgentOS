@@ -86,10 +86,7 @@ impl Librarian {
         // Call Haiku for curation decision
         let response_text = {
             let pool = self.pool.lock().await;
-            let messages = vec![Message {
-                role: "user".into(),
-                content: haiku_prompt,
-            }];
+            let messages = vec![Message::text("user", &haiku_prompt)];
             let resp = pool
                 .complete(
                     Some(&self.model),
@@ -175,10 +172,7 @@ impl Librarian {
 
         let response_text = {
             let pool = self.pool.lock().await;
-            let messages = vec![Message {
-                role: "user".into(),
-                content: prompt_text,
-            }];
+            let messages = vec![Message::text("user", &prompt_text)];
             let resp = pool
                 .complete(
                     Some(&self.model),

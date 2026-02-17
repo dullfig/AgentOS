@@ -144,7 +144,7 @@ fn parse_messages(xml: &str) -> Vec<Message> {
             if let Some(close_offset) = xml[content_start..].find("</message>") {
                 let content_end = content_start + close_offset;
                 let content = xml[content_start..content_end].to_string();
-                messages.push(Message { role, content });
+                messages.push(Message::text(&role, &content));
                 search_from = content_end + "</message>".len();
             } else {
                 break;
@@ -260,8 +260,8 @@ mod tests {
         let msgs = parse_messages(xml);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "user");
-        assert_eq!(msgs[0].content, "Hello");
+        assert_eq!(msgs[0].content.text(), Some("Hello".into()));
         assert_eq!(msgs[1].role, "assistant");
-        assert_eq!(msgs[1].content, "Hi");
+        assert_eq!(msgs[1].content.text(), Some("Hi".into()));
     }
 }

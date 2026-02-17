@@ -65,6 +65,32 @@ impl LlmPool {
             messages,
             system: system.map(|s| s.to_string()),
             temperature: None,
+            tools: None,
+        };
+
+        self.client.messages(&request).await
+    }
+
+    /// Send a completion request with tool definitions.
+    pub async fn complete_with_tools(
+        &self,
+        model: Option<&str>,
+        messages: Vec<Message>,
+        max_tokens: u32,
+        system: Option<&str>,
+        tools: Vec<types::ToolDefinition>,
+    ) -> Result<MessagesResponse, LlmError> {
+        let resolved_model = model
+            .map(|m| resolve_model(m).to_string())
+            .unwrap_or_else(|| self.default_model.clone());
+
+        let request = MessagesRequest {
+            model: resolved_model,
+            max_tokens,
+            messages,
+            system: system.map(|s| s.to_string()),
+            temperature: None,
+            tools: if tools.is_empty() { None } else { Some(tools) },
         };
 
         self.client.messages(&request).await

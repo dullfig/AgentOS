@@ -3,6 +3,7 @@
 //! Builds on rust-pipeline to add durable state (WAL + mmap),
 //! security profiles, and organism configuration.
 
+pub mod agent;
 pub mod kernel;
 pub mod librarian;
 pub mod llm;

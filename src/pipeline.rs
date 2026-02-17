@@ -17,6 +17,9 @@ use tokio::sync::Mutex;
 
 use rust_pipeline::prelude::*;
 
+use crate::agent::handler::CodingAgentHandler;
+use crate::agent::prompts;
+use crate::agent::tools as agent_tools;
 use crate::kernel::Kernel;
 use crate::librarian::handler::LibrarianHandler;
 use crate::librarian::Librarian;
@@ -333,6 +336,53 @@ impl AgentPipelineBuilder {
 
         pm.validate().map_err(|errs| errs.join("; "))?;
         self.port_manager = Some(pm);
+        Ok(self)
+    }
+
+    /// Attach a CodingAgent and register the `coding-agent` handler.
+    ///
+    /// Requires an LLM pool to be attached first (the agent calls Opus).
+    /// The organism config must have a listener named `coding-agent`.
+    /// Automatically collects tool definitions from the listener's peers.
+    pub fn with_coding_agent(mut self) -> Result<Self, String> {
+        let pool = self.llm_pool.clone().ok_or_else(|| {
+            "with_coding_agent() requires LLM pool — call with_llm_pool() first".to_string()
+        })?;
+
+        // Get the coding-agent listener definition
+        let def = self
+            .organism
+            .get_listener("coding-agent")
+            .ok_or_else(|| {
+                "with_coding_agent() requires 'coding-agent' listener in organism config"
+                    .to_string()
+            })?
+            .clone();
+
+        // Build tool definitions from the listener's declared peers
+        let peer_names: Vec<&str> = def.peers.iter().map(|s| s.as_str()).collect();
+        let tool_definitions = agent_tools::build_tool_definitions(&peer_names);
+
+        // Build tool descriptions for the system prompt
+        let tool_descs: Vec<(String, String)> = tool_definitions
+            .iter()
+            .map(|d| (d.name.clone(), d.description.clone()))
+            .collect();
+        let system_prompt = prompts::build_system_prompt(&tool_descs);
+
+        // Create the handler
+        let handler = if let Some(ref lib) = self.librarian {
+            CodingAgentHandler::with_librarian(
+                pool,
+                lib.clone(),
+                tool_definitions,
+                system_prompt,
+            )
+        } else {
+            CodingAgentHandler::new(pool, tool_definitions, system_prompt)
+        };
+
+        self = self.register("coding-agent", handler)?;
         Ok(self)
     }
 
@@ -1115,5 +1165,385 @@ profiles:
         // Should still build successfully
         let pipeline = builder.build().unwrap();
         assert!(pipeline.organism().get_listener("codebase-index").is_none());
+    }
+
+    // ── Phase 4 Integration Tests ──
+
+    fn p4_organism() -> Organism {
+        let yaml = r#"
+organism:
+  name: bestcode-p4
+
+listeners:
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    librarian: true
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: librarian
+    payload_class: librarian.LibrarianRequest
+    handler: librarian.handle
+    description: "Context curator"
+    peers: [llm-pool]
+
+  - name: codebase-index
+    payload_class: treesitter.CodeIndexRequest
+    handler: treesitter.handle
+    description: "Tree-sitter code indexing"
+
+  - name: file-ops
+    payload_class: tools.FileOpsRequest
+    handler: tools.file_ops.handle
+    description: "File operations"
+
+  - name: shell
+    payload_class: tools.ShellRequest
+    handler: tools.shell.handle
+    description: "Shell execution"
+
+  - name: coding-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Opus coding agent"
+    is_agent: true
+    librarian: true
+    peers: [file-ops, shell, codebase-index]
+
+profiles:
+  coding:
+    linux_user: agentos-coding
+    listeners: [coding-agent, file-ops, shell, codebase-index, llm-pool, librarian]
+    network: [llm-pool]
+    journal: retain_forever
+  restricted:
+    linux_user: agentos-restricted
+    listeners: [file-ops, codebase-index]
+    journal: prune_on_delivery
+"#;
+        parse_organism(yaml).unwrap()
+    }
+
+    #[tokio::test]
+    async fn build_pipeline_with_coding_agent() {
+        let dir = TempDir::new().unwrap();
+        let org = p4_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_coding_agent()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert!(pipeline.organism().get_listener("coding-agent").is_some());
+        assert!(pipeline.organism().get_listener("file-ops").is_some());
+        assert!(pipeline.organism().get_listener("shell").is_some());
+    }
+
+    #[tokio::test]
+    async fn coding_agent_security_can_reach_tools() {
+        let dir = TempDir::new().unwrap();
+        let org = p4_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_coding_agent()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // Coding profile can reach everything it needs
+        assert!(pipeline.security().can_reach("coding", "coding-agent"));
+        assert!(pipeline.security().can_reach("coding", "file-ops"));
+        assert!(pipeline.security().can_reach("coding", "shell"));
+        assert!(pipeline.security().can_reach("coding", "codebase-index"));
+        assert!(pipeline.security().can_reach("coding", "llm-pool"));
+        assert!(pipeline.security().can_reach("coding", "librarian"));
+    }
+
+    #[tokio::test]
+    async fn restricted_cannot_reach_coding_agent() {
+        let dir = TempDir::new().unwrap();
+        let org = p4_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_coding_agent()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // Restricted profile CANNOT reach coding agent — structural impossibility
+        assert!(!pipeline.security().can_reach("restricted", "coding-agent"));
+        // Restricted CANNOT reach shell
+        assert!(!pipeline.security().can_reach("restricted", "shell"));
+        // Restricted CANNOT reach llm-pool
+        assert!(!pipeline.security().can_reach("restricted", "llm-pool"));
+        // Restricted CAN reach file-ops and codebase-index
+        assert!(pipeline.security().can_reach("restricted", "file-ops"));
+        assert!(pipeline
+            .security()
+            .can_reach("restricted", "codebase-index"));
+    }
+
+    #[tokio::test]
+    async fn coding_agent_requires_pool() {
+        let dir = TempDir::new().unwrap();
+        let org = p4_organism();
+
+        let result =
+            AgentPipelineBuilder::new(org, &dir.path().join("data")).with_coding_agent();
+
+        match result {
+            Err(e) => assert!(
+                e.contains("requires LLM pool"),
+                "unexpected error: {e}"
+            ),
+            Ok(_) => panic!("expected error when building coding agent without pool"),
+        }
+    }
+
+    #[tokio::test]
+    async fn coding_agent_requires_organism_listener() {
+        let dir = TempDir::new().unwrap();
+        // Use m2 organism which doesn't have coding-agent listener
+        let org = m2_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let result = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_coding_agent();
+
+        match result {
+            Err(e) => assert!(
+                e.contains("coding-agent"),
+                "unexpected error: {e}"
+            ),
+            Ok(_) => panic!("expected error when coding-agent not in organism config"),
+        }
+    }
+
+    #[tokio::test]
+    async fn inject_task_to_coding_agent() {
+        let dir = TempDir::new().unwrap();
+        let org = p4_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_coding_agent()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        pipeline.run();
+
+        // Inject a task under the coding profile
+        let envelope = build_envelope(
+            "user",
+            "coding-agent",
+            "thread-1",
+            b"<AgentTask><task>Hello, agent!</task></AgentTask>",
+        )
+        .unwrap();
+
+        let result = pipeline
+            .inject_checked(envelope, "thread-1", "coding", "coding-agent")
+            .await;
+        // This will fail on the API call (fake URL), but the injection itself
+        // should succeed since the security check passes
+        assert!(result.is_ok());
+
+        pipeline.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn inject_task_blocked_for_restricted() {
+        let dir = TempDir::new().unwrap();
+        let org = p4_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_librarian()
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_coding_agent()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        pipeline.run();
+
+        // Restricted profile cannot inject to coding-agent
+        let envelope = build_envelope(
+            "user",
+            "coding-agent",
+            "thread-1",
+            b"<AgentTask><task>hack the mainframe</task></AgentTask>",
+        )
+        .unwrap();
+
+        let result = pipeline
+            .inject_checked(envelope, "thread-1", "restricted", "coding-agent")
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot reach"));
+
+        pipeline.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn coding_agent_without_librarian() {
+        let dir = TempDir::new().unwrap();
+        let org = p4_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        // Build without librarian — coding agent should still work
+        let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_coding_agent()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert!(pipeline.organism().get_listener("coding-agent").is_some());
+    }
+
+    #[tokio::test]
+    async fn coding_agent_tool_defs_match_peers() {
+        let dir = TempDir::new().unwrap();
+        let org = p4_organism();
+
+        // Verify that the coding-agent's peers produce tool definitions
+        let def = org.get_listener("coding-agent").unwrap();
+        let peer_names: Vec<&str> = def.peers.iter().map(|s| s.as_str()).collect();
+        let tool_defs = crate::agent::tools::build_tool_definitions(&peer_names);
+
+        // Should have definitions for file-ops, shell, codebase-index
+        assert_eq!(tool_defs.len(), 3);
+        let names: Vec<&str> = tool_defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"file-ops"));
+        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"codebase-index"));
+
+        // Also verify the pipeline builds cleanly
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let _pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_code_index()
+            .unwrap()
+            .with_coding_agent()
+            .unwrap()
+            .build()
+            .unwrap();
     }
 }
