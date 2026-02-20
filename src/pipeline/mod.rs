@@ -24,12 +24,15 @@ use events::PipelineEvent;
 use crate::agent::handler::CodingAgentHandler;
 use crate::agent::prompts;
 use crate::agent::tools as agent_tools;
+use crate::embedding::tfidf::TfIdfProvider;
+use crate::embedding::EmbeddingIndex;
 use crate::kernel::Kernel;
 use crate::librarian::handler::LibrarianHandler;
 use crate::librarian::Librarian;
 use crate::llm::{handler::LlmHandler, LlmPool};
 use crate::organism::Organism;
 use crate::ports::{Direction, PortDeclaration, PortManager, Protocol};
+use crate::routing::{self, form_filler::FormFiller, SemanticRouter, ToolMetadata};
 use crate::security::SecurityResolver;
 use crate::treesitter::handler::CodeIndexHandler;
 use crate::treesitter::CodeIndex;
@@ -225,6 +228,7 @@ pub struct AgentPipelineBuilder {
     code_index: Option<Arc<Mutex<CodeIndex>>>,
     wasm_runtime: Option<Arc<WasmRuntime>>,
     wasm_registry: Option<WasmToolRegistry>,
+    semantic_router: Option<SemanticRouter>,
 }
 
 impl AgentPipelineBuilder {
@@ -240,6 +244,7 @@ impl AgentPipelineBuilder {
             code_index: None,
             wasm_runtime: None,
             wasm_registry: None,
+            semantic_router: None,
         }
     }
 
@@ -425,6 +430,72 @@ impl AgentPipelineBuilder {
         Ok(self)
     }
 
+    /// Build a semantic router from the organism's semantic descriptions.
+    ///
+    /// Requires an LLM pool to be attached first (form-filler calls Haiku).
+    /// Creates a TF-IDF provider from all semantic descriptions, builds
+    /// an embedding index, and stores the router for later injection
+    /// into CodingAgentHandler.
+    pub fn with_semantic_router(mut self) -> Result<Self, String> {
+        let pool = self.llm_pool.clone().ok_or_else(|| {
+            "with_semantic_router() requires LLM pool — call with_llm_pool() first".to_string()
+        })?;
+
+        // Collect all semantic descriptions to build the TF-IDF corpus
+        let descriptions: Vec<(String, String)> = self
+            .organism
+            .listeners()
+            .values()
+            .filter_map(|l| {
+                l.semantic_description
+                    .as_ref()
+                    .map(|d| (l.name.clone(), d.clone()))
+            })
+            .collect();
+
+        if descriptions.is_empty() {
+            return Err(
+                "with_semantic_router() requires at least one listener with semantic_description"
+                    .to_string(),
+            );
+        }
+
+        // Build TF-IDF provider from the corpus
+        let corpus_strs: Vec<&str> = descriptions.iter().map(|(_, d)| d.as_str()).collect();
+        let provider = TfIdfProvider::from_corpus(&corpus_strs);
+
+        // Build embedding index and register all tools
+        let mut index = EmbeddingIndex::new(0.3); // default threshold
+        routing::register_tools(&mut index, &provider, &self.organism);
+
+        // Build tool metadata from listener definitions
+        let mut metadata = std::collections::HashMap::new();
+        for listener in self.organism.listeners().values() {
+            if listener.semantic_description.is_some() {
+                metadata.insert(
+                    listener.name.clone(),
+                    ToolMetadata {
+                        description: listener.description.clone(),
+                        xml_template: format!(
+                            "<{tag}></{tag}>",
+                            tag = listener.payload_tag
+                        ),
+                        payload_tag: listener.payload_tag.clone(),
+                    },
+                );
+            }
+        }
+
+        // Build form-filler
+        let filler = FormFiller::new(pool, 3);
+
+        // Build router
+        let router = SemanticRouter::new(Box::new(provider), index, filler, metadata);
+        self.semantic_router = Some(router);
+
+        Ok(self)
+    }
+
     /// Attach a CodingAgent and register the `coding-agent` handler.
     ///
     /// Requires an LLM pool to be attached first (the agent calls Opus).
@@ -462,7 +533,22 @@ impl AgentPipelineBuilder {
         let system_prompt = prompts::build_system_prompt(&tool_descs);
 
         // Create the handler
-        let handler = if let Some(ref lib) = self.librarian {
+        let handler = if let Some(router) = self.semantic_router.take() {
+            let h = CodingAgentHandler::with_semantic_router(
+                pool,
+                router,
+                tool_definitions,
+                system_prompt,
+            );
+            if let Some(ref lib) = self.librarian {
+                // Note: with_semantic_router doesn't take a librarian, but the
+                // librarian is still available through the pipeline. For full
+                // integration, we'd need a builder on CodingAgentHandler, but
+                // for V1 the router and librarian are separate concerns.
+                let _ = lib;
+            }
+            h
+        } else if let Some(ref lib) = self.librarian {
             CodingAgentHandler::with_librarian(
                 pool,
                 lib.clone(),
@@ -2123,5 +2209,109 @@ profiles:
         };
         let _ = kernel_op.clone();
         assert!(format!("{:?}", kernel_op).contains("KernelOp"));
+    }
+
+    // ── Semantic Routing Integration Tests ──
+
+    fn routing_organism() -> Organism {
+        let yaml = r#"
+organism:
+  name: bestcode-routing
+
+listeners:
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: file-ops
+    payload_class: tools.FileOpsRequest
+    handler: tools.file_ops.handle
+    description: "File operations"
+    semantic_description: |
+      This tool reads, writes, and manages files on the local filesystem.
+      Use it when you need to examine source code, read configuration files,
+      write new files, create directories, or check if files exist.
+
+  - name: shell
+    payload_class: tools.ShellRequest
+    handler: tools.shell.handle
+    description: "Shell execution"
+    semantic_description: |
+      This tool executes shell commands and returns their output.
+      Use it when you need to run programs, compile code, run tests,
+      check system state, or execute any command-line operation.
+
+  - name: coding-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Opus coding agent"
+    agent: true
+    peers: [file-ops, shell]
+
+profiles:
+  coding:
+    linux_user: agentos-coding
+    listeners: [coding-agent, file-ops, shell, llm-pool]
+    network: [llm-pool]
+    journal: retain_forever
+"#;
+        parse_organism(yaml).unwrap()
+    }
+
+    #[tokio::test]
+    async fn pipeline_builder_with_semantic_router() {
+        let dir = TempDir::new().unwrap();
+        let org = routing_organism();
+
+        let pool = crate::llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_llm_pool(pool)
+            .unwrap()
+            .register("file-ops", crate::tools::file_ops::FileOpsStub)
+            .unwrap()
+            .register("shell", crate::tools::shell::ShellStub)
+            .unwrap()
+            .with_semantic_router()
+            .unwrap()
+            .with_coding_agent()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert!(pipeline.organism().get_listener("coding-agent").is_some());
+        assert!(pipeline.organism().get_listener("file-ops").is_some());
+    }
+
+    #[test]
+    fn pipeline_event_semantic_match() {
+        let event = PipelineEvent::SemanticMatch {
+            thread_id: "t1".into(),
+            tool_name: "file-ops".into(),
+            score: 0.87,
+        };
+        let cloned = event.clone();
+        let debug = format!("{:?}", cloned);
+        assert!(debug.contains("SemanticMatch"));
+        assert!(debug.contains("file-ops"));
+
+        let fill_event = PipelineEvent::FormFillAttempt {
+            thread_id: "t1".into(),
+            tool_name: "file-ops".into(),
+            model: "haiku".into(),
+            success: true,
+        };
+        let _ = fill_event.clone();
+        assert!(format!("{:?}", fill_event).contains("FormFillAttempt"));
     }
 }

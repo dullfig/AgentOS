@@ -57,6 +57,14 @@ impl SecurityResolver {
             .unwrap_or(false)
     }
 
+    /// Get the list of tool names allowed under a profile (for pre-filtering embedding candidates).
+    pub fn allowed_tool_names(&self, profile_name: &str) -> Vec<String> {
+        self.tables
+            .get(profile_name)
+            .map(|t| t.listener_names().into_iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default()
+    }
+
     /// Rebuild tables after a hot reload.
     pub fn rebuild(&mut self, organism: &Organism) -> Result<(), String> {
         let mut tables = HashMap::new();
@@ -92,6 +100,7 @@ mod tests {
                 ports: vec![],
                 librarian: false,
                 wasm: None,
+                semantic_description: None,
             })
             .unwrap();
         }
@@ -231,5 +240,63 @@ mod tests {
 
         // Now public can reach file-ops
         assert!(resolver.can_reach("public", "file-ops"));
+    }
+
+    // ── Semantic Routing: allowed_tool_names ──
+
+    #[test]
+    fn security_allowed_tool_names() {
+        let org = setup_organism();
+        let resolver = SecurityResolver::from_organism(&org).unwrap();
+
+        let admin_tools = resolver.allowed_tool_names("admin");
+        assert!(admin_tools.contains(&"file-ops".to_string()));
+        assert!(admin_tools.contains(&"shell".to_string()));
+        assert!(!admin_tools.contains(&"faq".to_string()));
+        assert_eq!(admin_tools.len(), 2);
+
+        let public_tools = resolver.allowed_tool_names("public");
+        assert!(public_tools.contains(&"faq".to_string()));
+        assert!(public_tools.contains(&"scheduling".to_string()));
+        assert!(!public_tools.contains(&"file-ops".to_string()));
+        assert_eq!(public_tools.len(), 2);
+
+        let root_tools = resolver.allowed_tool_names("root");
+        assert_eq!(root_tools.len(), 4);
+    }
+
+    #[test]
+    fn security_prefilter_candidates() {
+        let org = setup_organism();
+        let resolver = SecurityResolver::from_organism(&org).unwrap();
+
+        // Use allowed_tool_names to pre-filter embedding candidates
+        let allowed = resolver.allowed_tool_names("public");
+
+        // Build a mock embedding index with all tools
+        let mut index = crate::embedding::EmbeddingIndex::new(0.0);
+        // Register with trivial vectors — just testing filtering
+        index.register("file-ops", vec![1.0, 0.0, 0.0, 0.0]);
+        index.register("shell", vec![0.0, 1.0, 0.0, 0.0]);
+        index.register("faq", vec![0.0, 0.0, 1.0, 0.0]);
+        index.register("scheduling", vec![0.0, 0.0, 0.0, 1.0]);
+
+        // Query that would match "faq" (unit vector in faq's direction)
+        let query = vec![0.0, 0.0, 1.0, 0.0];
+
+        // Unfiltered: matches faq
+        let unfiltered = index.search(&query);
+        assert_eq!(unfiltered.unwrap().name, "faq");
+
+        // Filtered by public profile: faq and scheduling are allowed
+        let filtered = index.search_filtered(&query, &allowed);
+        assert!(filtered.is_some());
+        assert_eq!(filtered.unwrap().name, "faq");
+
+        // Filtered by admin profile: only file-ops and shell
+        let admin_allowed = resolver.allowed_tool_names("admin");
+        let admin_filtered = index.search_filtered(&query, &admin_allowed);
+        // faq is not in admin's allowed list, so shouldn't match
+        assert!(admin_filtered.is_none() || admin_filtered.unwrap().name != "faq");
     }
 }

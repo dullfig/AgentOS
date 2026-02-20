@@ -42,6 +42,9 @@ pub struct ListenerDef {
     pub librarian: bool,
     /// WASM tool configuration (present when handler == "wasm").
     pub wasm: Option<WasmToolConfig>,
+    /// Rich semantic description for embedding-based routing.
+    /// Consumed by the embedding model, never enters the thinker's context.
+    pub semantic_description: Option<String>,
 }
 
 /// Result of a hot-reload diff.
@@ -216,6 +219,7 @@ mod tests {
             ports: vec![],
             librarian: false,
             wasm: None,
+            semantic_description: None,
         }
     }
 
@@ -342,6 +346,7 @@ mod tests {
                 path: "tools/echo.wasm".into(),
                 capabilities: WasmCapabilities::default(),
             }),
+            semantic_description: None,
         })
         .unwrap();
 
@@ -369,6 +374,7 @@ mod tests {
                     ..Default::default()
                 },
             }),
+            semantic_description: None,
         })
         .unwrap();
 
@@ -376,5 +382,24 @@ mod tests {
         let wasm = def.wasm.as_ref().unwrap();
         assert_eq!(wasm.path, "tools/my_tool.wasm");
         assert!(wasm.capabilities.stdio);
+    }
+
+    // ── Semantic Routing: semantic_description field ──
+
+    #[test]
+    fn listener_def_semantic_description() {
+        let def = sample_listener("echo");
+        // Defaults to None
+        assert!(def.semantic_description.is_none());
+
+        // Can be set explicitly
+        let def_with = ListenerDef {
+            semantic_description: Some("This tool echoes messages back.".into()),
+            ..sample_listener("echo")
+        };
+        assert_eq!(
+            def_with.semantic_description.as_deref(),
+            Some("This tool echoes messages back.")
+        );
     }
 }

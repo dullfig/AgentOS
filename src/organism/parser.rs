@@ -45,6 +45,8 @@ struct ListenerYaml {
     librarian: bool,
     #[serde(default)]
     wasm: Option<WasmYaml>,
+    #[serde(default)]
+    semantic_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,6 +170,7 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
             model: l.model,
             ports,
             librarian: l.librarian,
+            semantic_description: l.semantic_description,
             wasm: l.wasm.map(|w| {
                 let caps = match w.capabilities {
                     Some(c) => WasmCapabilities {
@@ -560,5 +563,57 @@ profiles:
         assert!(wasm.capabilities.filesystem.is_empty());
         assert!(wasm.capabilities.env_vars.is_empty());
         assert!(!wasm.capabilities.stdio);
+    }
+
+    // ── Semantic Routing: semantic_description parsing ──
+
+    #[test]
+    fn parse_semantic_description_yaml() {
+        let yaml = r#"
+organism:
+  name: test-routing
+
+listeners:
+  - name: file-ops
+    payload_class: tools.FileOpsRequest
+    handler: tools.file_ops.handle
+    description: "File operations"
+    semantic_description: |
+      This tool reads, writes, and manages files on the local filesystem.
+      Use it when you need to examine source code or read configuration files.
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [file-ops]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let fops = org.get_listener("file-ops").unwrap();
+        let desc = fops.semantic_description.as_ref().unwrap();
+        assert!(desc.contains("reads, writes, and manages files"));
+    }
+
+    #[test]
+    fn parse_missing_semantic_description() {
+        let yaml = r#"
+organism:
+  name: test-no-routing
+
+listeners:
+  - name: shell
+    payload_class: tools.ShellRequest
+    handler: tools.shell.handle
+    description: "Shell execution"
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [shell]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let shell = org.get_listener("shell").unwrap();
+        assert!(shell.semantic_description.is_none());
     }
 }

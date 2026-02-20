@@ -28,6 +28,19 @@ pub enum PipelineEvent {
         op: KernelOpType,
         thread_id: String,
     },
+    /// Semantic router matched a tool.
+    SemanticMatch {
+        thread_id: String,
+        tool_name: String,
+        score: f32,
+    },
+    /// Form-filler attempt.
+    FormFillAttempt {
+        thread_id: String,
+        tool_name: String,
+        model: String,
+        success: bool,
+    },
 }
 
 /// Kernel operation types for event reporting.

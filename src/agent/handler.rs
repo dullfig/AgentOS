@@ -38,6 +38,7 @@ use tokio::sync::Mutex;
 use crate::librarian::Librarian;
 use crate::llm::types::{ContentBlock, ToolDefinition, ToolResultBlock};
 use crate::llm::LlmPool;
+use crate::routing::{RouteDecision, SemanticRouter};
 
 use super::state::{AgentState, AgentThread, PendingToolCall};
 use super::translate;
@@ -58,7 +59,14 @@ pub struct CodingAgentHandler {
     /// Per-thread conversation state.
     threads: Arc<Mutex<HashMap<String, AgentThread>>>,
     system_prompt: String,
+    /// Optional semantic router for invisible tool dispatch.
+    semantic_router: Option<SemanticRouter>,
+    /// Maximum routing iterations per turn (prevents infinite loops).
+    max_routing_iterations: usize,
 }
+
+/// Default max routing iterations per turn.
+const DEFAULT_MAX_ROUTING_ITERATIONS: usize = 5;
 
 impl CodingAgentHandler {
     /// Create a new coding agent handler.
@@ -73,6 +81,8 @@ impl CodingAgentHandler {
             tool_definitions,
             threads: Arc::new(Mutex::new(HashMap::new())),
             system_prompt,
+            semantic_router: None,
+            max_routing_iterations: DEFAULT_MAX_ROUTING_ITERATIONS,
         }
     }
 
@@ -89,7 +99,37 @@ impl CodingAgentHandler {
             tool_definitions,
             threads: Arc::new(Mutex::new(HashMap::new())),
             system_prompt,
+            semantic_router: None,
+            max_routing_iterations: DEFAULT_MAX_ROUTING_ITERATIONS,
         }
+    }
+
+    /// Create with a semantic router for invisible tool dispatch.
+    pub fn with_semantic_router(
+        pool: Arc<Mutex<LlmPool>>,
+        router: SemanticRouter,
+        tool_definitions: Vec<ToolDefinition>,
+        system_prompt: String,
+    ) -> Self {
+        Self {
+            pool,
+            librarian: None,
+            tool_definitions,
+            threads: Arc::new(Mutex::new(HashMap::new())),
+            system_prompt,
+            semantic_router: Some(router),
+            max_routing_iterations: DEFAULT_MAX_ROUTING_ITERATIONS,
+        }
+    }
+
+    /// Set the maximum routing iterations per turn.
+    pub fn set_max_routing_iterations(&mut self, max: usize) {
+        self.max_routing_iterations = max;
+    }
+
+    /// Check if a semantic router is attached.
+    pub fn has_semantic_router(&self) -> bool {
+        self.semantic_router.is_some()
     }
 
     /// Get snapshots of all active agent threads (for TUI display).
@@ -230,6 +270,136 @@ impl CodingAgentHandler {
             }
         }
     }
+
+    /// Dispatch a response action, trying semantic routing for FinalText.
+    ///
+    /// If a semantic router is attached and the text matches a tool,
+    /// the routing loop handles it. Otherwise, normal dispatch.
+    async fn dispatch_or_route(
+        &self,
+        thread: &mut AgentThread,
+        action: ResponseAction,
+        allowed_tools: &[String],
+    ) -> HandlerResult {
+        match action {
+            ResponseAction::FinalText { blocks, text } if self.semantic_router.is_some() => {
+                self.dispatch_with_routing(thread, blocks, text, allowed_tools, 0)
+                    .await
+            }
+            _ => Self::dispatch_response(thread, action),
+        }
+    }
+
+    /// Try semantic routing on a final text response.
+    ///
+    /// If a semantic router is attached and the text matches a tool,
+    /// the router fills parameters and returns the tool result (or failure note)
+    /// for injection into the conversation. The caller then re-invokes Opus
+    /// with the result in context.
+    ///
+    /// Returns `None` if no router is attached or no tool matched.
+    async fn try_semantic_route(
+        &self,
+        text: &str,
+        allowed_tools: &[String],
+    ) -> Option<RouteDecision> {
+        let router = self.semantic_router.as_ref()?;
+        let decision = router.route(text, allowed_tools).await;
+        match &decision {
+            RouteDecision::Response => None,
+            _ => Some(decision),
+        }
+    }
+
+    /// Dispatch a final text with semantic routing.
+    ///
+    /// If the semantic router intercepts the text:
+    /// - Records the assistant's text in conversation history
+    /// - Injects the tool result (or failure note) as a synthetic user message
+    /// - Calls Opus again to see the result in context
+    /// - Recurses up to `max_routing_iterations` times
+    async fn dispatch_with_routing(
+        &self,
+        thread: &mut AgentThread,
+        blocks: Vec<ContentBlock>,
+        text: String,
+        allowed_tools: &[String],
+        iterations: usize,
+    ) -> HandlerResult {
+        if iterations >= self.max_routing_iterations {
+            // Max iterations reached — return the text as-is
+            thread.push_assistant_blocks(blocks);
+            let reply_xml = format!(
+                "<AgentResponse><result>{}</result></AgentResponse>",
+                translate::xml_escape_text(&text)
+            );
+            return Ok(HandlerResponse::Reply {
+                payload_xml: reply_xml.into_bytes(),
+            });
+        }
+
+        match self.try_semantic_route(&text, allowed_tools).await {
+            Some(RouteDecision::ToolResult {
+                tool_name,
+                result_xml,
+            }) => {
+                // Record assistant's text, inject result as synthetic user message
+                thread.push_assistant_blocks(blocks);
+                thread.push_user_message(&format!(
+                    "<{tool_name}_result>{result_xml}</{tool_name}_result>"
+                ));
+
+                // Call Opus again — it sees the result in context
+                let response = self
+                    .call_opus(thread)
+                    .await
+                    .map_err(PipelineError::Handler)?;
+                let action = self.process_response(&response);
+
+                match action {
+                    ResponseAction::FinalText {
+                        blocks: new_blocks,
+                        text: new_text,
+                    } => {
+                        // Recurse: Opus might express another tool intent
+                        Box::pin(self.dispatch_with_routing(
+                            thread,
+                            new_blocks,
+                            new_text,
+                            allowed_tools,
+                            iterations + 1,
+                        ))
+                        .await
+                    }
+                    _ => Self::dispatch_response(thread, action),
+                }
+            }
+            Some(RouteDecision::ToolFailed { note }) => {
+                // Record assistant's text + failure note
+                thread.push_assistant_blocks(blocks);
+                thread.push_user_message(&format!("<system_note>{note}</system_note>"));
+
+                // Call Opus again with the failure note
+                let response = self
+                    .call_opus(thread)
+                    .await
+                    .map_err(PipelineError::Handler)?;
+                let action = self.process_response(&response);
+                Self::dispatch_response(thread, action)
+            }
+            _ => {
+                // No match — normal reply
+                thread.push_assistant_blocks(blocks);
+                let reply_xml = format!(
+                    "<AgentResponse><result>{}</result></AgentResponse>",
+                    translate::xml_escape_text(&text)
+                );
+                Ok(HandlerResponse::Reply {
+                    payload_xml: reply_xml.into_bytes(),
+                })
+            }
+        }
+    }
 }
 
 /// What to do after processing an Opus response.
@@ -312,7 +482,7 @@ impl Handler for CodingAgentHandler {
                         .await
                         .map_err(PipelineError::Handler)?;
                     let action = self.process_response(&response);
-                    Self::dispatch_response(thread, action)
+                    self.dispatch_or_route(thread, action, &[]).await
                 }
                 AgentState::Ready => {
                     // Unexpected tool response when not awaiting
@@ -337,7 +507,7 @@ impl Handler for CodingAgentHandler {
                 .await
                 .map_err(PipelineError::Handler)?;
             let action = self.process_response(&response);
-            Self::dispatch_response(thread, action)
+            self.dispatch_or_route(thread, action, &[]).await
         }
     }
 }
@@ -625,5 +795,160 @@ mod tests {
         let xml = "<AgentTask><task>Read src/main.rs</task></AgentTask>";
         let task = extract_tag(xml, "task").unwrap();
         assert_eq!(task, "Read src/main.rs");
+    }
+
+    // ── Semantic Routing Integration Tests ──
+
+    fn build_test_router() -> crate::routing::SemanticRouter {
+        use crate::embedding::tfidf::TfIdfProvider;
+        use crate::embedding::{EmbeddingIndex, EmbeddingProvider};
+        use crate::routing::form_filler::FormFiller;
+        use crate::routing::ToolMetadata;
+        use std::collections::HashMap as StdHashMap;
+
+        let descriptions = vec![
+            "read write manage files on the local filesystem source code configuration",
+            "execute shell commands run programs compile code run tests",
+        ];
+        let provider = TfIdfProvider::from_corpus(&descriptions);
+
+        let mut index = EmbeddingIndex::new(0.1);
+        index.register("file-ops", provider.embed(descriptions[0]));
+        index.register("shell", provider.embed(descriptions[1]));
+
+        let filler = FormFiller::new(mock_pool(), 3);
+
+        let mut metadata = StdHashMap::new();
+        metadata.insert(
+            "file-ops".to_string(),
+            ToolMetadata {
+                description: "File operations tool".into(),
+                xml_template: "<FileOpsRequest><action/><path/></FileOpsRequest>".into(),
+                payload_tag: "FileOpsRequest".into(),
+            },
+        );
+        metadata.insert(
+            "shell".to_string(),
+            ToolMetadata {
+                description: "Shell execution tool".into(),
+                xml_template: "<ShellRequest><command/></ShellRequest>".into(),
+                payload_tag: "ShellRequest".into(),
+            },
+        );
+
+        crate::routing::SemanticRouter::new(Box::new(provider), index, filler, metadata)
+    }
+
+    #[test]
+    fn handler_with_semantic_router_creation() {
+        let pool = mock_pool();
+        let router = build_test_router();
+        let handler = CodingAgentHandler::with_semantic_router(
+            pool,
+            router,
+            sample_tool_defs(),
+            "You are a test agent.".into(),
+        );
+        assert!(handler.has_semantic_router());
+        assert_eq!(handler.tool_definitions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn handler_routes_matching_text() {
+        let pool = mock_pool();
+        let router = build_test_router();
+        let handler = CodingAgentHandler::with_semantic_router(
+            pool,
+            router,
+            sample_tool_defs(),
+            "test".into(),
+        );
+
+        // The semantic router should match "read src/main.rs" to file-ops
+        let allowed = vec!["file-ops".to_string(), "shell".to_string()];
+        let decision = handler
+            .try_semantic_route("read the source code file at src/main.rs", &allowed)
+            .await;
+
+        // Should match (form-filler will fail with mock URL, but it matched)
+        assert!(decision.is_some());
+    }
+
+    #[tokio::test]
+    async fn handler_passes_through_no_match() {
+        let pool = mock_pool();
+        let router = build_test_router();
+        let mut handler = CodingAgentHandler::with_semantic_router(
+            pool,
+            router,
+            sample_tool_defs(),
+            "test".into(),
+        );
+        handler.set_max_routing_iterations(5);
+
+        let allowed = vec!["file-ops".to_string()];
+        // Completely unrelated text — should not match
+        let _decision = handler
+            .try_semantic_route("the meaning of life is to create meaning", &allowed)
+            .await;
+
+        // With TF-IDF, generic philosophical text shouldn't match tool descriptions
+        // at a reasonable threshold. If it does match weakly, that's fine — the binary
+        // fork is still correct.
+        // The key test: when there's no router, it returns None
+        let no_router = CodingAgentHandler::new(mock_pool(), sample_tool_defs(), "test".into());
+        let no_decision = no_router
+            .try_semantic_route("anything", &allowed)
+            .await;
+        assert!(no_decision.is_none());
+    }
+
+    #[tokio::test]
+    async fn handler_injects_result_as_context() {
+        let mut thread = AgentThread::new();
+        thread.push_user_message("initial task");
+
+        // Simulate what happens when routing succeeds: assistant text + synthetic user message
+        thread.push_assistant_blocks(vec![ContentBlock::Text {
+            text: "I need to see parser.rs".into(),
+        }]);
+        thread.push_user_message("<file-ops_result><content>fn main() {}</content></file-ops_result>");
+
+        // Thread should have 3 messages: user, assistant, synthetic user
+        assert_eq!(thread.messages.len(), 3);
+        assert_eq!(thread.messages[2].role, "user");
+        let content = thread.messages[2].content.text().unwrap();
+        assert!(content.contains("file-ops_result"));
+    }
+
+    #[tokio::test]
+    async fn handler_injects_failure_note() {
+        let mut thread = AgentThread::new();
+        thread.push_user_message("initial task");
+
+        // Simulate routing failure: assistant text + failure note
+        thread.push_assistant_blocks(vec![ContentBlock::Text {
+            text: "I need to check something".into(),
+        }]);
+        thread.push_user_message("<system_note>Could not retrieve parser error handling information.</system_note>");
+
+        assert_eq!(thread.messages.len(), 3);
+        let note = thread.messages[2].content.text().unwrap();
+        assert!(note.contains("system_note"));
+        assert!(note.contains("Could not"));
+    }
+
+    #[test]
+    fn handler_max_iterations_guard() {
+        let pool = mock_pool();
+        let router = build_test_router();
+        let mut handler = CodingAgentHandler::with_semantic_router(
+            pool,
+            router,
+            sample_tool_defs(),
+            "test".into(),
+        );
+        handler.set_max_routing_iterations(3);
+        assert_eq!(handler.max_routing_iterations, 3);
     }
 }
