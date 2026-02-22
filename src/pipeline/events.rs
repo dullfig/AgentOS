@@ -46,6 +46,23 @@ pub enum PipelineEvent {
         thread_id: String,
         text: String,
     },
+    /// Agent is about to call the LLM (thinking).
+    AgentThinking {
+        thread_id: String,
+    },
+    /// A tool call has been dispatched.
+    ToolDispatched {
+        thread_id: String,
+        tool_name: String,
+        detail: String,
+    },
+    /// A tool call completed (result received).
+    ToolCompleted {
+        thread_id: String,
+        tool_name: String,
+        success: bool,
+        detail: String,
+    },
 }
 
 /// Kernel operation types for event reporting.

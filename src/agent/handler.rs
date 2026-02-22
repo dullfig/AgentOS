@@ -153,6 +153,13 @@ impl CodingAgentHandler {
         }
     }
 
+    /// Emit a pipeline event if an event sender is attached.
+    fn maybe_emit(&self, event: PipelineEvent) {
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(event);
+        }
+    }
+
     /// Emit an error as an AgentResponse event so the TUI can display it.
     fn emit_error(&self, thread_id: &str, error: &str) {
         if let Some(ref tx) = self.event_tx {
@@ -210,7 +217,7 @@ impl CodingAgentHandler {
 
         let pool = self.pool.lock().await;
         pool.complete_with_tools(
-            Some("opus"),
+            None, // use pool's default model (set by --model CLI flag)
             thread.messages.clone(),
             4096,
             Some(&system),
@@ -482,6 +489,23 @@ impl Handler for CodingAgentHandler {
                         .get(current_index)
                         .map(|p| p.tool_use_id.clone())
                         .unwrap_or_default();
+                    // Lifecycle: tool completed
+                    let completed_tool = pending
+                        .get(current_index)
+                        .map(|p| p.tool_name.clone())
+                        .unwrap_or_default();
+                    let completed_detail = if is_error {
+                        result_content.chars().take(80).collect::<String>()
+                    } else {
+                        String::new()
+                    };
+                    self.maybe_emit(PipelineEvent::ToolCompleted {
+                        thread_id: thread_id.clone(),
+                        tool_name: completed_tool,
+                        success: !is_error,
+                        detail: completed_detail,
+                    });
+
                     collected.push(ToolResultBlock {
                         tool_use_id,
                         content: result_content,
@@ -496,6 +520,14 @@ impl Handler for CodingAgentHandler {
                         let xml =
                             translate::tool_call_to_xml(&next.tool_name, &next.input);
                         let next_name = next.tool_name.clone();
+
+                        // Lifecycle: tool dispatched (next in batch)
+                        self.maybe_emit(PipelineEvent::ToolDispatched {
+                            thread_id: thread_id.clone(),
+                            tool_name: next.tool_name.clone(),
+                            detail: summarize_tool_input(&next.tool_name, &next.input),
+                        });
+
                         thread.state = AgentState::AwaitingTools {
                             assistant_blocks,
                             pending,
@@ -513,6 +545,11 @@ impl Handler for CodingAgentHandler {
                     thread.push_tool_results(collected);
                     thread.state = AgentState::Ready;
 
+                    // Lifecycle: thinking (after all tools collected)
+                    self.maybe_emit(PipelineEvent::AgentThinking {
+                        thread_id: thread_id.clone(),
+                    });
+
                     let response = match self.call_opus(thread).await {
                         Ok(r) => r,
                         Err(e) => {
@@ -521,6 +558,18 @@ impl Handler for CodingAgentHandler {
                         }
                     };
                     let action = self.process_response(&response);
+
+                    // Lifecycle: tool dispatched (after re-call from tool-response path)
+                    if let ResponseAction::ToolCalls { ref pending, .. } = action {
+                        if let Some(first) = pending.first() {
+                            self.maybe_emit(PipelineEvent::ToolDispatched {
+                                thread_id: thread_id.clone(),
+                                tool_name: first.tool_name.clone(),
+                                detail: summarize_tool_input(&first.tool_name, &first.input),
+                            });
+                        }
+                    }
+
                     let result = self.dispatch_or_route(thread, action, &[]).await;
                     self.maybe_emit_response(&thread_id, &result);
                     result
@@ -543,6 +592,11 @@ impl Handler for CodingAgentHandler {
             thread.push_user_message(&task);
             thread.state = AgentState::Ready;
 
+            // Lifecycle: thinking (new task)
+            self.maybe_emit(PipelineEvent::AgentThinking {
+                thread_id: thread_id.clone(),
+            });
+
             let response = match self.call_opus(thread).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -551,9 +605,61 @@ impl Handler for CodingAgentHandler {
                 }
             };
             let action = self.process_response(&response);
+
+            // Lifecycle: tool dispatched (first tool from new task)
+            if let ResponseAction::ToolCalls { ref pending, .. } = action {
+                if let Some(first) = pending.first() {
+                    self.maybe_emit(PipelineEvent::ToolDispatched {
+                        thread_id: thread_id.clone(),
+                        tool_name: first.tool_name.clone(),
+                        detail: summarize_tool_input(&first.tool_name, &first.input),
+                    });
+                }
+            }
+
             let result = self.dispatch_or_route(thread, action, &[]).await;
             self.maybe_emit_response(&thread_id, &result);
             result
+        }
+    }
+}
+
+/// Summarize tool input JSON into a short detail string for activity trace.
+pub(crate) fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
+    match tool_name {
+        "file-read" | "file-write" | "file-edit" => input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "command-exec" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                if s.len() > 60 {
+                    format!("{}...", &s[..57])
+                } else {
+                    s.to_string()
+                }
+            })
+            .unwrap_or_default(),
+        "glob-search" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "grep-search" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => {
+            let s = input.to_string();
+            if s.len() > 60 {
+                format!("{}...", &s[..57])
+            } else {
+                s
+            }
         }
     }
 }
@@ -991,6 +1097,45 @@ mod tests {
         let note = thread.messages[2].content.text().unwrap();
         assert!(note.contains("system_note"));
         assert!(note.contains("Could not"));
+    }
+
+    // ── summarize_tool_input tests ──
+
+    #[test]
+    fn summarize_file_read() {
+        let input = serde_json::json!({"path": "src/main.rs"});
+        assert_eq!(summarize_tool_input("file-read", &input), "src/main.rs");
+    }
+
+    #[test]
+    fn summarize_command_exec() {
+        let input = serde_json::json!({"command": "cargo test --lib"});
+        assert_eq!(
+            summarize_tool_input("command-exec", &input),
+            "cargo test --lib"
+        );
+    }
+
+    #[test]
+    fn summarize_command_exec_truncates() {
+        let long_cmd = "a".repeat(100);
+        let input = serde_json::json!({"command": long_cmd});
+        let result = summarize_tool_input("command-exec", &input);
+        assert!(result.len() <= 63); // 57 + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn summarize_grep_search() {
+        let input = serde_json::json!({"pattern": "fn main"});
+        assert_eq!(summarize_tool_input("grep-search", &input), "fn main");
+    }
+
+    #[test]
+    fn summarize_unknown_tool() {
+        let input = serde_json::json!({"foo": "bar"});
+        let result = summarize_tool_input("unknown-tool", &input);
+        assert!(result.contains("foo"));
     }
 
     #[test]

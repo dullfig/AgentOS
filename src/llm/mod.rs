@@ -96,6 +96,11 @@ impl LlmPool {
         self.client.messages(&request).await
     }
 
+    /// Change the default model at runtime (e.g. from `/model` command).
+    pub fn set_default_model(&mut self, alias: &str) {
+        self.default_model = resolve_model(alias).to_string();
+    }
+
     /// Get the default model (resolved to full ID).
     pub fn default_model(&self) -> &str {
         &self.default_model

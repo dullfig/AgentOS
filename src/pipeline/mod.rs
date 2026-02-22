@@ -52,6 +52,8 @@ pub struct AgentPipeline {
     security: SecurityResolver,
     /// Broadcast channel for pipeline events (TUI, observers).
     event_tx: broadcast::Sender<PipelineEvent>,
+    /// LLM pool (shared with TUI for `/model` command).
+    llm_pool: Option<Arc<Mutex<LlmPool>>>,
 }
 
 impl AgentPipeline {
@@ -84,6 +86,7 @@ impl AgentPipeline {
             organism,
             security,
             event_tx,
+            llm_pool: None,
         })
     }
 
@@ -204,6 +207,11 @@ impl AgentPipeline {
     /// Get a handle to the kernel (for direct operations).
     pub fn kernel(&self) -> Arc<Mutex<Kernel>> {
         self.kernel.clone()
+    }
+
+    /// Get the LLM pool (for TUI `/model` command).
+    pub fn llm_pool(&self) -> Option<Arc<Mutex<LlmPool>>> {
+        self.llm_pool.clone()
     }
 
     /// Reload organism configuration and rebuild security tables.
@@ -502,7 +510,7 @@ impl AgentPipelineBuilder {
 
     /// Attach a CodingAgent and register the `coding-agent` handler.
     ///
-    /// Requires an LLM pool to be attached first (the agent calls Opus).
+    /// Requires an LLM pool to be attached first (the agent calls the pool's default model).
     /// The organism config must have a listener named `coding-agent`.
     /// Automatically collects tool definitions from the listener's peers.
     /// If WASM tools are loaded, their definitions are included automatically.
@@ -598,6 +606,7 @@ impl AgentPipelineBuilder {
             organism: self.organism,
             security,
             event_tx: self.event_tx,
+            llm_pool: self.llm_pool.clone(),
         })
     }
 }

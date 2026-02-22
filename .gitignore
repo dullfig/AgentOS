@@ -1,1 +1,4 @@
 /target
+/.bestcode
+/.claude
+/tools/*/target
