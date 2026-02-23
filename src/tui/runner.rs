@@ -317,12 +317,7 @@ profiles:
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let mut app = TuiApp::new();
-        // Type "Read README.md" into textarea
-        for c in "Read README.md".chars() {
-            app.input_textarea.input(crossterm::event::Event::Key(
-                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            ));
-        }
+        app.set_input_text("Read README.md");
 
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Enter,
@@ -330,18 +325,18 @@ profiles:
         )));
 
         assert_eq!(app.pending_task, Some("Read README.md".into()));
-        assert_eq!(app.input_textarea.lines(), [""]);
+        assert!(app.input_text().is_empty());
         assert_eq!(app.chat_log.len(), 1);
         assert_eq!(app.chat_log[0].role, "user");
     }
 
     #[test]
-    fn typing_goes_to_textarea() {
+    fn typing_goes_to_input_editor() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let mut app = TuiApp::new();
 
-        // Type "hi" — goes directly to textarea
+        // Type "hi" — goes directly to input editor
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Char('h'),
             KeyModifiers::NONE,
@@ -350,34 +345,29 @@ profiles:
             KeyCode::Char('i'),
             KeyModifiers::NONE,
         )));
-        assert_eq!(app.input_textarea.lines(), ["hi"]);
+        assert!(app.input_text().contains("hi"));
 
         // Backspace
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Backspace,
             KeyModifiers::NONE,
         )));
-        assert_eq!(app.input_textarea.lines(), ["h"]);
+        assert_eq!(app.input_text(), "h");
     }
 
     #[test]
-    fn esc_clears_textarea() {
+    fn esc_clears_input() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let mut app = TuiApp::new();
-        // Type some text into textarea
-        for c in "some text".chars() {
-            app.input_textarea.input(crossterm::event::Event::Key(
-                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            ));
-        }
+        app.set_input_text("some text");
 
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Esc,
             KeyModifiers::NONE,
         )));
 
-        assert_eq!(app.input_textarea.lines(), [""]);
+        assert!(app.input_text().is_empty());
         assert!(!app.should_quit);
     }
 

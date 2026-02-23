@@ -23,9 +23,7 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             app.active_tab = tab;
         }
         MenuAction::NewTask => {
-            // Focus the input textarea (clear any existing text)
-            app.input_textarea.select_all();
-            app.input_textarea.cut();
+            app.clear_input();
         }
         MenuAction::Quit => {
             app.should_quit = true;
@@ -65,20 +63,14 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
     }
 }
 
-/// Get the current input text from the textarea (first line).
+/// Get the current input text (first line).
 fn current_input(app: &TuiApp) -> String {
-    app.input_textarea.lines().first().cloned().unwrap_or_default()
+    app.input_text()
 }
 
-/// Replace the textarea content with new text and move cursor to end.
+/// Replace the input editor content with new text and move cursor to end.
 fn set_input(app: &mut TuiApp, text: &str) {
-    app.input_textarea.select_all();
-    app.input_textarea.cut();
-    for c in text.chars() {
-        app.input_textarea.input(crossterm::event::Event::Key(
-            KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-        ));
-    }
+    app.set_input_text(text);
 }
 
 /// Handle a key event, mutating app state.
@@ -193,19 +185,51 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                         }
                     }
                 }
-                // Esc on YAML tab clears validation status (if any), else standard behavior
+                // Esc on YAML tab: dismiss popups, then clear status, then clear textarea
                 KeyCode::Esc => {
-                    if app.yaml_status.is_some() {
+                    if app.completion_visible {
+                        app.completion_visible = false;
+                    } else if app.hover_info.is_some() {
+                        app.hover_info = None;
+                    } else if app.yaml_status.is_some() {
                         app.yaml_status = None;
                     } else {
-                        app.input_textarea.select_all();
-                        app.input_textarea.cut();
+                        app.clear_input();
                     }
+                }
+                // Ctrl+Space triggers completions
+                KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.trigger_completions();
+                }
+                // Ctrl+H triggers hover
+                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.trigger_hover();
+                }
+                // Completion popup navigation
+                KeyCode::Up if app.completion_visible => {
+                    if app.completion_index > 0 {
+                        app.completion_index -= 1;
+                    }
+                }
+                KeyCode::Down if app.completion_visible => {
+                    if app.completion_index + 1 < app.completion_items.len() {
+                        app.completion_index += 1;
+                    }
+                }
+                KeyCode::Tab | KeyCode::Enter if app.completion_visible => {
+                    app.accept_completion();
                 }
                 // Everything else goes to the code editor
                 _ => {
                     let area = app.yaml_area;
                     let _ = editor.input(key, &area);
+                    // Dismiss hover and completion on any edit
+                    app.hover_info = None;
+                    if app.completion_visible {
+                        app.completion_visible = false;
+                    }
+                    // Schedule debounced diagnostics (4 ticks ≈ 1s at 4Hz tick rate)
+                    app.diag_debounce = 4;
                 }
             }
             return;
@@ -260,8 +284,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                         }
                     }
                     KeyCode::Esc => {
-                        app.input_textarea.select_all();
-                        app.input_textarea.cut();
+                        app.clear_input();
                         app.command_popup_index = 0;
                         return;
                     }
@@ -310,15 +333,14 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     ThreadsFocus::ContextTree => ThreadsFocus::ThreadList,
                 };
             } else {
-                // Normal Tab → forward to textarea
-                app.input_textarea
-                    .input(crossterm::event::Event::Key(key));
+                // Normal Tab → forward to input editor
+                let area = app.input_area;
+                let _ = app.input_editor.input(key, &area);
             }
         }
         // Clear input
         KeyCode::Esc => {
-            app.input_textarea.select_all();
-            app.input_textarea.cut();
+            app.clear_input();
         }
         // Arrow keys dispatched based on active tab + focus
         KeyCode::Up if app.active_tab == ActiveTab::Messages => {
@@ -437,10 +459,10 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 app.message_auto_scroll = true;
             }
         },
-        // Everything else → textarea
+        // Everything else → input editor
         _ => {
-            app.input_textarea
-                .input(crossterm::event::Event::Key(key));
+            let area = app.input_area;
+            let _ = app.input_editor.input(key, &area);
         }
     }
 }
@@ -450,11 +472,7 @@ mod tests {
     use super::*;
 
     fn type_text(app: &mut TuiApp, text: &str) {
-        for c in text.chars() {
-            app.input_textarea.input(crossterm::event::Event::Key(
-                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            ));
-        }
+        app.set_input_text(text);
     }
 
     #[test]
@@ -467,11 +485,11 @@ mod tests {
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         );
 
-        assert_eq!(app.input_textarea.lines(), ["/model "]);
+        assert_eq!(app.input_text(), "/model ");
     }
 
     #[test]
-    fn tab_no_slash_forwards_to_textarea() {
+    fn tab_no_slash_forwards_to_editor() {
         let mut app = TuiApp::new();
         type_text(&mut app, "hello");
 
@@ -480,9 +498,8 @@ mod tests {
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         );
 
-        // Tab should be forwarded to textarea (inserts tab or similar)
-        // Main assertion: no crash, input still contains "hello"
-        let text = app.input_textarea.lines().join("");
+        // Tab forwarded to input editor — input still contains "hello"
+        let text = app.input_text();
         assert!(text.contains("hello"));
     }
 
@@ -534,15 +551,15 @@ mod tests {
     }
 
     #[test]
-    fn tab_on_messages_tab_goes_to_textarea() {
+    fn tab_on_messages_tab_goes_to_editor() {
         let mut app = TuiApp::new();
         app.active_tab = ActiveTab::Messages;
         type_text(&mut app, "hello");
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
-        // Tab forwarded to textarea (not focus cycling)
-        let text = app.input_textarea.lines().join("");
+        // Tab forwarded to input editor (not focus cycling)
+        let text = app.input_text();
         assert!(text.contains("hello"));
     }
 

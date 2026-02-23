@@ -52,7 +52,20 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     }
 
     if input_height > 0 {
-        f.render_widget(&app.input_textarea, outer[3]);
+        // Cache input area for key routing
+        app.input_area = outer[3];
+        // Render the input editor with a border overlay
+        let input_block = Block::default()
+            .title(" Task ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
+        let input_inner = input_block.inner(outer[3]);
+        f.render_widget(input_block, outer[3]);
+        f.render_widget(&app.input_editor, input_inner);
+        // Position cursor within the input editor
+        if let Some((x, y)) = app.input_editor.get_visible_cursor(&input_inner) {
+            f.set_cursor_position(Position::new(x, y));
+        }
         draw_ghost_text(f, app, outer[3]);
         draw_command_popup(f, app, outer[3]);
     }
@@ -140,7 +153,7 @@ fn draw_tab_bar(f: &mut Frame, app: &TuiApp, area: Rect) {
 
 /// Render command popup above the input bar when typing `/`.
 fn draw_command_popup(f: &mut Frame, app: &TuiApp, input_area: Rect) {
-    let input = app.input_textarea.lines().first().cloned().unwrap_or_default();
+    let input = app.input_text();
     if !input.starts_with('/') || input.contains(' ') {
         return;
     }
@@ -202,12 +215,14 @@ fn draw_command_popup(f: &mut Frame, app: &TuiApp, input_area: Rect) {
 
 /// Render ghost-text autocomplete overlay after the cursor in the input bar.
 fn draw_ghost_text(f: &mut Frame, app: &TuiApp, area: Rect) {
-    let input = app.input_textarea.lines().first().cloned().unwrap_or_default();
+    let input = app.input_text();
     if let Some(suffix) = super::commands::ghost_suffix(&input) {
-        let (row, col) = app.input_textarea.cursor();
-        // +1 for left border on both axes
-        let x = area.x + col as u16 + 1;
-        let y = area.y + row as u16 + 1;
+        let inner = Block::default().borders(Borders::ALL).inner(area);
+        let cursor_pos = app.input_editor.get_visible_cursor(&inner);
+        let (x, y) = match cursor_pos {
+            Some((cx, cy)) => (cx, cy),
+            None => return,
+        };
         let max_width = area.right().saturating_sub(x);
         if max_width > 0 {
             let ghost = Paragraph::new(Span::styled(
@@ -533,10 +548,28 @@ fn draw_yaml_editor(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         app.yaml_area = area;
         f.render_widget(editor, area);
         // Position cursor within the editor
-        if let Some((x, y)) = editor.get_visible_cursor(&area) {
+        let cursor_pos = editor.get_visible_cursor(&area);
+        if let Some((x, y)) = cursor_pos {
             f.set_cursor_position(Position::new(x, y));
         }
-        // Show validation status in the bottom-right of the area
+
+        // Show diagnostic summary in the bottom-left
+        if !app.diag_summary.is_empty() {
+            let summary_area = Rect::new(
+                area.x + 1,
+                area.y + area.height.saturating_sub(1),
+                app.diag_summary.len() as u16 + 2,
+                1,
+            );
+            let style = if app.diag_summary.contains("error") {
+                Style::default().fg(Color::Red).bg(Color::Black)
+            } else {
+                Style::default().fg(Color::Yellow).bg(Color::Black)
+            };
+            f.render_widget(Paragraph::new(Span::styled(&app.diag_summary, style)), summary_area);
+        }
+
+        // Show validation status (from Ctrl+S) in the bottom-right of the area
         if let Some(ref status) = app.yaml_status {
             let msg = if status.len() > (area.width as usize).saturating_sub(4) {
                 &status[..area.width as usize - 4]
@@ -554,6 +587,16 @@ fn draw_yaml_editor(f: &mut Frame, app: &mut TuiApp, area: Rect) {
                 status_area,
             );
         }
+
+        // Completion popup
+        if app.completion_visible && !app.completion_items.is_empty() {
+            draw_yaml_completion_popup(f, app, cursor_pos, area);
+        }
+
+        // Hover overlay
+        if let Some(ref hover) = app.hover_info {
+            draw_yaml_hover_overlay(f, hover, cursor_pos, area);
+        }
     } else {
         let block = Block::default()
             .title(" YAML ")
@@ -566,6 +609,115 @@ fn draw_yaml_editor(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         .block(block);
         f.render_widget(para, area);
     }
+}
+
+/// Render completion popup near the cursor in the YAML editor.
+fn draw_yaml_completion_popup(
+    f: &mut Frame,
+    app: &TuiApp,
+    cursor_pos: Option<(u16, u16)>,
+    area: Rect,
+) {
+    let (cx, cy) = cursor_pos.unwrap_or((area.x + 2, area.y + 2));
+    let items = &app.completion_items;
+    let popup_width = items
+        .iter()
+        .map(|i| i.label.len() + 2)
+        .max()
+        .unwrap_or(20)
+        .min(40) as u16 + 2; // +2 for borders
+    let popup_height = (items.len() as u16 + 2).min(10);
+
+    // Position: below cursor if space, else above
+    let popup_y = if cy + 1 + popup_height <= area.bottom() {
+        cy + 1
+    } else {
+        cy.saturating_sub(popup_height)
+    };
+    let popup_x = cx.min(area.right().saturating_sub(popup_width));
+
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear background
+    f.render_widget(
+        Paragraph::new("").style(Style::default().bg(Color::Black)),
+        popup_area,
+    );
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().bg(Color::Black));
+
+    let lines: Vec<Line> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let is_selected = i == app.completion_index;
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(&item.label, style))
+        })
+        .collect();
+
+    let para = Paragraph::new(lines).block(block);
+    f.render_widget(para, popup_area);
+}
+
+/// Render hover info overlay near the cursor in the YAML editor.
+fn draw_yaml_hover_overlay(
+    f: &mut Frame,
+    hover: &crate::lsp::HoverInfo,
+    cursor_pos: Option<(u16, u16)>,
+    area: Rect,
+) {
+    let (cx, cy) = cursor_pos.unwrap_or((area.x + 2, area.y + 2));
+    let text = &hover.content;
+    let lines: Vec<&str> = text.lines().collect();
+    let max_width = lines.iter().map(|l| l.len()).max().unwrap_or(20).min(60) as u16 + 4;
+    let popup_height = (lines.len() as u16 + 2).min(12);
+
+    // Position above cursor
+    let popup_y = cy.saturating_sub(popup_height);
+    let popup_x = cx.min(area.right().saturating_sub(max_width));
+
+    let popup_area = Rect::new(popup_x, popup_y, max_width, popup_height);
+
+    f.render_widget(
+        Paragraph::new("").style(Style::default().bg(Color::Black)),
+        popup_area,
+    );
+
+    let block = Block::default()
+        .title(" Hover ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(Color::Black));
+
+    let styled_lines: Vec<Line> = lines
+        .iter()
+        .map(|l| {
+            if l.starts_with("**") {
+                Line::from(Span::styled(
+                    l.trim_matches('*'),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(*l, Style::default().fg(Color::White)))
+            }
+        })
+        .collect();
+
+    let para = Paragraph::new(styled_lines).block(block);
+    f.render_widget(para, popup_area);
 }
 
 fn draw_wasm_placeholder(f: &mut Frame, area: Rect) {
@@ -609,7 +761,7 @@ fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
         "^1/2/3/4:Tabs"
     };
 
-    let status = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" [", Style::default().fg(Color::DarkGray)),
         status_text,
         Span::styled("]", Style::default().fg(Color::DarkGray)),
@@ -632,12 +784,24 @@ fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
             format!("[{tab_name}]"),
             Style::default().fg(Color::Green),
         ),
-        Span::raw("  "),
-        Span::styled(
-            format!("Enter:Send  {tab_hint}  Tab:Focus  \u{2191}\u{2193}:Scroll  Esc:Clear  ^C:Quit"),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]);
+    ];
+
+    // YAML tab: show diagnostics + extra shortcuts
+    if app.active_tab == ActiveTab::Yaml && !app.diag_summary.is_empty() {
+        let diag_color = if app.diag_summary.contains("error") { Color::Red } else { Color::Yellow };
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(format!("[{}]", app.diag_summary), Style::default().fg(diag_color)));
+    }
+
+    let shortcuts = if app.active_tab == ActiveTab::Yaml {
+        format!("^S:Validate  ^Space:Complete  ^H:Hover  {tab_hint}  ^C:Quit")
+    } else {
+        format!("Enter:Send  {tab_hint}  Tab:Focus  \u{2191}\u{2193}:Scroll  Esc:Clear  ^C:Quit")
+    };
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(shortcuts, Style::default().fg(Color::DarkGray)));
+
+    let status = Line::from(spans);
 
     let para = Paragraph::new(status);
     f.render_widget(para, area);

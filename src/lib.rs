@@ -7,6 +7,7 @@ pub mod agent;
 pub mod embedding;
 pub mod kernel;
 pub mod librarian;
+pub mod lsp;
 pub mod llm;
 pub mod organism;
 pub mod pipeline;

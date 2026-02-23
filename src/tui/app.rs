@@ -12,6 +12,8 @@ use crate::kernel::context_store::{ContextInventory, SegmentMeta, SegmentStatus}
 use crate::kernel::journal::JournalEntry;
 use crate::kernel::thread_table::ThreadRecord;
 use crate::llm::LlmPool;
+use crate::lsp::organism::OrganismYamlService;
+use crate::lsp::{HoverInfo, LanguageService};
 use crate::pipeline::events::PipelineEvent;
 
 use super::event::TuiMessage;
@@ -198,8 +200,10 @@ pub struct TuiApp {
     pub total_input_tokens: u64,
     /// Total output tokens across all API calls.
     pub total_output_tokens: u64,
-    /// Text input widget (tui-textarea).
-    pub input_textarea: ratatui_textarea::TextArea<'static>,
+    /// Text input widget (ratatui-code-editor, plain text mode).
+    pub input_editor: ratatui_code_editor::editor::Editor,
+    /// Cached input bar area from last render (needed for editor.input()).
+    pub input_area: Rect,
     /// Current agent processing status.
     pub agent_status: AgentStatus,
     /// Task pending injection into the pipeline (set by input, consumed by runner).
@@ -240,6 +244,22 @@ pub struct TuiApp {
     pub yaml_status: Option<String>,
     /// Cached YAML content area from last render (needed for editor.input()).
     pub yaml_area: Rect,
+    /// Language service for organism YAML (diagnostics, completions, hover).
+    pub lang_service: OrganismYamlService,
+    /// Current diagnostics from the language service.
+    pub diagnostics: Vec<lsp_types::Diagnostic>,
+    /// Completion items from the language service.
+    pub completion_items: Vec<lsp_types::CompletionItem>,
+    /// Selected index in the completion popup.
+    pub completion_index: usize,
+    /// Whether the completion popup is visible.
+    pub completion_visible: bool,
+    /// Current hover information. None = no hover active.
+    pub hover_info: Option<HoverInfo>,
+    /// Debounce counter for diagnostics (frames since last edit).
+    pub diag_debounce: u8,
+    /// Diagnostic summary for status bar ("3 errors, 1 warning").
+    pub diag_summary: String,
 }
 
 /// Current time in seconds since Unix epoch.
@@ -297,18 +317,10 @@ pub fn build_menu_items(debug_mode: bool) -> Vec<MenuItem<MenuAction>> {
 impl TuiApp {
     /// Create a new TuiApp with default state.
     pub fn new() -> Self {
-        use ratatui::style::{Color, Style};
-        use ratatui::widgets::{Block, Borders};
-
-        let mut textarea = ratatui_textarea::TextArea::default();
-        textarea.set_block(
-            Block::default()
-                .title(" Task ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        );
-        textarea.set_cursor_line_style(Style::default());
-        textarea.set_style(Style::default().fg(Color::White));
+        // Plain text editor for input bar (no syntax highlighting)
+        let mut input_editor = ratatui_code_editor::editor::Editor::new("text", "", vec![])
+            .expect("plain text editor creation should never fail");
+        input_editor.set_show_line_numbers(false);
 
         Self {
             active_tab: ActiveTab::Messages,
@@ -322,7 +334,8 @@ impl TuiApp {
             context: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
-            input_textarea: textarea,
+            input_editor,
+            input_area: Rect::new(0, 0, 80, 3), // sensible default, updated by renderer
             agent_status: AgentStatus::Idle,
             pending_task: None,
             last_response: None,
@@ -343,6 +356,14 @@ impl TuiApp {
             yaml_editor: None,
             yaml_status: None,
             yaml_area: Rect::default(),
+            lang_service: OrganismYamlService::new(),
+            diagnostics: Vec::new(),
+            completion_items: Vec::new(),
+            completion_index: 0,
+            completion_visible: false,
+            hover_info: None,
+            diag_debounce: 0,
+            diag_summary: String::new(),
         }
     }
 
@@ -395,12 +416,138 @@ impl TuiApp {
             Ok(editor) => {
                 self.yaml_editor = Some(editor);
                 self.yaml_status = None;
+                // Run initial diagnostics
+                self.run_diagnostics();
             }
             Err(e) => {
                 tracing::warn!("Failed to create YAML editor: {e}");
                 self.yaml_editor = None;
             }
         }
+    }
+
+    /// Run diagnostics on current YAML editor content and update marks + summary.
+    pub fn run_diagnostics(&mut self) {
+        let Some(ref editor) = self.yaml_editor else { return };
+        let content = editor.get_content();
+        self.diagnostics = self.lang_service.diagnostics(&content);
+
+        // Convert diagnostics to editor marks (char offset ranges with colors)
+        let marks: Vec<(usize, usize, &str)> = self.diagnostics.iter().filter_map(|d| {
+            let start_line = d.range.start.line as usize;
+            let end_line = d.range.end.line as usize;
+            let code = &editor.code_ref();
+            let line_count = code.len_lines();
+            if start_line >= line_count { return None; }
+            let start_char = code.line_to_char(start_line) + d.range.start.character as usize;
+            // End: if same position, mark whole line
+            let end_char = if start_line == end_line && d.range.start.character == d.range.end.character {
+                // Mark to end of line
+                let line_end = code.line_to_char(start_line) + code.line_len(start_line);
+                line_end
+            } else {
+                let el = end_line.min(line_count.saturating_sub(1));
+                code.line_to_char(el) + d.range.end.character as usize
+            };
+            let color = match d.severity {
+                Some(lsp_types::DiagnosticSeverity::ERROR) => "#FF4444",
+                Some(lsp_types::DiagnosticSeverity::WARNING) => "#FFAA44",
+                _ => "#FFAA44",
+            };
+            Some((start_char, end_char.min(code.len_chars()), color))
+        }).collect();
+
+        // Apply marks to editor
+        let editor = self.yaml_editor.as_mut().unwrap();
+        if marks.is_empty() {
+            editor.remove_marks();
+        } else {
+            editor.set_marks(marks);
+        }
+
+        // Build summary
+        let errors = self.diagnostics.iter()
+            .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
+            .count();
+        let warnings = self.diagnostics.iter()
+            .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::WARNING))
+            .count();
+        self.diag_summary = if errors == 0 && warnings == 0 {
+            String::new()
+        } else {
+            let mut parts = Vec::new();
+            if errors > 0 { parts.push(format!("{errors} error{}", if errors == 1 { "" } else { "s" })); }
+            if warnings > 0 { parts.push(format!("{warnings} warning{}", if warnings == 1 { "" } else { "s" })); }
+            parts.join(", ")
+        };
+        self.diag_debounce = 0;
+    }
+
+    /// Trigger completion at current cursor position.
+    pub fn trigger_completions(&mut self) {
+        let Some(ref editor) = self.yaml_editor else { return };
+        let content = editor.get_content();
+        let cursor = editor.get_cursor();
+        let code = editor.code_ref();
+        let (row, col) = code.point(cursor);
+        let pos = lsp_types::Position::new(row as u32, col as u32);
+        self.completion_items = self.lang_service.completions(&content, pos);
+        self.completion_index = 0;
+        self.completion_visible = !self.completion_items.is_empty();
+    }
+
+    /// Trigger hover at current cursor position.
+    pub fn trigger_hover(&mut self) {
+        let Some(ref editor) = self.yaml_editor else { return };
+        let content = editor.get_content();
+        let cursor = editor.get_cursor();
+        let code = editor.code_ref();
+        let (row, col) = code.point(cursor);
+        let pos = lsp_types::Position::new(row as u32, col as u32);
+        self.hover_info = self.lang_service.hover(&content, pos);
+    }
+
+    /// Accept the currently selected completion item.
+    pub fn accept_completion(&mut self) {
+        if !self.completion_visible { return; }
+        let Some(item) = self.completion_items.get(self.completion_index) else { return };
+        let text = item.insert_text.as_deref().unwrap_or(&item.label);
+        let text = text.to_string();
+        if let Some(ref mut editor) = self.yaml_editor {
+            let cursor = editor.get_cursor();
+            let code = editor.code_ref();
+            // Find start of current word (for replacement)
+            let (row, col) = code.point(cursor);
+            let line_start = code.line_to_char(row);
+            let line_text: String = code.line(row).to_string();
+            // Find word start from cursor col
+            let mut word_start = col;
+            while word_start > 0 {
+                let c = line_text.as_bytes().get(word_start - 1).copied().unwrap_or(b' ');
+                if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' {
+                    word_start -= 1;
+                } else {
+                    break;
+                }
+            }
+            // Replace word with completion
+            let abs_word_start = line_start + word_start;
+            let code = editor.code_mut();
+            code.tx();
+            code.set_state_before(cursor, None);
+            if cursor > abs_word_start {
+                code.remove(abs_word_start, cursor);
+            }
+            code.insert(abs_word_start, &text);
+            let new_cursor = abs_word_start + text.chars().count();
+            code.set_state_after(new_cursor, None);
+            code.commit();
+            editor.set_cursor(new_cursor);
+        }
+        self.completion_visible = false;
+        self.completion_items.clear();
+        // Trigger diagnostics after completion
+        self.diag_debounce = 8;
     }
 
     /// Handle a TUI message (TEA update).
@@ -414,6 +561,13 @@ impl TuiApp {
             }
             TuiMessage::Tick => {
                 // Kernel refresh handled externally by runner
+                // Debounced diagnostics: decrement counter, run when it hits 0
+                if self.diag_debounce > 0 {
+                    self.diag_debounce -= 1;
+                    if self.diag_debounce == 0 {
+                        self.run_diagnostics();
+                    }
+                }
             }
             TuiMessage::Render => {
                 // Render handled externally by runner
@@ -570,18 +724,33 @@ impl TuiApp {
         self.activity_scroll = self.activity_scroll.saturating_sub(1);
     }
 
-    /// Extract text from the textarea and clear it. Returns None if empty.
+    /// Extract text from the input editor and clear it. Returns None if empty.
     pub fn take_input(&mut self) -> Option<String> {
-        let lines = self.input_textarea.lines().to_vec();
-        let text: String = lines.join("\n");
+        let text = self.input_editor.get_content();
         let text = text.trim().to_string();
         if text.is_empty() {
             return None;
         }
-        // Clear: select all then delete
-        self.input_textarea.select_all();
-        self.input_textarea.cut();
+        self.input_editor.set_content("");
         Some(text)
+    }
+
+    /// Get the current input text (first line).
+    pub fn input_text(&self) -> String {
+        let content = self.input_editor.get_content();
+        content.lines().next().unwrap_or("").to_string()
+    }
+
+    /// Clear the input editor.
+    pub fn clear_input(&mut self) {
+        self.input_editor.set_content("");
+    }
+
+    /// Set the input editor content and move cursor to end.
+    pub fn set_input_text(&mut self, text: &str) {
+        self.input_editor.set_content(text);
+        let len = self.input_editor.get_content().chars().count();
+        self.input_editor.set_cursor(len);
     }
 }
 
@@ -619,15 +788,15 @@ mod tests {
     }
 
     #[test]
-    fn app_typing_goes_to_textarea() {
+    fn app_typing_goes_to_input_editor() {
         let mut app = TuiApp::new();
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Char('q'),
             KeyModifiers::NONE,
         )));
-        // 'q' types into textarea, doesn't quit
+        // 'q' types into input editor, doesn't quit
         assert!(!app.should_quit);
-        assert_eq!(app.input_textarea.lines(), ["q"]);
+        assert!(app.input_text().contains('q'));
     }
 
     #[test]
@@ -787,16 +956,11 @@ mod tests {
     #[test]
     fn take_input_returns_text_and_clears() {
         let mut app = TuiApp::new();
-        // Type "hello" into textarea
-        for c in "hello".chars() {
-            app.input_textarea.input(crossterm::event::Event::Key(
-                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            ));
-        }
+        app.set_input_text("hello");
         let text = app.take_input();
         assert_eq!(text, Some("hello".into()));
-        // Textarea should be empty after take
-        assert_eq!(app.input_textarea.lines(), [""]);
+        // Input should be empty after take
+        assert!(app.input_text().is_empty());
     }
 
     #[test]
@@ -1060,8 +1224,8 @@ mod tests {
 
         let content = app.yaml_editor.as_ref().unwrap().get_content();
         assert!(content.contains('x'));
-        // Textarea should NOT have received the 'x'
-        assert_eq!(app.input_textarea.lines(), [""]);
+        // Input editor should NOT have received the 'x'
+        assert!(app.input_text().is_empty());
     }
 
     #[test]
