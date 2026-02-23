@@ -15,6 +15,7 @@ pub mod app;
 pub mod commands;
 pub mod context_tree;
 pub mod dashboard;
+pub mod diagram;
 pub mod event;
 pub mod input;
 pub mod layout;
