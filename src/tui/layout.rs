@@ -153,19 +153,23 @@ fn draw_tab_bar(f: &mut Frame, app: &TuiApp, area: Rect) {
 
 /// Render command popup above the input bar when typing `/`.
 fn draw_command_popup(f: &mut Frame, app: &TuiApp, input_area: Rect) {
+    use crate::lsp::LanguageService;
+
     let input = app.input_text();
-    if !input.starts_with('/') || input.contains(' ') {
+    if !input.starts_with('/') {
         return;
     }
 
-    let matches = super::commands::matching_commands(&input);
-    if matches.is_empty() {
+    let items = app
+        .cmd_service
+        .completions(&input, lsp_types::Position::new(0, input.len() as u32));
+    if items.is_empty() {
         return;
     }
 
     // Popup dimensions
-    let popup_width = 44u16.min(input_area.width);
-    let popup_height = (matches.len() as u16 + 2).min(10); // +2 for borders
+    let popup_width = 50u16.min(input_area.width);
+    let popup_height = (items.len() as u16 + 2).min(10); // +2 for borders
     let popup_x = input_area.x;
     let popup_y = input_area.y.saturating_sub(popup_height);
 
@@ -183,11 +187,10 @@ fn draw_command_popup(f: &mut Frame, app: &TuiApp, input_area: Rect) {
         .style(Style::default().bg(Color::Black));
 
     let selected = app.command_popup_index;
-    let items: Vec<Line> = matches
+    let lines: Vec<Line> = items
         .iter()
         .enumerate()
-        .map(|(i, cmd)| {
-            let arg_hint = if cmd.has_arg { " <arg>" } else { "" };
+        .map(|(i, item)| {
             let is_selected = i == selected;
             let style = if is_selected {
                 Style::default()
@@ -202,21 +205,22 @@ fn draw_command_popup(f: &mut Frame, app: &TuiApp, input_area: Rect) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
+            let detail = item.detail.as_deref().unwrap_or("");
             Line::from(vec![
-                Span::styled(format!("{}{}", cmd.name, arg_hint), style),
-                Span::styled(format!("  {}", cmd.description), desc_style),
+                Span::styled(&item.label, style),
+                Span::styled(format!("  {detail}"), desc_style),
             ])
         })
         .collect();
 
-    let para = Paragraph::new(items).block(block);
+    let para = Paragraph::new(lines).block(block);
     f.render_widget(para, popup_area);
 }
 
 /// Render ghost-text autocomplete overlay after the cursor in the input bar.
 fn draw_ghost_text(f: &mut Frame, app: &TuiApp, area: Rect) {
     let input = app.input_text();
-    if let Some(suffix) = super::commands::ghost_suffix(&input) {
+    if let Some(suffix) = crate::lsp::command_line::ghost_suffix(&input) {
         let inner = Block::default().borders(Borders::ALL).inner(area);
         let cursor_pos = app.input_editor.get_visible_cursor(&inner);
         let (x, y) = match cursor_pos {
@@ -454,9 +458,7 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 )]));
-                for text_line in entry.text.lines() {
-                    lines.push(Line::from(text_line.to_string()));
-                }
+                lines.extend(super::markdown::render_markdown(&entry.text));
             }
             "system" => {
                 lines.push(Line::from(""));

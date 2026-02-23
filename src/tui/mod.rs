@@ -18,6 +18,7 @@ pub mod dashboard;
 pub mod event;
 pub mod input;
 pub mod layout;
+pub mod markdown;
 pub mod render;
 pub mod runner;
 pub mod segment_detail;
