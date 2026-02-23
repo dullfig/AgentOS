@@ -20,6 +20,7 @@ use ratatui::widgets::{
     Wrap,
 };
 use ratatui::Frame;
+use tui_menu::Menu;
 
 use super::app::{ActiveTab, AgentStatus, ThreadsFocus, TuiApp};
 use super::context_tree;
@@ -30,14 +31,12 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // tab bar
+            Constraint::Length(1), // menu bar
             Constraint::Min(5),   // content area
             Constraint::Length(3), // input (textarea)
             Constraint::Length(1), // status bar
         ])
         .split(f.area());
-
-    draw_tab_bar(f, app, outer[0]);
 
     match app.active_tab {
         ActiveTab::Messages => draw_messages(f, app, outer[1]),
@@ -50,6 +49,27 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     f.render_widget(&app.input_textarea, outer[2]);
     draw_ghost_text(f, app, outer[2]);
     draw_status(f, app, outer[3]);
+
+    // Menu bar rendered last — dropdowns overlay content area below.
+    // Give it the area from the menu bar row through the content area so
+    // dropdown popups have room to render.
+    let menu_area = Rect {
+        x: outer[0].x,
+        y: outer[0].y,
+        width: outer[0].width,
+        height: outer[0].height + outer[1].height,
+    };
+    let menu_widget = Menu::new()
+        .default_style(Style::default().fg(Color::DarkGray))
+        .highlight(
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .dropdown_width(16)
+        .dropdown_style(Style::default().bg(Color::DarkGray));
+    f.render_stateful_widget(menu_widget, menu_area, &mut app.menu_state);
 }
 
 /// Render ghost-text autocomplete overlay after the cursor in the input bar.
@@ -70,40 +90,6 @@ fn draw_ghost_text(f: &mut Frame, app: &TuiApp, area: Rect) {
             f.render_widget(ghost, ghost_rect);
         }
     }
-}
-
-fn draw_tab_bar(f: &mut Frame, app: &TuiApp, area: Rect) {
-    let mut tabs: Vec<(&str, ActiveTab, &str)> = vec![
-        ("Messages", ActiveTab::Messages, "1"),
-        ("Threads", ActiveTab::Threads, "2"),
-        ("YAML", ActiveTab::Yaml, "3"),
-        ("WASM", ActiveTab::Wasm, "4"),
-    ];
-    if app.debug_mode {
-        tabs.push(("Debug", ActiveTab::Debug, "5"));
-    }
-
-    let spans: Vec<Span> = tabs
-        .iter()
-        .flat_map(|(name, tab, num)| {
-            let is_active = *tab == app.active_tab;
-            let style = if is_active {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            vec![
-                Span::raw(" "),
-                Span::styled(format!("[^{num} {name}]"), style),
-            ]
-        })
-        .collect();
-
-    let line = Line::from(spans);
-    let para = Paragraph::new(line);
-    f.render_widget(para, area);
 }
 
 fn draw_threads(f: &mut Frame, app: &mut TuiApp, area: Rect) {

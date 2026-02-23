@@ -6,9 +6,63 @@
 //! Everything else is forwarded to the textarea widget.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tui_menu::MenuEvent;
 
-use super::app::{ActiveTab, AgentStatus, ChatEntry, ThreadsFocus, TuiApp};
+use super::app::{ActiveTab, AgentStatus, ChatEntry, MenuAction, ThreadsFocus, TuiApp};
 use super::commands;
+
+/// Dispatch a selected menu action.
+fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
+    app.menu_state.reset();
+    app.menu_active = false;
+    match action {
+        MenuAction::SwitchTab(tab) => {
+            if tab == ActiveTab::Debug && !app.debug_mode {
+                return; // guard: don't switch to Debug unless enabled
+            }
+            app.active_tab = tab;
+        }
+        MenuAction::NewTask => {
+            // Focus the input textarea (clear any existing text)
+            app.input_textarea.select_all();
+            app.input_textarea.cut();
+        }
+        MenuAction::Quit => {
+            app.should_quit = true;
+        }
+        MenuAction::SetModel => {
+            // Pre-fill the input with "/model " so user can type the model name
+            set_input(app, "/model ");
+        }
+        MenuAction::ShowAbout => {
+            app.chat_log.push(ChatEntry {
+                role: "system".into(),
+                text: "BestCode — an AI coding agent built on rust-pipeline.\nNo compaction, ever."
+                    .into(),
+            });
+            app.message_auto_scroll = true;
+        }
+        MenuAction::ShowShortcuts => {
+            app.chat_log.push(ChatEntry {
+                role: "system".into(),
+                text: concat!(
+                    "Keyboard shortcuts:\n",
+                    "  F10         Open/close menu bar\n",
+                    "  Ctrl+1..5   Switch tabs\n",
+                    "  Tab         Cycle focus (Threads) / autocomplete (/commands)\n",
+                    "  Enter       Submit task or confirm\n",
+                    "  Esc         Clear input\n",
+                    "  Up/Down     Scroll or navigate\n",
+                    "  PageUp/Dn   Page scroll\n",
+                    "  Home/End    Jump to top/bottom\n",
+                    "  Ctrl+C      Quit",
+                )
+                .into(),
+            });
+            app.message_auto_scroll = true;
+        }
+    }
+}
 
 /// Get the current input text from the textarea (first line).
 fn current_input(app: &TuiApp) -> String {
@@ -31,6 +85,41 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
     // Ctrl+C always quits
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.should_quit = true;
+        return;
+    }
+
+    // F10 toggles menu bar
+    if key.code == KeyCode::F(10) {
+        if app.menu_active {
+            app.menu_state.reset();
+            app.menu_active = false;
+        } else {
+            app.menu_state.activate();
+            app.menu_active = true;
+        }
+        return;
+    }
+
+    // When menu is active, route keys to menu navigation
+    if app.menu_active {
+        match key.code {
+            KeyCode::Left => app.menu_state.left(),
+            KeyCode::Right => app.menu_state.right(),
+            KeyCode::Up => app.menu_state.up(),
+            KeyCode::Down => app.menu_state.down(),
+            KeyCode::Enter => app.menu_state.select(),
+            KeyCode::Esc => {
+                app.menu_state.reset();
+                app.menu_active = false;
+            }
+            _ => {}
+        }
+        // Drain and dispatch any selected menu actions
+        let events: Vec<_> = app.menu_state.drain_events().collect();
+        for event in events {
+            let MenuEvent::Selected(action) = event;
+            dispatch_menu_action(app, action);
+        }
         return;
     }
 
@@ -457,5 +546,56 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         // Should NOT set pending_task
         assert!(app.pending_task.is_none());
+    }
+
+    // ── Menu bar tests ──
+
+    #[test]
+    fn menu_f10_toggles_active() {
+        let mut app = TuiApp::new();
+        assert!(!app.menu_active);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
+        assert!(app.menu_active);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
+        assert!(!app.menu_active);
+    }
+
+    #[test]
+    fn menu_esc_closes() {
+        let mut app = TuiApp::new();
+        // Activate menu
+        handle_key(&mut app, KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
+        assert!(app.menu_active);
+
+        // Esc closes
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.menu_active);
+    }
+
+    #[test]
+    fn menu_action_quit() {
+        let mut app = TuiApp::new();
+        dispatch_menu_action(&mut app, MenuAction::Quit);
+        assert!(app.should_quit);
+        assert!(!app.menu_active);
+    }
+
+    #[test]
+    fn menu_action_switch_tab() {
+        let mut app = TuiApp::new();
+        app.menu_active = true;
+        dispatch_menu_action(&mut app, MenuAction::SwitchTab(ActiveTab::Threads));
+        assert_eq!(app.active_tab, ActiveTab::Threads);
+        assert!(!app.menu_active);
+    }
+
+    #[test]
+    fn menu_state_default() {
+        let app = TuiApp::new();
+        assert!(!app.menu_active);
+        // Menu state exists but is not user-activated
+        assert_eq!(app.active_tab, ActiveTab::Messages);
     }
 }

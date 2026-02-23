@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tui_menu::{MenuItem, MenuState};
 
 use crate::kernel::context_store::{ContextInventory, SegmentMeta, SegmentStatus};
 use crate::kernel::journal::JournalEntry;
@@ -29,6 +30,17 @@ pub enum ActiveTab {
 pub enum ThreadsFocus {
     ThreadList,
     ContextTree,
+}
+
+/// Actions that can be triggered from the menu bar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuAction {
+    SwitchTab(ActiveTab),
+    NewTask,
+    Quit,
+    SetModel,
+    ShowAbout,
+    ShowShortcuts,
 }
 
 /// Agent processing status.
@@ -186,7 +198,7 @@ pub struct TuiApp {
     /// Total output tokens across all API calls.
     pub total_output_tokens: u64,
     /// Text input widget (tui-textarea).
-    pub input_textarea: tui_textarea::TextArea<'static>,
+    pub input_textarea: ratatui_textarea::TextArea<'static>,
     /// Current agent processing status.
     pub agent_status: AgentStatus,
     /// Task pending injection into the pipeline (set by input, consumed by runner).
@@ -215,6 +227,10 @@ pub struct TuiApp {
     pub context_tree_state: tui_tree_widget::TreeState<String>,
     /// Whether debug mode is enabled (--debug flag). Controls Debug tab visibility.
     pub debug_mode: bool,
+    /// Menu bar state (tui-menu).
+    pub menu_state: MenuState<MenuAction>,
+    /// Whether the menu bar has keyboard focus (dropdowns visible).
+    pub menu_active: bool,
 }
 
 /// Current time in seconds since Unix epoch.
@@ -231,13 +247,51 @@ const EVENT_LOG_CAPACITY: usize = 256;
 /// Maximum number of activity entries in the ring buffer.
 const ACTIVITY_LOG_CAPACITY: usize = 512;
 
+/// Build the menu item tree for the menu bar.
+pub fn build_menu_items(debug_mode: bool) -> Vec<MenuItem<MenuAction>> {
+    let mut view_items = vec![
+        MenuItem::item("Messages  ^1", MenuAction::SwitchTab(ActiveTab::Messages)),
+        MenuItem::item("Threads   ^2", MenuAction::SwitchTab(ActiveTab::Threads)),
+        MenuItem::item("YAML      ^3", MenuAction::SwitchTab(ActiveTab::Yaml)),
+        MenuItem::item("WASM      ^4", MenuAction::SwitchTab(ActiveTab::Wasm)),
+    ];
+    if debug_mode {
+        view_items.push(MenuItem::item(
+            "Debug     ^5",
+            MenuAction::SwitchTab(ActiveTab::Debug),
+        ));
+    }
+
+    vec![
+        MenuItem::group(
+            "File",
+            vec![
+                MenuItem::item("New Task", MenuAction::NewTask),
+                MenuItem::item("Quit     ^C", MenuAction::Quit),
+            ],
+        ),
+        MenuItem::group("View", view_items),
+        MenuItem::group(
+            "Model",
+            vec![MenuItem::item("/model ...", MenuAction::SetModel)],
+        ),
+        MenuItem::group(
+            "Help",
+            vec![
+                MenuItem::item("About", MenuAction::ShowAbout),
+                MenuItem::item("Shortcuts", MenuAction::ShowShortcuts),
+            ],
+        ),
+    ]
+}
+
 impl TuiApp {
     /// Create a new TuiApp with default state.
     pub fn new() -> Self {
         use ratatui::style::{Color, Style};
         use ratatui::widgets::{Block, Borders};
 
-        let mut textarea = tui_textarea::TextArea::default();
+        let mut textarea = ratatui_textarea::TextArea::default();
         textarea.set_block(
             Block::default()
                 .title(" Task ")
@@ -274,7 +328,14 @@ impl TuiApp {
             threads_focus: ThreadsFocus::ThreadList,
             context_tree_state: tui_tree_widget::TreeState::default(),
             debug_mode: false,
+            menu_state: MenuState::new(build_menu_items(false)),
+            menu_active: false,
         }
+    }
+
+    /// Rebuild the menu item tree (e.g., after toggling debug mode).
+    pub fn rebuild_menu(&mut self) {
+        self.menu_state = MenuState::new(build_menu_items(self.debug_mode));
     }
 
     /// Handle a TUI message (TEA update).
