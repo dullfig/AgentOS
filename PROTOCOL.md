@@ -55,16 +55,26 @@ vary the number of stages but MUST preserve the ordering guarantees.
 3. **Dispatch** — Route the envelope to the handler registered for the
    `payload_tag`. Exactly one handler receives the message.
 
-4. **Response Re-entry** — Handler output re-enters the pipeline as a
-   **new envelope** subject to the same validation, security, and
-   dispatch stages. Handler output is untrusted.
+4. **Response Validation** — Handler output is raw bytes. Before
+   re-entering the pipeline, these bytes MUST be validated against the
+   handler's declared response schema (Section 3.2). If validation
+   fails, the message is rejected — it never reaches the next handler.
+   This validation checkpoint is pipeline-enforced; the receiving
+   handler is not responsible for validating its input.
+
+5. **Response Re-entry** — Validated handler output re-enters the pipeline
+   as a **new envelope** subject to the same security and dispatch stages.
+   Handler output is untrusted until it passes the validation checkpoint.
 
 ### 2.2 Guarantee: Zero Trust Re-entry
 
 This is the core invariant. A handler's response is not privileged.
-It re-enters as bytes, gets validated, gets security-checked, gets
+It exits as raw bytes, passes through schema validation (stage 4),
+re-enters as a validated envelope, gets security-checked, gets
 dispatched. A compromised handler cannot escalate privileges because
-its output passes through the same gates as external input.
+its output passes through the same gates as external input. The
+validation checkpoint between handler output and next-handler dispatch
+is the enforcement point — the schema is a firewall rule, not documentation.
 
 ### 2.3 Optional Stages
 
@@ -100,7 +110,10 @@ Response is one of:
 - **Reply** — send payload back to the sender (reversed routing)
 - **Send** — send payload to a named handler (forward routing)
 - **Broadcast** — send payload to multiple named handlers
-- **Silence** — consume the message, produce no output
+- **Silence** — consume the message, produce no output.
+  The pipeline MUST synthesize an acknowledgment envelope back to the
+  sender so the sender's thread can continue or terminate cleanly.
+  Pure silence without an ACK would stall any sender waiting on a response.
 - **Error** — signal failure with a structured error payload
 
 ### 3.2 Handler Metadata
@@ -273,8 +286,12 @@ round-trip to unfold — never silent data loss.
 
 ## 7. Message Journal
 
-The **journal** records all messages that pass through the pipeline.
-It is the audit trail and replay tape.
+The **journal** records messages that pass through the pipeline.
+It is the audit trail and replay tape. The journal is configurable —
+retention policy determines whether it grows indefinitely, prunes on
+delivery, or retains for a fixed window. A stateless online concierge
+may use `prune_on_delivery`; a coding agent may use `retain_forever`.
+The journal is not mandatory-forever — it is mandatory-configurable.
 
 ### 7.1 Retention Policies
 
@@ -405,18 +422,53 @@ Agent: "I need to read the contents of main.rs"
   language request, constructs a valid request payload. May use an
   LLM (model ladder: cheap model first, escalate on failure).
 
-### 10.3 Invisible Dispatch
+### 10.3 Dispatch Table Masking
+
+The router produces a **ranked list** of candidate handlers, not a single
+match. The dispatch table acts as a mask over this list — candidates not
+permitted by the active profile are filtered out **before** form-filling.
+
+```
+Agent: "delete the temp files"
+  → Ranked candidates: [file-erase: 0.94, file-write: 0.87, file-read: 0.82]
+  → Dispatch table mask (researcher profile): file-erase NOT allowed
+  → Filtered: [file-write: 0.87, file-read: 0.82]
+  → Top allowed match: file-write (0.87)
+  → Form fill against file-write schema
+  → Dispatch
+```
+
+This ordering is critical:
+1. **Rank** — similarity search produces scored candidates
+2. **Mask** — dispatch table removes disallowed handlers
+3. **Select** — top remaining candidate proceeds to form-filling
+4. **Fill** — LLM constructs valid payload for the selected handler
+5. **Dispatch** — standard pipeline dispatch
+
+If the router misreads intent (matches file-erase when the agent meant
+file-read), the dispatch table masks file-erase, and file-read bubbles
+up as the top allowed candidate — correct behavior despite the misread.
+
+If ALL candidates are masked out, the router returns a structured error:
+"no matching capability in your profile." This is a real denial, not a
+misread — the agent is genuinely asking for something it cannot do.
+
+Form-filling is expensive (LLM call). Masking before filling ensures no
+LLM calls are wasted constructing parameters for a tool that would be
+rejected by the security check.
+
+### 10.4 Invisible Dispatch
 
 The agent SHOULD NOT need to know tool names or payload schemas.
 It describes intent; the router translates to a concrete tool call.
 This enables new tools to be added without modifying agent prompts.
 
-### 10.4 Guarantee: Router Is Advisory
+### 10.5 Guarantee: Router Is Advisory
 
 Semantic routing is a convenience layer. The dispatch table (Section 4)
-is the authority. If the router suggests a handler that the profile
-doesn't allow, the security check rejects it. The router cannot
-override structural security.
+is the authority. The router cannot override structural security — the
+dispatch table mask (10.3) ensures that only permitted handlers are
+ever considered, regardless of semantic similarity score.
 
 ---
 
@@ -622,7 +674,13 @@ granted its own profile.
 ## Appendix A: What This Spec Does NOT Prescribe
 
 - **Serialization format.** XML, JSON, MessagePack, Protobuf — the
-  pipeline is format-agnostic. Payloads are bytes.
+  pipeline is format-agnostic. Payloads are bytes. However, the chosen
+  format MUST have a rigorous schema validation story (Section 2.1,
+  stage 4) since validation is a security boundary. XML+XSD is the
+  reference implementation. JSON+JSON Schema is viable but note that
+  JSON Schema has multiple incompatible draft versions and validator
+  implementations that disagree on edge cases — choose a draft, pin
+  a validator, and treat it as a hard dependency.
 - **Async runtime.** tokio, libuv, OS threads — implementation choice.
 - **LLM provider.** Anthropic, OpenAI, local models — the agent
   protocol is provider-agnostic.
@@ -633,7 +691,7 @@ granted its own profile.
 
 ## Appendix B: Invariants Summary
 
-1. **Zero Trust Re-entry** — handler output is untrusted input (2.2)
+1. **Zero Trust Re-entry** — handler output is raw bytes, validated against schema before dispatch (2.2)
 2. **Structural Security** — missing route = impossibility, not denial (4.3)
 3. **Profile Monotonicity** — children never escalate privileges (5.5)
 4. **No Runtime Downgrade** — profiles are fixed per-thread (8.5)
