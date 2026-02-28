@@ -632,20 +632,18 @@ mod tests {
 
     #[test]
     fn ghost_suffix_models_subcommand() {
-        // /models a → complete to "dd " (add + space for its arg)
-        assert_eq!(ghost_suffix("/models a"), Some("dd".into()));
+        // /models r → complete to "emove " (remove + space for its arg)
+        assert_eq!(ghost_suffix("/models r"), Some("emove".into()));
     }
 
     #[test]
     fn completions_models_subcommands() {
         let svc = CommandLineService::new();
         let items = svc.completions("/models ", Position::new(0, 8));
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 2);
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"add"));
         assert!(labels.contains(&"remove"));
         assert!(labels.contains(&"default"));
-        assert!(labels.contains(&"update"));
     }
 
     #[test]

@@ -292,7 +292,7 @@ impl ModelsConfig {
 pub fn format_model_list(config: &ModelsConfig) -> String {
     let models = config.all_models();
     if models.is_empty() {
-        return "No models configured. Use /models add <provider> to add one.".into();
+        return "No models configured. Use /provider <name> to add one.".into();
     }
     let mut lines = vec!["Models:".to_string()];
     for m in &models {
@@ -462,5 +462,88 @@ default: sonnet
     fn has_models_empty() {
         let config = ModelsConfig::default();
         assert!(!config.has_models());
+    }
+}
+
+// ── Agent favorites config ──
+
+/// Persistent list of favorite agents (project-level).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentsConfig {
+    #[serde(default)]
+    pub favorites: Vec<String>,
+}
+
+impl AgentsConfig {
+    /// Load from `.agentos/agents.yaml`. Returns default if missing.
+    pub fn load() -> Self {
+        match std::fs::read_to_string(".agentos/agents.yaml") {
+            Ok(content) => serde_yaml::from_str(&content).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Save to `.agentos/agents.yaml`.
+    pub fn save(&self) -> Result<(), String> {
+        std::fs::create_dir_all(".agentos")
+            .map_err(|e| format!("Failed to create .agentos/: {e}"))?;
+        let yaml = serde_yaml::to_string(self)
+            .map_err(|e| format!("YAML serialize error: {e}"))?;
+        std::fs::write(".agentos/agents.yaml", yaml)
+            .map_err(|e| format!("Failed to write .agentos/agents.yaml: {e}"))?;
+        Ok(())
+    }
+
+    /// Add an agent name to favorites (deduplicates).
+    pub fn add(&mut self, name: &str) {
+        if !self.favorites.iter().any(|f| f == name) {
+            self.favorites.push(name.to_string());
+        }
+    }
+
+    /// Remove an agent name from favorites. Returns true if it was present.
+    pub fn remove(&mut self, name: &str) -> bool {
+        let before = self.favorites.len();
+        self.favorites.retain(|f| f != name);
+        self.favorites.len() < before
+    }
+}
+
+#[cfg(test)]
+mod agents_tests {
+    use super::*;
+
+    #[test]
+    fn agents_config_add_dedup() {
+        let mut config = AgentsConfig::default();
+        config.add("coding-agent");
+        config.add("coding-agent");
+        assert_eq!(config.favorites.len(), 1);
+    }
+
+    #[test]
+    fn agents_config_remove() {
+        let mut config = AgentsConfig::default();
+        config.add("coding-agent");
+        config.add("email-sender");
+        assert!(config.remove("coding-agent"));
+        assert_eq!(config.favorites, vec!["email-sender"]);
+        assert!(!config.remove("nonexistent"));
+    }
+
+    #[test]
+    fn agents_config_round_trip() {
+        let mut config = AgentsConfig::default();
+        config.add("coding-agent");
+        config.add("email-sender");
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let back: AgentsConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back.favorites, vec!["coding-agent", "email-sender"]);
+    }
+
+    #[test]
+    fn agents_config_default_empty() {
+        let config = AgentsConfig::default();
+        assert!(config.favorites.is_empty());
     }
 }

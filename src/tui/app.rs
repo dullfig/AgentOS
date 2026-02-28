@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use tokio::sync::Mutex;
 use tui_menu::{MenuItem, MenuState};
 
-use crate::config::ModelsConfig;
+use crate::config::{AgentsConfig, ModelsConfig};
 use crate::kernel::context_store::{ContextInventory, SegmentMeta, SegmentStatus};
 use crate::kernel::journal::JournalEntry;
 use crate::kernel::thread_table::ThreadRecord;
@@ -47,6 +47,8 @@ pub enum MenuAction {
     SetModel,
     ShowAbout,
     ShowShortcuts,
+    SelectAgent(String),
+    ResetAgent,
 }
 
 /// Agent processing status.
@@ -62,74 +64,16 @@ pub enum AgentStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
-    ModelAddWizard {
+    ProviderWizard {
         provider: String,
-        step: WizardStep,
-        alias: Option<String>,
-        model_id: Option<String>,
-        api_key: Option<String>,
-    },
-    ModelUpdateWizard {
-        provider: String,
-        step: UpdateStep,
-        api_key: Option<String>,
     },
 }
 
-/// Steps in the /models add wizard.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WizardStep {
-    Alias,
-    ModelId,
-    ApiKey,
-    BaseUrl,
-}
-
-impl WizardStep {
-    /// Human-readable prompt for the current step.
-    pub fn prompt(&self) -> &'static str {
-        match self {
-            WizardStep::Alias => "Alias",
-            WizardStep::ModelId => "Model ID",
-            WizardStep::ApiKey => "API key",
-            WizardStep::BaseUrl => "Base URL (Enter to skip)",
-        }
-    }
-}
-
-/// Steps in the /models update wizard.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UpdateStep {
-    ApiKey,
-    BaseUrl,
-}
-
-impl UpdateStep {
-    /// Human-readable prompt for the current step.
-    pub fn prompt(&self) -> &'static str {
-        match self {
-            UpdateStep::ApiKey => "New API key (Enter to keep current)",
-            UpdateStep::BaseUrl => "New base URL (Enter to keep current)",
-        }
-    }
-}
-
-/// Pending wizard completion data (consumed by runner after handle_key).
+/// Pending provider wizard completion data (consumed by runner after handle_key).
 #[derive(Debug, Clone)]
-pub struct WizardCompletion {
+pub struct ProviderCompletion {
     pub provider: String,
-    pub alias: String,
-    pub model_id: String,
-    pub api_key: Option<String>,
-    pub base_url: Option<String>,
-}
-
-/// Pending update wizard completion data.
-#[derive(Debug, Clone)]
-pub struct UpdateCompletion {
-    pub provider: String,
-    pub api_key: Option<String>,
-    pub base_url: Option<String>,
+    pub api_key: String,
 }
 
 /// Lightweight view of a thread record (no kernel lifetime).
@@ -351,10 +295,12 @@ pub struct TuiApp {
     pub input_mode: InputMode,
     /// Models configuration (shared with commands for mutation).
     pub models_config: Arc<Mutex<ModelsConfig>>,
-    /// Pending wizard completion (set by wizard Enter on last step, consumed by runner).
-    pub pending_wizard_completion: Option<WizardCompletion>,
-    /// Pending update wizard completion (set by update wizard, consumed by runner).
-    pub pending_update_completion: Option<UpdateCompletion>,
+    /// Pending provider wizard completion (set by wizard Enter, consumed by runner).
+    pub pending_provider_completion: Option<ProviderCompletion>,
+    /// Currently selected agent name. None = default (first agent).
+    pub selected_agent: Option<String>,
+    /// Agent favorites config (project-level persistence).
+    pub agents_config: AgentsConfig,
 }
 
 /// Current time in seconds since Unix epoch.
@@ -372,7 +318,11 @@ const EVENT_LOG_CAPACITY: usize = 256;
 const ACTIVITY_LOG_CAPACITY: usize = 512;
 
 /// Build the menu item tree for the menu bar.
-pub fn build_menu_items(debug_mode: bool) -> Vec<MenuItem<MenuAction>> {
+pub fn build_menu_items(
+    debug_mode: bool,
+    favorites: &[String],
+    selected: Option<&str>,
+) -> Vec<MenuItem<MenuAction>> {
     let mut view_items = vec![
         MenuItem::item("Messages  ^1", MenuAction::SwitchTab(ActiveTab::Messages)),
         MenuItem::item("Threads   ^2", MenuAction::SwitchTab(ActiveTab::Threads)),
@@ -386,6 +336,23 @@ pub fn build_menu_items(debug_mode: bool) -> Vec<MenuItem<MenuAction>> {
         ));
     }
 
+    // Build Agents menu items from favorites
+    let mut agent_items: Vec<MenuItem<MenuAction>> = favorites
+        .iter()
+        .map(|name| {
+            let marker = if selected == Some(name.as_str()) {
+                " \u{2713}"
+            } else {
+                ""
+            };
+            MenuItem::item(
+                format!("{name}{marker}"),
+                MenuAction::SelectAgent(name.clone()),
+            )
+        })
+        .collect();
+    agent_items.push(MenuItem::item("(default)", MenuAction::ResetAgent));
+
     vec![
         MenuItem::group(
             "File",
@@ -395,6 +362,7 @@ pub fn build_menu_items(debug_mode: bool) -> Vec<MenuItem<MenuAction>> {
             ],
         ),
         MenuItem::group("View", view_items),
+        MenuItem::group("Agents", agent_items),
         MenuItem::group(
             "Model",
             vec![MenuItem::item("/model ...", MenuAction::SetModel)],
@@ -449,7 +417,7 @@ impl TuiApp {
             threads_focus: ThreadsFocus::ThreadList,
             context_tree_state: tui_tree_widget::TreeState::default(),
             debug_mode: false,
-            menu_state: MenuState::new(build_menu_items(false)),
+            menu_state: MenuState::new(build_menu_items(false, &[], None)),
             menu_active: false,
             command_popup_index: 0,
             cmd_service: CommandLineService::new(),
@@ -466,14 +434,19 @@ impl TuiApp {
             diag_summary: String::new(),
             input_mode: InputMode::Normal,
             models_config: Arc::new(Mutex::new(ModelsConfig::default())),
-            pending_wizard_completion: None,
-            pending_update_completion: None,
+            pending_provider_completion: None,
+            selected_agent: None,
+            agents_config: AgentsConfig::default(),
         }
     }
 
-    /// Rebuild the menu item tree (e.g., after toggling debug mode).
+    /// Rebuild the menu item tree (e.g., after toggling debug mode or changing favorites).
     pub fn rebuild_menu(&mut self) {
-        self.menu_state = MenuState::new(build_menu_items(self.debug_mode));
+        self.menu_state = MenuState::new(build_menu_items(
+            self.debug_mode,
+            &self.agents_config.favorites,
+            self.selected_agent.as_deref(),
+        ));
     }
 
     /// High-contrast theme tuned for YAML readability on dark terminals.
@@ -875,79 +848,9 @@ impl TuiApp {
         self.input_editor.set_cursor(len);
     }
 
-    /// Get the list of completed wizard fields for rendering.
-    /// Returns (label, display_value) pairs.
-    pub fn wizard_completed_fields(&self) -> Vec<(&'static str, String)> {
-        match &self.input_mode {
-            InputMode::ModelAddWizard {
-                provider,
-                step,
-                alias,
-                model_id,
-                api_key,
-            } => {
-                let mut fields = Vec::new();
-                fields.push(("Provider", provider.clone()));
-                match step {
-                    WizardStep::Alias => {}
-                    WizardStep::ModelId => {
-                        if let Some(a) = alias {
-                            fields.push(("Alias", a.clone()));
-                        }
-                    }
-                    WizardStep::ApiKey => {
-                        if let Some(a) = alias {
-                            fields.push(("Alias", a.clone()));
-                        }
-                        if let Some(m) = model_id {
-                            fields.push(("Model ID", m.clone()));
-                        }
-                    }
-                    WizardStep::BaseUrl => {
-                        if let Some(a) = alias {
-                            fields.push(("Alias", a.clone()));
-                        }
-                        if let Some(m) = model_id {
-                            fields.push(("Model ID", m.clone()));
-                        }
-                        if api_key.is_some() {
-                            fields.push(("API key", "(set)".into()));
-                        }
-                    }
-                }
-                fields
-            }
-            InputMode::ModelUpdateWizard {
-                provider,
-                step,
-                api_key,
-            } => {
-                let mut fields = Vec::new();
-                fields.push(("Provider", provider.clone()));
-                match step {
-                    UpdateStep::ApiKey => {}
-                    UpdateStep::BaseUrl => {
-                        if api_key.is_some() {
-                            fields.push(("API key", "(set)".into()));
-                        } else {
-                            fields.push(("API key", "(unchanged)".into()));
-                        }
-                    }
-                }
-                fields
-            }
-            InputMode::Normal => Vec::new(),
-        }
-    }
-
     /// Whether the wizard is active.
     pub fn in_wizard(&self) -> bool {
-        !matches!(self.input_mode, InputMode::Normal)
-    }
-
-    /// Number of completed wizard fields (for dynamic input height).
-    pub fn wizard_field_count(&self) -> u16 {
-        self.wizard_completed_fields().len() as u16
+        matches!(self.input_mode, InputMode::ProviderWizard { .. })
     }
 }
 

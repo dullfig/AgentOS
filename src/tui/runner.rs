@@ -51,17 +51,26 @@ pub async fn refresh_from_kernel(app: &mut TuiApp, kernel: &Arc<Mutex<Kernel>>) 
 
 /// Inject a task from the input bar into the pipeline.
 ///
-/// Discovers the first agent listener dynamically from the organism config,
-/// rather than hardcoding "coding-agent".
-async fn inject_task(pipeline: &AgentPipeline, kernel: &Arc<Mutex<Kernel>>, task: &str) {
+/// Routes to the selected agent if set, otherwise to the first agent listener.
+async fn inject_task(
+    pipeline: &AgentPipeline,
+    kernel: &Arc<Mutex<Kernel>>,
+    task: &str,
+    selected_agent: Option<&str>,
+) {
     let root_uuid = {
         let k = kernel.lock().await;
         k.threads().root_uuid().map(|s| s.to_string())
     };
 
-    // Find the first agent listener
-    let agent = pipeline.organism().agent_listeners();
-    let agent_def = match agent.first() {
+    // Find the target agent: selected by name, or first available
+    let agents = pipeline.organism().agent_listeners();
+    let agent_def = if let Some(name) = selected_agent {
+        agents.iter().find(|a| a.name == name).or(agents.first())
+    } else {
+        agents.first()
+    };
+    let agent_def = match agent_def {
         Some(def) => def,
         None => return, // no agents configured
     };
@@ -82,7 +91,14 @@ async fn inject_task(pipeline: &AgentPipeline, kernel: &Arc<Mutex<Kernel>>, task
 }
 
 /// Run the TUI main loop. Blocks until quit.
-pub async fn run_tui(pipeline: &AgentPipeline, debug: bool, organism_yaml: &str, models_config: crate::config::ModelsConfig, has_pool: bool) -> anyhow::Result<()> {
+pub async fn run_tui(
+    pipeline: &AgentPipeline,
+    debug: bool,
+    organism_yaml: &str,
+    models_config: crate::config::ModelsConfig,
+    agents_config: crate::config::AgentsConfig,
+    has_pool: bool,
+) -> anyhow::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -93,13 +109,15 @@ pub async fn run_tui(pipeline: &AgentPipeline, debug: bool, organism_yaml: &str,
     app.debug_mode = debug;
     app.llm_pool = pipeline.llm_pool();
     app.models_config = std::sync::Arc::new(tokio::sync::Mutex::new(models_config));
+    app.agents_config = agents_config;
     app.load_yaml_editor(organism_yaml);
+    app.rebuild_menu();
 
     // If no LLM pool at boot, show a helpful welcome message
     if !has_pool {
         super::commands::push_feedback(
             &mut app,
-            "No API key configured. Use /models add <provider> to set up a model.\nExample: /models add anthropic",
+            "No API key configured. Use /provider <name> to set up a provider.\nExample: /provider anthropic",
         );
     }
     let kernel = pipeline.kernel();
@@ -161,53 +179,85 @@ pub async fn run_tui(pipeline: &AgentPipeline, debug: bool, organism_yaml: &str,
             }
         }
 
-        // Check for pending wizard completion (set by wizard Enter on BaseUrl step)
-        if let Some(wc) = app.pending_wizard_completion.take() {
-            let config_arc = app.models_config.clone();
-            let mut config = config_arc.lock().await;
-            config.add_model(&wc.provider, &wc.alias, &wc.model_id, wc.api_key, wc.base_url);
-            let _ = config.save();
-            // Rebuild or create pool from updated config
-            let pool_msg = rebuild_pool(&mut app, &config);
-            drop(config);
-            super::commands::push_feedback(
-                &mut app,
-                &format!("Added {} ({}: {}){}", wc.alias, wc.provider, wc.model_id, pool_msg),
-            );
-        }
-
-        // Check for pending update completion
-        if let Some(uc) = app.pending_update_completion.take() {
-            let config_arc = app.models_config.clone();
-            let mut config = config_arc.lock().await;
-            let feedback = if let Some(provider) = config.providers.get_mut(&uc.provider) {
-                let mut changed = Vec::new();
-                if let Some(key) = uc.api_key {
-                    provider.api_key = Some(key);
-                    changed.push("API key");
-                }
-                if let Some(url) = uc.base_url {
-                    provider.base_url = Some(url);
-                    changed.push("base URL");
-                }
-                let _ = config.save();
-                if changed.is_empty() {
-                    format!("No changes to provider '{}'.", uc.provider)
-                } else {
-                    // Rebuild pool with new credentials
-                    let pool_msg = rebuild_pool(&mut app, &config);
-                    format!("Updated {} for provider '{}'{}", changed.join(" and "), uc.provider, pool_msg)
-                }
-            } else {
-                format!("Unknown provider: {}", uc.provider)
+        // Check for pending provider completion (set by provider wizard Enter)
+        if let Some(pc) = app.pending_provider_completion.take() {
+            // Create a temporary client with the given key to discover models
+            let base_url = {
+                let config = app.models_config.lock().await;
+                config.providers.get(&pc.provider).and_then(|p| p.base_url.clone())
             };
-            drop(config);
-            super::commands::push_feedback(&mut app, &feedback);
+            let client = if let Some(ref url) = base_url {
+                crate::llm::client::AnthropicClient::with_base_url(pc.api_key.clone(), url.clone())
+            } else {
+                crate::llm::client::AnthropicClient::new(pc.api_key.clone())
+            };
+
+            match client.list_models().await {
+                Ok(models) => {
+                    let config_arc = app.models_config.clone();
+                    let mut config = config_arc.lock().await;
+
+                    // Build the model map from discovered models
+                    let mut model_map = std::collections::HashMap::new();
+                    for model in &models {
+                        let alias = shorten_model_id(&model.id);
+                        model_map.insert(alias, model.id.clone());
+                    }
+
+                    // Store provider with key and discovered models
+                    if let Some(existing) = config.providers.get_mut(&pc.provider) {
+                        existing.api_key = Some(pc.api_key.clone());
+                        existing.models = model_map.clone();
+                    } else {
+                        config.providers.insert(pc.provider.clone(), crate::config::ProviderConfig {
+                            api_key: Some(pc.api_key.clone()),
+                            base_url: base_url.clone(),
+                            models: model_map.clone(),
+                        });
+                    }
+
+                    // Set default if none
+                    if config.default.is_none() {
+                        let default = if model_map.contains_key("sonnet") {
+                            "sonnet".to_string()
+                        } else {
+                            model_map.keys().next().cloned().unwrap_or_default()
+                        };
+                        if !default.is_empty() {
+                            config.default = Some(default);
+                        }
+                    }
+
+                    let _ = config.save();
+
+                    // Format feedback
+                    let mut lines = vec![format!("Discovered {} models from {}:", models.len(), pc.provider)];
+                    let mut aliases: Vec<_> = model_map.iter().collect();
+                    aliases.sort_by_key(|(alias, _)| (*alias).clone());
+                    for (alias, model_id) in &aliases {
+                        let is_default = config.default.as_deref() == Some(alias.as_str());
+                        let marker = if is_default { " *" } else { "  " };
+                        lines.push(format!("{marker} {alias:<20} {model_id}"));
+                    }
+
+                    // Rebuild or create pool
+                    let pool_msg = rebuild_pool(&mut app, &config);
+                    drop(config);
+                    lines.push(pool_msg);
+                    super::commands::push_feedback(&mut app, &lines.join("\n"));
+                }
+                Err(e) => {
+                    super::commands::push_feedback(
+                        &mut app,
+                        &format!("Failed to discover models from {}: {e}\nCheck your API key and try again with /provider {}", pc.provider, pc.provider),
+                    );
+                }
+            }
         }
 
         // Check for pending task submission (set by input handler on Enter)
         if let Some(task) = app.pending_task.take() {
-            inject_task(pipeline, &kernel, &task).await;
+            inject_task(pipeline, &kernel, &task, app.selected_agent.as_deref()).await;
         }
 
         if app.should_quit {
@@ -219,6 +269,27 @@ pub async fn run_tui(pipeline: &AgentPipeline, debug: bool, organism_yaml: &str,
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
+}
+
+/// Generate a short alias from a full model ID.
+/// E.g., "claude-sonnet-4-6-20250514" → "sonnet-4-6"
+///       "claude-opus-4-6" → "opus"
+///       "gpt-4o" → "gpt-4o"
+fn shorten_model_id(model_id: &str) -> String {
+    let s = model_id.strip_prefix("claude-").unwrap_or(model_id);
+    // Strip date suffixes like "-20250514" (8 digits after last dash)
+    let s = if s.len() > 9 {
+        let last_dash = s.rfind('-').unwrap_or(s.len());
+        let suffix = &s[last_dash + 1..];
+        if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_digit()) {
+            &s[..last_dash]
+        } else {
+            s
+        }
+    } else {
+        s
+    };
+    s.to_string()
 }
 
 /// Rebuild or create the LlmPool from updated config.

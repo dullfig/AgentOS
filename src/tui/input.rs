@@ -10,7 +10,7 @@ use tui_menu::MenuEvent;
 
 use crate::lsp::LanguageService;
 
-use super::app::{ActiveTab, AgentStatus, ChatEntry, InputMode, MenuAction, ThreadsFocus, TuiApp, UpdateCompletion, UpdateStep, WizardCompletion, WizardStep};
+use super::app::{ActiveTab, AgentStatus, ChatEntry, InputMode, MenuAction, ProviderCompletion, ThreadsFocus, TuiApp};
 
 /// Dispatch a selected menu action.
 fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
@@ -46,22 +46,41 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
                 role: "system".into(),
                 text: concat!(
                     "Keyboard shortcuts:\n",
-                    "  F10         Open/close menu bar\n",
-                    "  Alt+F/V/M/H Open File/View/Model/Help menu\n",
-                    "  Ctrl+1..5   Switch tabs\n",
-                    "  Tab         Cycle focus (Threads) / autocomplete (/commands)\n",
-                    "  Enter       Submit task or confirm\n",
-                    "  Esc         Clear input\n",
-                    "  Up/Down     Scroll or navigate\n",
-                    "  PageUp/Dn   Page scroll\n",
-                    "  Home/End    Jump to top/bottom\n",
-                    "  Ctrl+C      Quit",
+                    "  F10           Open/close menu bar\n",
+                    "  Alt+F/V/A/M/H Open File/View/Agents/Model/Help menu\n",
+                    "  Ctrl+1..5     Switch tabs\n",
+                    "  Tab           Cycle focus (Threads) / autocomplete (/commands)\n",
+                    "  Enter         Submit task or confirm\n",
+                    "  Esc           Clear input\n",
+                    "  Up/Down       Scroll or navigate\n",
+                    "  PageUp/Dn     Page scroll\n",
+                    "  Home/End      Jump to top/bottom\n",
+                    "  Ctrl+C        Quit",
                 )
                 .into(),
             });
             app.message_auto_scroll = true;
         }
+        MenuAction::SelectAgent(name) => {
+            app.selected_agent = Some(name.clone());
+            push_feedback(app, &format!("Agent: {name}"));
+            app.rebuild_menu();
+        }
+        MenuAction::ResetAgent => {
+            app.selected_agent = None;
+            push_feedback(app, "Agent: (default)");
+            app.rebuild_menu();
+        }
     }
+}
+
+/// Push a system message to the chat log.
+fn push_feedback(app: &mut TuiApp, text: &str) {
+    app.chat_log.push(ChatEntry {
+        role: "system".into(),
+        text: text.into(),
+    });
+    app.message_auto_scroll = true;
 }
 
 /// Get the current input text (first line).
@@ -121,8 +140,9 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         let menu_index = match key.code {
             KeyCode::Char('f') => Some(0), // File
             KeyCode::Char('v') => Some(1), // View
-            KeyCode::Char('m') => Some(2), // Model
-            KeyCode::Char('h') => Some(3), // Help
+            KeyCode::Char('a') => Some(2), // Agents
+            KeyCode::Char('m') => Some(3), // Model
+            KeyCode::Char('h') => Some(4), // Help
             _ => None,
         };
         if let Some(index) = menu_index {
@@ -160,134 +180,34 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         return;
     }
 
-    // Wizard mode: intercept Enter/Esc, forward everything else to input editor
-    if let InputMode::ModelAddWizard {
-        ref provider,
-        ref step,
-        ref alias,
-        ref model_id,
-        ref api_key,
-    } = app.input_mode.clone()
-    {
+    // Provider wizard mode: single step — paste API key and Enter
+    if let InputMode::ProviderWizard { ref provider } = app.input_mode.clone() {
         match key.code {
             KeyCode::Esc => {
                 app.input_mode = InputMode::Normal;
                 app.clear_input();
                 app.chat_log.push(ChatEntry {
                     role: "system".into(),
-                    text: "Model wizard cancelled.".into(),
+                    text: "Provider wizard cancelled.".into(),
                 });
                 app.message_auto_scroll = true;
                 return;
             }
             KeyCode::Enter => {
                 let value = app.take_input().unwrap_or_default();
-                match step {
-                    WizardStep::Alias => {
-                        if value.is_empty() {
-                            return; // require non-empty alias
-                        }
-                        app.input_mode = InputMode::ModelAddWizard {
-                            provider: provider.clone(),
-                            step: WizardStep::ModelId,
-                            alias: Some(value),
-                            model_id: None,
-                            api_key: None,
-                        };
-                    }
-                    WizardStep::ModelId => {
-                        if value.is_empty() {
-                            return; // require non-empty model ID
-                        }
-                        app.input_mode = InputMode::ModelAddWizard {
-                            provider: provider.clone(),
-                            step: WizardStep::ApiKey,
-                            alias: alias.clone(),
-                            model_id: Some(value),
-                            api_key: None,
-                        };
-                    }
-                    WizardStep::ApiKey => {
-                        // API key can be empty (use existing provider key)
-                        let key_val = if value.is_empty() { None } else { Some(value) };
-                        app.input_mode = InputMode::ModelAddWizard {
-                            provider: provider.clone(),
-                            step: WizardStep::BaseUrl,
-                            alias: alias.clone(),
-                            model_id: model_id.clone(),
-                            api_key: key_val,
-                        };
-                    }
-                    WizardStep::BaseUrl => {
-                        // Complete the wizard
-                        let base_url = if value.is_empty() { None } else { Some(value) };
-                        let final_alias = alias.as_deref().unwrap_or("model");
-                        let final_model_id = model_id.as_deref().unwrap_or("unknown");
-
-                        // We can't await here since handle_key is sync. Store pending wizard completion.
-                        app.pending_wizard_completion = Some(WizardCompletion {
-                            provider: provider.clone(),
-                            alias: final_alias.to_string(),
-                            model_id: final_model_id.to_string(),
-                            api_key: api_key.clone(),
-                            base_url,
-                        });
-                        app.input_mode = InputMode::Normal;
-                    }
+                if value.is_empty() {
+                    return; // require non-empty API key
                 }
+                // Store pending completion for async processing in runner
+                app.pending_provider_completion = Some(ProviderCompletion {
+                    provider: provider.clone(),
+                    api_key: value,
+                });
+                app.input_mode = InputMode::Normal;
                 return;
             }
             _ => {
                 // Forward to input editor
-                let area = app.input_area;
-                let _ = app.input_editor.input(key, &area);
-                return;
-            }
-        }
-    }
-
-    // Update wizard mode: intercept Enter/Esc, forward everything else
-    if let InputMode::ModelUpdateWizard {
-        ref provider,
-        ref step,
-        ref api_key,
-    } = app.input_mode.clone()
-    {
-        match key.code {
-            KeyCode::Esc => {
-                app.input_mode = InputMode::Normal;
-                app.clear_input();
-                app.chat_log.push(ChatEntry {
-                    role: "system".into(),
-                    text: "Update wizard cancelled.".into(),
-                });
-                app.message_auto_scroll = true;
-                return;
-            }
-            KeyCode::Enter => {
-                let value = app.take_input().unwrap_or_default();
-                match step {
-                    UpdateStep::ApiKey => {
-                        let key_val = if value.is_empty() { None } else { Some(value) };
-                        app.input_mode = InputMode::ModelUpdateWizard {
-                            provider: provider.clone(),
-                            step: UpdateStep::BaseUrl,
-                            api_key: key_val,
-                        };
-                    }
-                    UpdateStep::BaseUrl => {
-                        let base_url = if value.is_empty() { None } else { Some(value) };
-                        app.pending_update_completion = Some(UpdateCompletion {
-                            provider: provider.clone(),
-                            api_key: api_key.clone(),
-                            base_url,
-                        });
-                        app.input_mode = InputMode::Normal;
-                    }
-                }
-                return;
-            }
-            _ => {
                 let area = app.input_area;
                 let _ = app.input_editor.input(key, &area);
                 return;
@@ -989,40 +909,30 @@ mod tests {
         assert!(app.conversation_auto_scroll);
     }
 
-    // ── Wizard tests ──
+    // ── Provider wizard tests ──
 
     #[test]
-    fn wizard_enter_advances_step() {
+    fn provider_wizard_enter_sets_pending() {
         let mut app = TuiApp::new();
-        app.input_mode = InputMode::ModelAddWizard {
+        app.input_mode = InputMode::ProviderWizard {
             provider: "anthropic".into(),
-            step: WizardStep::Alias,
-            alias: None,
-            model_id: None,
-            api_key: None,
         };
-        type_text(&mut app, "my-opus");
+        type_text(&mut app, "sk-ant-test-key");
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        match &app.input_mode {
-            InputMode::ModelAddWizard { step, alias, .. } => {
-                assert_eq!(*step, WizardStep::ModelId);
-                assert_eq!(alias.as_deref(), Some("my-opus"));
-            }
-            _ => panic!("expected wizard to advance to ModelId"),
-        }
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.pending_provider_completion.is_some());
+        let pc = app.pending_provider_completion.unwrap();
+        assert_eq!(pc.provider, "anthropic");
+        assert_eq!(pc.api_key, "sk-ant-test-key");
     }
 
     #[test]
-    fn wizard_esc_cancels() {
+    fn provider_wizard_esc_cancels() {
         let mut app = TuiApp::new();
-        app.input_mode = InputMode::ModelAddWizard {
+        app.input_mode = InputMode::ProviderWizard {
             provider: "anthropic".into(),
-            step: WizardStep::ModelId,
-            alias: Some("test".into()),
-            model_id: None,
-            api_key: None,
         };
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -1032,75 +942,15 @@ mod tests {
     }
 
     #[test]
-    fn wizard_completion_sets_pending() {
+    fn provider_wizard_empty_key_doesnt_submit() {
         let mut app = TuiApp::new();
-        app.input_mode = InputMode::ModelAddWizard {
+        app.input_mode = InputMode::ProviderWizard {
             provider: "anthropic".into(),
-            step: WizardStep::BaseUrl,
-            alias: Some("my-opus".into()),
-            model_id: Some("claude-opus-4-6".into()),
-            api_key: Some("sk-test".into()),
         };
-        // Enter with empty base URL (skip) completes the wizard
+        // Enter with empty input — should NOT complete
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(app.input_mode, InputMode::Normal);
-        assert!(app.pending_wizard_completion.is_some());
-        let wc = app.pending_wizard_completion.unwrap();
-        assert_eq!(wc.alias, "my-opus");
-        assert_eq!(wc.model_id, "claude-opus-4-6");
-        assert_eq!(wc.api_key, Some("sk-test".into()));
-        assert!(wc.base_url.is_none());
-    }
-
-    #[test]
-    fn wizard_empty_alias_doesnt_advance() {
-        let mut app = TuiApp::new();
-        app.input_mode = InputMode::ModelAddWizard {
-            provider: "anthropic".into(),
-            step: WizardStep::Alias,
-            alias: None,
-            model_id: None,
-            api_key: None,
-        };
-        // Enter with empty input — should NOT advance
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        match &app.input_mode {
-            InputMode::ModelAddWizard { step, .. } => {
-                assert_eq!(*step, WizardStep::Alias); // still on Alias
-            }
-            _ => panic!("should still be in wizard"),
-        }
-    }
-
-    #[test]
-    fn update_wizard_sets_pending() {
-        let mut app = TuiApp::new();
-        app.input_mode = InputMode::ModelUpdateWizard {
-            provider: "anthropic".into(),
-            step: UpdateStep::ApiKey,
-            api_key: None,
-        };
-        type_text(&mut app, "sk-new-key");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        // Should advance to BaseUrl
-        match &app.input_mode {
-            InputMode::ModelUpdateWizard { step, api_key, .. } => {
-                assert_eq!(*step, UpdateStep::BaseUrl);
-                assert_eq!(api_key.as_deref(), Some("sk-new-key"));
-            }
-            _ => panic!("expected UpdateStep::BaseUrl"),
-        }
-
-        // Enter with empty base URL → completes
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.input_mode, InputMode::Normal);
-        assert!(app.pending_update_completion.is_some());
-        let uc = app.pending_update_completion.unwrap();
-        assert_eq!(uc.provider, "anthropic");
-        assert_eq!(uc.api_key, Some("sk-new-key".into()));
-        assert!(uc.base_url.is_none());
+        assert!(app.in_wizard()); // still in wizard
+        assert!(app.pending_provider_completion.is_none());
     }
 }

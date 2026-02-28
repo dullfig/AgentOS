@@ -32,8 +32,6 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     // Wizard mode: expand input bar to show completed fields
     let input_height = if app.active_tab == ActiveTab::Yaml {
         0
-    } else if app.in_wizard() {
-        3 + app.wizard_field_count()
     } else {
         3
     };
@@ -115,8 +113,8 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
         .fg(Color::Black)
         .bg(Color::White)
         .add_modifier(Modifier::UNDERLINED);
-    let names = ["File", "View", "Model", "Help"];
-    let accels = ['F', 'V', 'M', 'H'];
+    let names = ["File", "View", "Agents", "Model", "Help"];
+    let accels = ['F', 'V', 'A', 'M', 'H'];
     let mut x = outer[0].x + 1; // skip initial " "
     for (i, name) in names.iter().enumerate() {
         x += 1; // leading space of " name "
@@ -229,16 +227,13 @@ fn draw_command_popup(f: &mut Frame, app: &TuiApp, input_area: Rect) {
     f.render_widget(para, popup_area);
 }
 
-/// Render the expanding wizard input bar.
+/// Render the wizard input bar (single-step: API key).
 fn draw_wizard_input(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     use super::app::InputMode;
 
-    let (title, step_prompt) = match &app.input_mode {
-        InputMode::ModelAddWizard { step, .. } => {
-            (format!(" /models add — {} ", step.prompt()), step.prompt())
-        }
-        InputMode::ModelUpdateWizard { step, .. } => {
-            (format!(" /models update — {} ", step.prompt()), step.prompt())
+    let title = match &app.input_mode {
+        InputMode::ProviderWizard { provider } => {
+            format!(" /provider {provider} ")
         }
         InputMode::Normal => return,
     };
@@ -250,52 +245,21 @@ fn draw_wizard_input(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Render completed fields above the editor
-    let fields = app.wizard_completed_fields();
-    let field_lines: Vec<Line> = fields
-        .iter()
-        .map(|(label, value)| {
-            Line::from(vec![
-                Span::styled(
-                    format!("  {label}: "),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    value,
-                    Style::default().fg(Color::Cyan),
-                ),
-            ])
-        })
-        .collect();
-
-    let field_count = field_lines.len() as u16;
-
-    if field_count > 0 && inner.height > 1 {
-        let fields_area = Rect::new(inner.x, inner.y, inner.width, field_count.min(inner.height - 1));
-        f.render_widget(Paragraph::new(field_lines), fields_area);
-    }
-
-    // Render input editor in the remaining space
-    let editor_y = inner.y + field_count;
-    let editor_height = inner.height.saturating_sub(field_count);
-    if editor_height > 0 {
-        let editor_area = Rect::new(inner.x, editor_y, inner.width, editor_height);
-        // Draw the step prompt prefix
-        let prompt = format!("> {} ", step_prompt);
-        let prompt_width = prompt.len() as u16;
-        f.render_widget(
-            Paragraph::new(Span::styled(&prompt, Style::default().fg(Color::Yellow))),
-            Rect::new(editor_area.x, editor_area.y, prompt_width.min(editor_area.width), 1),
-        );
-        // Editor gets remaining width
-        let edit_x = editor_area.x + prompt_width;
-        let edit_width = editor_area.width.saturating_sub(prompt_width);
-        if edit_width > 0 {
-            let edit_area = Rect::new(edit_x, editor_area.y, edit_width, 1);
-            f.render_widget(&app.input_editor, edit_area);
-            if let Some((x, y)) = app.input_editor.get_visible_cursor(&edit_area) {
-                f.set_cursor_position(Position::new(x, y));
-            }
+    // Draw the prompt prefix
+    let prompt = "> API key: ";
+    let prompt_width = prompt.len() as u16;
+    f.render_widget(
+        Paragraph::new(Span::styled(prompt, Style::default().fg(Color::Yellow))),
+        Rect::new(inner.x, inner.y, prompt_width.min(inner.width), 1),
+    );
+    // Editor gets remaining width
+    let edit_x = inner.x + prompt_width;
+    let edit_width = inner.width.saturating_sub(prompt_width);
+    if edit_width > 0 {
+        let edit_area = Rect::new(edit_x, inner.y, edit_width, 1);
+        f.render_widget(&app.input_editor, edit_area);
+        if let Some((x, y)) = app.input_editor.get_visible_cursor(&edit_area) {
+            f.set_cursor_position(Position::new(x, y));
         }
     }
 }
@@ -1012,10 +976,26 @@ fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
         "^1/2/3/4:Tabs"
     };
 
+    let agent_label = match &app.selected_agent {
+        Some(name) => format!("[Agent: {name}]"),
+        None => String::new(),
+    };
+
     let mut spans = vec![
         Span::styled(" [", Style::default().fg(Color::DarkGray)),
         status_text,
         Span::styled("]", Style::default().fg(Color::DarkGray)),
+    ];
+
+    if !agent_label.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            &agent_label,
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+
+    spans.extend([
         Span::raw("  "),
         Span::styled(
             format!(
@@ -1035,7 +1015,7 @@ fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
             format!("[{tab_name}]"),
             Style::default().fg(Color::Green),
         ),
-    ];
+    ]);
 
     // YAML tab: show diagnostics + extra shortcuts
     if app.active_tab == ActiveTab::Yaml && !app.diag_summary.is_empty() {

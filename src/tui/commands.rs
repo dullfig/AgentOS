@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::LlmPool;
 
-use super::app::{ChatEntry, InputMode, TuiApp, UpdateStep, WizardStep};
+use super::app::{ChatEntry, InputMode, TuiApp};
 
 /// What kind of values an argument accepts.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,14 +90,6 @@ pub static COMMANDS: &[SlashCommand] = &[
         args: &[],
         subcommands: &[
             SubcommandSpec {
-                name: "add",
-                description: "Add a new model",
-                args: &[ArgSpec {
-                    name: "provider",
-                    kind: ArgKind::Free("anthropic|openai|ollama"),
-                }],
-            },
-            SubcommandSpec {
                 name: "remove",
                 description: "Remove a model",
                 args: &[ArgSpec {
@@ -113,12 +105,49 @@ pub static COMMANDS: &[SlashCommand] = &[
                     kind: ArgKind::Free("model alias"),
                 }],
             },
+        ],
+    },
+    SlashCommand {
+        name: "/provider",
+        aliases: &[],
+        description: "Configure API provider (auto-discovers models)",
+        has_arg: true,
+        args: &[ArgSpec {
+            name: "name",
+            kind: ArgKind::Enum(&["anthropic", "openai", "ollama"]),
+        }],
+        subcommands: &[
             SubcommandSpec {
-                name: "update",
-                description: "Update provider API key or base URL",
+                name: "remove",
+                description: "Remove a provider and all its models",
                 args: &[ArgSpec {
-                    name: "provider",
-                    kind: ArgKind::Free("anthropic|openai|ollama"),
+                    name: "name",
+                    kind: ArgKind::Free("provider name"),
+                }],
+            },
+        ],
+    },
+    SlashCommand {
+        name: "/agents",
+        aliases: &[],
+        description: "Manage favorite agents",
+        has_arg: true,
+        args: &[],
+        subcommands: &[
+            SubcommandSpec {
+                name: "add",
+                description: "Add agent to favorites",
+                args: &[ArgSpec {
+                    name: "agent name",
+                    kind: ArgKind::Free("agent name"),
+                }],
+            },
+            SubcommandSpec {
+                name: "remove",
+                description: "Remove agent from favorites",
+                args: &[ArgSpec {
+                    name: "agent name",
+                    kind: ArgKind::Free("agent name"),
                 }],
             },
         ],
@@ -126,7 +155,7 @@ pub static COMMANDS: &[SlashCommand] = &[
 ];
 
 /// Return all commands whose name or alias prefix-matches the input.
-/// Used by the command popup to show filtered choices.
+/// Used by the command popup to show filtered choices. Sorted alphabetically.
 pub fn matching_commands(input: &str) -> Vec<&'static SlashCommand> {
     if !input.starts_with('/') {
         return Vec::new();
@@ -140,6 +169,7 @@ pub fn matching_commands(input: &str) -> Vec<&'static SlashCommand> {
             results.push(cmd);
         }
     }
+    results.sort_by_key(|c| c.name);
     results
 }
 
@@ -258,7 +288,7 @@ pub async fn execute(
                     let p = p.lock().await;
                     p.default_model().to_string()
                 } else {
-                    "No LLM pool — use /models add to configure".into()
+                    "No LLM pool — use /provider to configure".into()
                 };
                 CommandResult {
                     feedback: Some(format!("Current model: {current}")),
@@ -300,14 +330,24 @@ pub async fn execute(
                         }
                     }
                     Err(e) => CommandResult {
-                        feedback: Some(format!("No LLM pool and can't create one: {e}. Use /models add first.")),
+                        feedback: Some(format!("No LLM pool and can't create one: {e}. Use /provider first.")),
                         handled: true,
                     },
                 }
             }
         }
+        "/agents" => {
+            if !arg2.is_empty() {
+                execute_agents_with_arg(app, arg, arg2)
+            } else {
+                execute_agents(app, arg)
+            }
+        }
         "/models" => {
             execute_models(app, arg, arg2, pool).await
+        }
+        "/provider" => {
+            execute_provider(app, arg, arg2).await
         }
         "/help" => {
             let mut lines = Vec::new();
@@ -348,6 +388,109 @@ pub fn push_feedback(app: &mut TuiApp, text: &str) {
         text: text.into(),
     });
     app.message_auto_scroll = true;
+}
+
+/// Handle `/agents` subcommands.
+fn execute_agents(app: &mut TuiApp, subcommand: &str) -> CommandResult {
+    match subcommand {
+        "" => {
+            // List all agent listeners from organism config (via chat log)
+            // We don't have the organism here, so list favorites + selected
+            let mut lines = vec!["Favorite agents:".to_string()];
+            if app.agents_config.favorites.is_empty() {
+                lines.push("  (none — use /agents add <name> to add)".into());
+            } else {
+                for name in &app.agents_config.favorites {
+                    let marker = if app.selected_agent.as_deref() == Some(name.as_str()) {
+                        "\u{25b6} "
+                    } else {
+                        "  "
+                    };
+                    lines.push(format!("{marker}{name}"));
+                }
+            }
+            if let Some(ref sel) = app.selected_agent {
+                lines.push(format!("\nActive: {sel}"));
+            } else {
+                lines.push("\nActive: (default — first agent)".into());
+            }
+            CommandResult {
+                feedback: Some(lines.join("\n")),
+                handled: true,
+            }
+        }
+        "add" => {
+            CommandResult {
+                feedback: Some("Usage: /agents add <name>".into()),
+                handled: true,
+            }
+        }
+        "remove" => {
+            CommandResult {
+                feedback: Some("Usage: /agents remove <name>".into()),
+                handled: true,
+            }
+        }
+        _ => {
+            // Treat as agent name for add/remove
+            // Check if it looks like "add <name>" or "remove <name>"
+            CommandResult {
+                feedback: Some(format!("Unknown /agents subcommand: {subcommand}. Use add or remove.")),
+                handled: true,
+            }
+        }
+    }
+}
+
+/// Handle `/agents add <name>` and `/agents remove <name>`.
+/// Called from execute() when /agents has 3 parts.
+fn execute_agents_with_arg(app: &mut TuiApp, subcommand: &str, name: &str) -> CommandResult {
+    match subcommand {
+        "add" => {
+            if name.is_empty() {
+                return CommandResult {
+                    feedback: Some("Usage: /agents add <agent-name>".into()),
+                    handled: true,
+                };
+            }
+            app.agents_config.add(name);
+            let _ = app.agents_config.save();
+            app.rebuild_menu();
+            CommandResult {
+                feedback: Some(format!("Added '{name}' to favorites.")),
+                handled: true,
+            }
+        }
+        "remove" => {
+            if name.is_empty() {
+                return CommandResult {
+                    feedback: Some("Usage: /agents remove <agent-name>".into()),
+                    handled: true,
+                };
+            }
+            if app.agents_config.remove(name) {
+                // If the removed agent was selected, reset to default
+                if app.selected_agent.as_deref() == Some(name) {
+                    app.selected_agent = None;
+                }
+                let _ = app.agents_config.save();
+                app.rebuild_menu();
+                CommandResult {
+                    feedback: Some(format!("Removed '{name}' from favorites.")),
+                    handled: true,
+                }
+            } else {
+                CommandResult {
+                    feedback: Some(format!("'{name}' is not in favorites.")),
+                    handled: true,
+                }
+            }
+        }
+        _ => CommandResult {
+            feedback: Some(format!("Unknown /agents subcommand: {subcommand}. Use add or remove.")),
+            handled: true,
+        },
+    }
 }
 
 /// Handle `/models` subcommands.
@@ -392,21 +535,6 @@ async fn execute_models(
 
             CommandResult {
                 feedback: Some(output),
-                handled: true,
-            }
-        }
-        "add" => {
-            let provider = if arg.is_empty() { "anthropic" } else { arg };
-            app.input_mode = InputMode::ModelAddWizard {
-                provider: provider.to_string(),
-                step: WizardStep::Alias,
-                alias: None,
-                model_id: None,
-                api_key: None,
-            };
-            app.clear_input();
-            CommandResult {
-                feedback: None,
                 handled: true,
             }
         }
@@ -459,21 +587,71 @@ async fn execute_models(
                 }
             }
         }
-        "update" => {
-            let provider = if arg.is_empty() { "anthropic" } else { arg };
-            // Verify provider exists
+        _ => CommandResult {
+            feedback: Some(format!("Unknown /models subcommand: {subcommand}. Use remove or default.")),
+            handled: true,
+        },
+    }
+}
+
+/// Handle `/provider` command.
+async fn execute_provider(
+    app: &mut TuiApp,
+    subcommand_or_name: &str,
+    arg: &str,
+) -> CommandResult {
+    match subcommand_or_name {
+        "" => {
+            // /provider — list configured providers
             let config = app.models_config.lock().await;
-            if !config.providers.contains_key(provider) {
+            if config.providers.is_empty() {
                 return CommandResult {
-                    feedback: Some(format!("Unknown provider: {provider}. Add a model first with /models add {provider}.")),
+                    feedback: Some("No providers configured. Use /provider <name> to add one.\nExample: /provider anthropic".into()),
                     handled: true,
                 };
             }
-            drop(config);
-            app.input_mode = InputMode::ModelUpdateWizard {
-                provider: provider.to_string(),
-                step: UpdateStep::ApiKey,
-                api_key: None,
+            let mut lines = vec!["Providers:".to_string()];
+            for (name, provider) in &config.providers {
+                let key_status = if provider.api_key.is_some() { "\u{2713}" } else { "\u{2717}" };
+                let model_count = provider.models.len();
+                lines.push(format!("  {key_status} {name:<12} ({model_count} models)"));
+            }
+            CommandResult {
+                feedback: Some(lines.join("\n")),
+                handled: true,
+            }
+        }
+        "remove" => {
+            if arg.is_empty() {
+                return CommandResult {
+                    feedback: Some("Usage: /provider remove <name>".into()),
+                    handled: true,
+                };
+            }
+            let mut config = app.models_config.lock().await;
+            if config.providers.remove(arg).is_some() {
+                // Clear default if it belonged to the removed provider
+                if let Some(ref default) = config.default {
+                    if config.resolve(default).is_none() {
+                        config.default = None;
+                    }
+                }
+                let _ = config.save();
+                CommandResult {
+                    feedback: Some(format!("Removed provider: {arg}")),
+                    handled: true,
+                }
+            } else {
+                CommandResult {
+                    feedback: Some(format!("Unknown provider: {arg}")),
+                    handled: true,
+                }
+            }
+        }
+        name => {
+            // /provider <name> — enter wizard to paste API key
+            app.input_mode = InputMode::ProviderWizard {
+                provider: name.to_string(),
             };
             app.clear_input();
             CommandResult {
@@ -481,10 +659,6 @@ async fn execute_models(
                 handled: true,
             }
         }
-        _ => CommandResult {
-            feedback: Some(format!("Unknown /models subcommand: {subcommand}. Use add, remove, default, or update.")),
-            handled: true,
-        },
     }
 }
 
@@ -615,7 +789,7 @@ mod tests {
         let mut app = TuiApp::new();
         let result = execute(&mut app, "/model", None).await;
         assert!(result.handled);
-        assert!(result.feedback.unwrap().contains("/models add"));
+        assert!(result.feedback.unwrap().contains("/provider"));
     }
 
     #[tokio::test]
@@ -677,17 +851,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_models_add_enters_wizard() {
+    async fn execute_provider_enters_wizard() {
         let mut app = TuiApp::new();
-        let result = execute(&mut app, "/models add anthropic", None).await;
+        let result = execute(&mut app, "/provider anthropic", None).await;
         assert!(result.handled);
         assert!(result.feedback.is_none()); // wizard mode, no immediate feedback
         match &app.input_mode {
-            InputMode::ModelAddWizard { provider, step, .. } => {
+            InputMode::ProviderWizard { provider } => {
                 assert_eq!(provider, "anthropic");
-                assert_eq!(*step, WizardStep::Alias);
             }
-            _ => panic!("expected ModelAddWizard"),
+            _ => panic!("expected ProviderWizard"),
         }
     }
 
@@ -730,28 +903,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_models_update_enters_wizard() {
+    async fn execute_provider_list() {
         let mut app = TuiApp::new();
         {
             let mut config = app.models_config.lock().await;
-            config.add_model("anthropic", "opus", "claude-opus-4-6", Some("old-key".into()), None);
+            config.add_model("anthropic", "opus", "claude-opus-4-6", Some("sk-test".into()), None);
         }
-        let result = execute(&mut app, "/models update anthropic", None).await;
+        let result = execute(&mut app, "/provider", None).await;
         assert!(result.handled);
-        assert!(result.feedback.is_none()); // wizard mode
-        match &app.input_mode {
-            InputMode::ModelUpdateWizard { provider, step, .. } => {
-                assert_eq!(provider, "anthropic");
-                assert_eq!(*step, UpdateStep::ApiKey);
-            }
-            _ => panic!("expected ModelUpdateWizard"),
-        }
+        let text = result.feedback.unwrap();
+        assert!(text.contains("anthropic"));
+        assert!(text.contains("\u{2713}")); // checkmark for key present
     }
 
     #[tokio::test]
-    async fn execute_models_update_unknown_provider() {
+    async fn execute_provider_remove() {
         let mut app = TuiApp::new();
-        let result = execute(&mut app, "/models update nonexistent", None).await;
+        {
+            let mut config = app.models_config.lock().await;
+            config.add_model("anthropic", "opus", "claude-opus-4-6", Some("sk-test".into()), None);
+        }
+        let result = execute(&mut app, "/provider remove anthropic", None).await;
+        assert!(result.handled);
+        assert!(result.feedback.unwrap().contains("Removed provider"));
+        let config = app.models_config.lock().await;
+        assert!(!config.providers.contains_key("anthropic"));
+    }
+
+    #[tokio::test]
+    async fn execute_provider_remove_unknown() {
+        let mut app = TuiApp::new();
+        let result = execute(&mut app, "/provider remove nonexistent", None).await;
         assert!(result.handled);
         assert!(result.feedback.unwrap().contains("Unknown provider"));
     }

@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::info;
 
-use agentos::config::ModelsConfig;
+use agentos::config::{AgentsConfig, ModelsConfig};
 use agentos::llm::LlmPool;
 use agentos::organism::parser::parse_organism;
 use agentos::pipeline::AgentPipelineBuilder;
@@ -185,6 +185,9 @@ async fn main() -> Result<()> {
     // Load models config (user + project + env fallback)
     let models_config = ModelsConfig::load();
 
+    // Load agents favorites (project-level)
+    let agents_config = AgentsConfig::load();
+
     // Create LLM pool: config first, env var fallback. None = no key yet (user configures via TUI).
     let pool = if models_config.has_models() {
         match LlmPool::from_config(&models_config) {
@@ -258,7 +261,7 @@ async fn main() -> Result<()> {
     pipeline.run();
 
     // Run TUI (blocks until quit)
-    run_tui(&pipeline, debug, &yaml, models_config, has_pool).await?;
+    run_tui(&pipeline, debug, &yaml, models_config, agents_config, has_pool).await?;
 
     // Shutdown
     info!("Shutting down");
