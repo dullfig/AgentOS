@@ -3,13 +3,18 @@
 //! Thin wrapper around `tui-markdown` — converts markdown text to
 //! styled ratatui `Line`s. Intercepts ` ```d2 ` fenced code blocks
 //! and delegates to the diagram renderer for box-drawing output.
+//! Also intercepts pipe-delimited tables (which `tui-markdown` does
+//! not support) and renders them as box-drawing tables.
 
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 /// Parse markdown text and return styled lines suitable for a `Paragraph`.
 ///
 /// D2 fenced code blocks are rendered as box-drawing diagrams instead of
-/// plain code. All other markdown passes through `tui-markdown` as before.
+/// plain code. Pipe-delimited markdown tables are rendered as box-drawing
+/// tables. All other markdown passes through `tui-markdown`.
 pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
     let mut result = Vec::new();
     let mut remaining = text;
@@ -18,7 +23,7 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
         // Render markdown before the D2 block
         let before = &remaining[..d2_start];
         if !before.trim().is_empty() {
-            result.extend(render_markdown_raw(before));
+            result.extend(render_with_tables(before));
         }
 
         // Find the code content start (after the ```d2 line)
@@ -48,12 +53,174 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
 
     // Render any remaining markdown
     if !remaining.trim().is_empty() {
-        result.extend(render_markdown_raw(remaining));
+        result.extend(render_with_tables(remaining));
     }
     result
 }
 
-/// Render plain markdown via tui-markdown (no D2 interception).
+/// Split text into table and non-table chunks, rendering each appropriately.
+/// A table block is a run of consecutive lines that start with `|`.
+fn render_with_tables(text: &str) -> Vec<Line<'static>> {
+    let mut result = Vec::new();
+    let mut non_table = String::new();
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        if is_table_line(lines[i]) {
+            // Flush any accumulated non-table text
+            if !non_table.trim().is_empty() {
+                result.extend(render_markdown_raw(&non_table));
+            }
+            non_table.clear();
+
+            // Collect consecutive table lines
+            let mut table_lines = Vec::new();
+            while i < lines.len() && is_table_line(lines[i]) {
+                table_lines.push(lines[i]);
+                i += 1;
+            }
+            result.extend(render_table_block(&table_lines));
+        } else {
+            non_table.push_str(lines[i]);
+            non_table.push('\n');
+            i += 1;
+        }
+    }
+
+    // Flush remaining non-table text
+    if !non_table.trim().is_empty() {
+        result.extend(render_markdown_raw(&non_table));
+    }
+
+    result
+}
+
+/// A line belongs to a markdown table if it starts with `|`.
+fn is_table_line(line: &str) -> bool {
+    line.trim_start().starts_with('|')
+}
+
+/// Parse and render a markdown pipe-delimited table as box-drawing art.
+fn render_table_block(lines: &[&str]) -> Vec<Line<'static>> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    // Parse rows: split each line on `|`, trim cells
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut separator_indices: Vec<usize> = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        // Strip leading/trailing pipe
+        let inner = trimmed
+            .strip_prefix('|')
+            .unwrap_or(trimmed);
+        let inner = inner.strip_suffix('|').unwrap_or(inner);
+
+        let cells: Vec<String> = inner.split('|').map(|c| c.trim().to_string()).collect();
+
+        // Check if this is a separator row (all cells are dashes/colons)
+        let is_sep = cells.iter().all(|c| {
+            let stripped = c.trim_matches(|ch: char| ch == '-' || ch == ':' || ch == ' ');
+            stripped.is_empty() && !c.is_empty()
+        });
+
+        if is_sep {
+            separator_indices.push(idx);
+        } else {
+            rows.push(cells);
+        }
+    }
+
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    // Compute column widths using Unicode display width (handles emojis, CJK, etc.)
+    let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut col_widths: Vec<usize> = vec![0; col_count];
+    for row in &rows {
+        for (j, cell) in row.iter().enumerate() {
+            if j < col_count {
+                col_widths[j] = col_widths[j].max(cell.width());
+            }
+        }
+    }
+    // Minimum column width of 3 for aesthetics
+    for w in &mut col_widths {
+        *w = (*w).max(3);
+    }
+
+    let mut result = Vec::new();
+
+    // Top border: ┌───┬───┐
+    result.push(Line::from(Span::styled(
+        build_border(&col_widths, '┌', '┬', '┐'),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    for (i, row) in rows.iter().enumerate() {
+        // Data row: │ cell │ cell │
+        let mut spans = Vec::new();
+        spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        for (j, width) in col_widths.iter().enumerate() {
+            let cell = row.get(j).map(|s| s.as_str()).unwrap_or("");
+            // Pad using display width so emojis/CJK align correctly
+            let display_w = cell.width();
+            let pad = width.saturating_sub(display_w);
+            let padded = format!(" {}{} ", cell, " ".repeat(pad));
+            let style = if i == 0 {
+                // Header row: bold cyan
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            spans.push(Span::styled(padded, style));
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        }
+        result.push(Line::from(spans));
+
+        // After header row (row 0), draw a separator: ├───┼───┤
+        if i == 0 && rows.len() > 1 {
+            result.push(Line::from(Span::styled(
+                build_border(&col_widths, '├', '┼', '┤'),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    // Bottom border: └───┴───┘
+    result.push(Line::from(Span::styled(
+        build_border(&col_widths, '└', '┴', '┘'),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    result
+}
+
+/// Build a horizontal border line: left + (─×width + 2 padding)... + right
+fn build_border(col_widths: &[usize], left: char, mid: char, right: char) -> String {
+    let mut s = String::new();
+    s.push(left);
+    for (i, w) in col_widths.iter().enumerate() {
+        // +2 for the padding spaces around the cell content
+        for _ in 0..(w + 2) {
+            s.push('─');
+        }
+        if i + 1 < col_widths.len() {
+            s.push(mid);
+        }
+    }
+    s.push(right);
+    s
+}
+
+/// Render plain markdown via tui-markdown (no D2 or table interception).
 fn render_markdown_raw(text: &str) -> Vec<Line<'static>> {
     let rendered = tui_markdown::from_str(text);
     rendered
@@ -94,10 +261,29 @@ mod tests {
     fn render_table() {
         let md = "| Col A | Col B |\n|-------|-------|\n| 1     | 2     |";
         let lines = render_markdown(md);
-        assert!(!lines.is_empty());
-        let text: String = lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+        let text = lines_to_text(&lines);
         assert!(text.contains("Col A"));
+        assert!(text.contains("Col B"));
         assert!(text.contains("1"));
+        assert!(text.contains("2"));
+        // Should have box-drawing characters
+        assert!(text.contains('┌'));
+        assert!(text.contains('│'));
+        assert!(text.contains('└'));
+    }
+
+    #[test]
+    fn render_table_box_drawing() {
+        let md = "| Dimension | Score |\n|---|---|\n| Architecture | 5 |\n| Security | 4 |";
+        let lines = render_markdown(md);
+        let text = lines_to_text(&lines);
+        // Header separator
+        assert!(text.contains('├'));
+        assert!(text.contains('┼'));
+        assert!(text.contains('┤'));
+        // Content
+        assert!(text.contains("Architecture"));
+        assert!(text.contains("Security"));
     }
 
     #[test]
@@ -122,11 +308,13 @@ mod tests {
     fn render_mixed() {
         let md = "# Report\n\nSome prose.\n\n| A | B |\n|---|---|\n| x | y |\n\n```\ncode\n```";
         let lines = render_markdown(md);
-        let text: String = lines.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
+        let text = lines_to_text(&lines);
         assert!(text.contains("Report"));
         assert!(text.contains("prose"));
         assert!(text.contains("x"));
         assert!(text.contains("code"));
+        // Table should have box drawing
+        assert!(text.contains('┌'));
     }
 
     #[test]
@@ -163,5 +351,57 @@ mod tests {
         let lines = render_markdown(md);
         // Should not panic — falls back to rendering as-is
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn render_table_with_emojis() {
+        let md = "| Dim | Score |\n|---|---|\n| Arch | ⭐⭐⭐⭐⭐ Great |";
+        let lines = render_markdown(md);
+        let text = lines_to_text(&lines);
+        assert!(text.contains("Arch"));
+        assert!(text.contains("⭐"));
+    }
+
+    #[test]
+    fn emoji_columns_align() {
+        // Emojis are double-width — verify all rows produce same display width
+        let md = "| Dimension | Assessment |\n|---|---|\n| Architecture | ⭐⭐⭐⭐⭐ Clean |\n| Security | ⭐⭐⭐ OK |";
+        let lines = render_markdown(md);
+        // All lines (borders + data) should have the same display width
+        let widths: Vec<usize> = lines
+            .iter()
+            .map(|l| {
+                l.spans.iter().map(|s| s.content.width()).sum::<usize>()
+            })
+            .collect();
+        let first = widths[0];
+        for (i, w) in widths.iter().enumerate() {
+            assert_eq!(*w, first, "line {i} has width {w}, expected {first}");
+        }
+    }
+
+    #[test]
+    fn render_single_row_table() {
+        let md = "| Only | Header |\n|---|---|";
+        let lines = render_markdown(md);
+        let text = lines_to_text(&lines);
+        assert!(text.contains("Only"));
+        assert!(text.contains('┌'));
+        assert!(text.contains('└'));
+    }
+
+    #[test]
+    fn shorten_model_id_helper() {
+        // Verify the is_table_line helper
+        assert!(is_table_line("| a | b |"));
+        assert!(is_table_line("|---|---|"));
+        assert!(!is_table_line("not a table"));
+        assert!(!is_table_line("some | pipe | in text"));
+    }
+
+    #[test]
+    fn build_border_works() {
+        let b = build_border(&[5, 3], '┌', '┬', '┐');
+        assert_eq!(b, "┌───────┬─────┐");
     }
 }

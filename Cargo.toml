@@ -31,6 +31,7 @@ tui-tree-widget = "0.24"
 tui-menu = "0.3"
 ratatui-code-editor = { git = "https://github.com/dullfig/ratatui-code-editor", branch = "ratatui-0.30" }
 tui-markdown = "0.3"
+unicode-width = "0.2"
 
 # WASM component runtime
 wasmtime = { version = "41", features = ["component-model"] }

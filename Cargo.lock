@@ -50,6 +50,7 @@ dependencies = [
  "tui-markdown",
  "tui-menu",
  "tui-tree-widget",
+ "unicode-width",
  "uuid",
  "wasmtime",
  "wasmtime-wasi",
