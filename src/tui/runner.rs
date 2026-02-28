@@ -204,6 +204,10 @@ pub async fn run_tui(
                         model_map.insert(alias, model.id.clone());
                     }
 
+                    // Add well-known friendly aliases (opus, sonnet, haiku, etc.)
+                    // so /model opus works alongside /model opus-4-6
+                    add_friendly_aliases(&mut model_map);
+
                     // Store provider with key and discovered models
                     if let Some(existing) = config.providers.get_mut(&pc.provider) {
                         existing.api_key = Some(pc.api_key.clone());
@@ -290,6 +294,41 @@ fn shorten_model_id(model_id: &str) -> String {
         s
     };
     s.to_string()
+}
+
+/// Add well-known friendly aliases that point to the latest model in each family.
+/// E.g., "opus" → latest opus model ID, "sonnet" → latest sonnet, etc.
+/// Only adds if the friendly name isn't already a shortened alias.
+fn add_friendly_aliases(model_map: &mut std::collections::HashMap<String, String>) {
+    // Map friendly name → prefix to match against shortened aliases
+    let families = [
+        ("opus", "opus"),
+        ("sonnet", "sonnet"),
+        ("haiku", "haiku"),
+    ];
+    for (friendly, prefix) in &families {
+        if model_map.contains_key(*friendly) {
+            continue; // already exists as a shortened alias
+        }
+        // Find the best match: prefer latest version (highest version number)
+        let mut best: Option<(&String, &String)> = None;
+        for (alias, model_id) in model_map.iter() {
+            if alias.starts_with(prefix) {
+                match best {
+                    None => best = Some((alias, model_id)),
+                    Some((_, prev_id)) => {
+                        // Prefer longer model ID (more specific version) or lexicographically greater
+                        if model_id > prev_id {
+                            best = Some((alias, model_id));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((_, model_id)) = best {
+            model_map.insert(friendly.to_string(), model_id.clone());
+        }
+    }
 }
 
 /// Rebuild or create the LlmPool from updated config.
