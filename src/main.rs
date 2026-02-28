@@ -222,6 +222,8 @@ async fn main() -> Result<()> {
             .with_librarian()
             .to_anyhow()?;
     }
+    // Try to load local inference engine (optional — graceful if missing)
+    builder = builder.with_local_inference().to_anyhow()?;
     let mut pipeline = builder
         .with_code_index()
         .to_anyhow()?

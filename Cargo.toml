@@ -44,6 +44,9 @@ tree-sitter-python = "0.25"
 # Language intelligence (in-process LSP data types, no transport)
 lsp-types = "0.97"
 
+# Constrained decoding — local LLM inference for form filling
+code-llm = { path = "../code-llm" }
+
 # Core tool dependencies
 glob = "0.3"
 regex = "1"

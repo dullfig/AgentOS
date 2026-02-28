@@ -34,7 +34,7 @@ use crate::librarian::Librarian;
 use crate::llm::{handler::LlmHandler, LlmPool};
 use crate::organism::Organism;
 use crate::ports::{Direction, PortDeclaration, PortManager, Protocol};
-use crate::routing::{self, form_filler::FormFiller, SemanticRouter, ToolMetadata};
+use crate::routing::{self, form_filler::CloudFormFiller, SemanticRouter, ToolMetadata};
 use crate::security::SecurityResolver;
 use crate::treesitter::handler::CodeIndexHandler;
 use crate::treesitter::CodeIndex;
@@ -244,6 +244,8 @@ pub struct AgentPipelineBuilder {
     /// WIT-parsed tool interfaces, keyed by tool name.
     /// Stored at `register_tool()` time, consumed by `with_agents()`.
     tool_interfaces: std::collections::HashMap<String, ToolInterface>,
+    /// Local inference engine for constrained decoding (optional).
+    local_engine: Option<crate::routing::local_engine::SharedEngine>,
 }
 
 impl AgentPipelineBuilder {
@@ -263,6 +265,7 @@ impl AgentPipelineBuilder {
             semantic_router: None,
             event_tx,
             tool_interfaces: std::collections::HashMap::new(),
+            local_engine: None,
         }
     }
 
@@ -356,6 +359,32 @@ impl AgentPipelineBuilder {
         };
 
         self = self.register("llm-pool", handler)?;
+        Ok(self)
+    }
+
+    /// Attempt to load a local inference engine for constrained decoding.
+    ///
+    /// Looks for `~/.agentos/models/*.gguf` + `tokenizer.json`. If found,
+    /// loads the model and stores the engine for use by `with_semantic_router()`.
+    /// If not found, logs a message and continues — local inference is optional.
+    pub fn with_local_inference(mut self) -> Result<Self, String> {
+        use crate::routing::local_engine::{load_engine, LocalEngineConfig};
+
+        match LocalEngineConfig::from_conventional_paths() {
+            Some(config) => {
+                let engine = load_engine(&config)?;
+                tracing::info!(
+                    "local inference engine loaded: {}",
+                    config.model_path.display()
+                );
+                self.local_engine = Some(engine);
+            }
+            None => {
+                tracing::info!(
+                    "no local model found in ~/.agentos/models/ — using cloud-only form filling"
+                );
+            }
+        }
         Ok(self)
     }
 
@@ -547,10 +576,34 @@ impl AgentPipelineBuilder {
         }
 
         // Build form-filler
-        let filler = FormFiller::new(pool, 3);
+        let cloud_filler = CloudFormFiller::new(pool, 3);
+
+        // Build router — use local engine if available, otherwise cloud-only
+        let form_filler: Box<dyn crate::routing::form_filler::FormFillStrategy> =
+            if let Some(ref engine) = self.local_engine {
+                // Build codeLlm schemas from stored WIT interfaces
+                let mut schemas = std::collections::HashMap::new();
+                for (name, iface) in &self.tool_interfaces {
+                    let tag = iface.request_tag();
+                    if let Some(schema) = iface.to_codellm_schema(&tag) {
+                        schemas.insert(name.clone(), schema);
+                    }
+                }
+                tracing::info!(
+                    "local form filler: {} tool schemas loaded",
+                    schemas.len()
+                );
+                Box::new(crate::routing::form_filler::LocalFormFiller::new(
+                    engine.clone(),
+                    schemas,
+                    Some(cloud_filler),
+                ))
+            } else {
+                Box::new(cloud_filler)
+            };
 
         // Build router
-        let router = SemanticRouter::new(Box::new(provider), index, filler, metadata);
+        let router = SemanticRouter::new(Box::new(provider), index, form_filler, metadata);
         self.semantic_router = Some(router);
 
         Ok(self)

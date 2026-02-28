@@ -5,13 +5,14 @@
 //! No tool call ceremony. Just thought, and result.
 
 pub mod form_filler;
+pub mod local_engine;
 
 use std::collections::HashMap;
 
 use crate::embedding::{EmbeddingIndex, EmbeddingProvider};
 use crate::organism::Organism;
 
-use form_filler::{FormFillResult, FormFiller};
+use form_filler::{FormFillResult, FormFillStrategy};
 
 /// Register all tools with semantic descriptions into the embedding index.
 ///
@@ -58,7 +59,7 @@ pub enum RouteDecision {
 pub struct SemanticRouter {
     provider: Box<dyn EmbeddingProvider>,
     index: EmbeddingIndex,
-    form_filler: FormFiller,
+    form_filler: Box<dyn FormFillStrategy>,
     /// Tool metadata: name → (description, XML template, payload tag)
     tool_metadata: HashMap<String, ToolMetadata>,
 }
@@ -68,7 +69,7 @@ impl SemanticRouter {
     pub fn new(
         provider: Box<dyn EmbeddingProvider>,
         index: EmbeddingIndex,
-        form_filler: FormFiller,
+        form_filler: Box<dyn FormFillStrategy>,
         tool_metadata: HashMap<String, ToolMetadata>,
     ) -> Self {
         Self {
@@ -159,6 +160,7 @@ mod tests {
     use crate::embedding::EmbeddingIndex;
     use crate::llm::LlmPool;
     use crate::organism::parser::parse_organism;
+    use form_filler::CloudFormFiller;
 
     fn routing_organism() -> Organism {
         let yaml = r#"
@@ -228,7 +230,7 @@ profiles:
         register_tools(&mut index, &provider, &org);
 
         let pool = mock_pool();
-        let filler = FormFiller::new(pool, 3);
+        let filler = CloudFormFiller::new(pool, 3);
 
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -248,7 +250,7 @@ profiles:
             },
         );
 
-        let router = SemanticRouter::new(Box::new(provider.clone()), index, filler, metadata);
+        let router = SemanticRouter::new(Box::new(provider.clone()), index, Box::new(filler), metadata);
         (router, provider)
     }
 

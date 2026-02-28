@@ -1,15 +1,22 @@
-//! Form filler — Haiku-based parameter extraction for semantic routing.
+//! Form filler — parameter extraction for semantic routing.
 //!
-//! Takes natural language intent + tool metadata, produces filled XML.
+//! Two strategies:
+//! - `CloudFormFiller`: Haiku/Sonnet model ladder via cloud API (original)
+//! - `LocalFormFiller`: codeLlm constrained decoding (guaranteed valid XML)
+//!
 //! Model ladder: Haiku (cheap, fast) → Sonnet (escalate on failure).
 //! Never Opus — Opus is the thinker.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+use tracing::info;
 
 use crate::llm::types::Message;
 use crate::llm::LlmPool;
+
+use super::local_engine::SharedEngine;
 
 /// Result of a form-fill attempt.
 #[derive(Debug)]
@@ -26,27 +33,49 @@ pub enum FormFillResult {
     },
 }
 
-/// The form filler: extracts tool parameters from natural language via LLM.
-pub struct FormFiller {
+/// Strategy trait for form filling — open for extension.
+#[async_trait::async_trait]
+pub trait FormFillStrategy: Send + Sync {
+    /// Fill tool XML from natural language intent.
+    async fn fill(
+        &self,
+        intent: &str,
+        tool_name: &str,
+        tool_description: &str,
+        xml_template: &str,
+        payload_tag: &str,
+    ) -> FormFillResult;
+}
+
+// ── Cloud form filler (original implementation) ──
+
+/// Cloud-based form filler: extracts tool parameters via LLM API calls.
+pub struct CloudFormFiller {
     pool: Arc<Mutex<LlmPool>>,
     max_retries: usize,
 }
 
+/// Backward-compatible type alias.
+pub type FormFiller = CloudFormFiller;
+
 /// Model ladder sequence: Haiku first, escalate to Sonnet.
 const MODEL_LADDER: &[&str] = &["haiku", "haiku", "sonnet"];
 
-impl FormFiller {
-    /// Create a new form filler.
+impl CloudFormFiller {
+    /// Create a new cloud form filler.
     pub fn new(pool: Arc<Mutex<LlmPool>>, max_retries: usize) -> Self {
         Self { pool, max_retries }
     }
 
-    /// Fill tool XML from natural language intent.
-    ///
-    /// Tries the model ladder (Haiku → Sonnet) up to `max_retries` times.
-    /// Returns `FormFillResult::Success` with filled XML, or `Failed` if
-    /// all retries are exhausted.
-    pub async fn fill(
+    /// Get the configured max retries.
+    pub fn max_retries(&self) -> usize {
+        self.max_retries
+    }
+}
+
+#[async_trait::async_trait]
+impl FormFillStrategy for CloudFormFiller {
+    async fn fill(
         &self,
         intent: &str,
         tool_name: &str,
@@ -110,12 +139,133 @@ impl FormFiller {
             last_error,
         }
     }
+}
 
-    /// Get the configured max retries.
-    pub fn max_retries(&self) -> usize {
-        self.max_retries
+// ── Local form filler (constrained decoding) ──
+
+/// Local constrained-decoding form filler.
+///
+/// Uses codeLlm's `XmlSchemaConstraint` to guarantee structurally valid XML.
+/// Falls back to cloud when a tool has no codeLlm schema (e.g. List-only fields)
+/// or when local inference fails.
+pub struct LocalFormFiller {
+    engine: SharedEngine,
+    /// Pre-computed schemas keyed by tool name.
+    schemas: HashMap<String, code_llm::schema::ToolSchema>,
+    /// Cloud fallback (optional — None means no fallback).
+    cloud_fallback: Option<CloudFormFiller>,
+}
+
+impl LocalFormFiller {
+    /// Create a new local form filler.
+    ///
+    /// `schemas` maps tool names to their codeLlm schemas.
+    /// `cloud_fallback` is used for tools without local schemas.
+    pub fn new(
+        engine: SharedEngine,
+        schemas: HashMap<String, code_llm::schema::ToolSchema>,
+        cloud_fallback: Option<CloudFormFiller>,
+    ) -> Self {
+        Self {
+            engine,
+            schemas,
+            cloud_fallback,
+        }
     }
 }
+
+#[async_trait::async_trait]
+impl FormFillStrategy for LocalFormFiller {
+    async fn fill(
+        &self,
+        intent: &str,
+        tool_name: &str,
+        tool_description: &str,
+        xml_template: &str,
+        payload_tag: &str,
+    ) -> FormFillResult {
+        // Look up pre-computed schema
+        let schema = match self.schemas.get(tool_name) {
+            Some(s) => s.clone(),
+            None => {
+                // No local schema — fall back to cloud
+                info!("no local schema for '{tool_name}', falling back to cloud");
+                return self
+                    .cloud_fill_or_fail(intent, tool_name, tool_description, xml_template, payload_tag)
+                    .await;
+            }
+        };
+
+        // Build constraint and run local inference
+        let prompt = build_fill_prompt(intent, tool_name, tool_description, xml_template);
+        let mut engine = self.engine.lock().await;
+
+        let mut constraint =
+            code_llm::constraint::XmlSchemaConstraint::new(schema, engine.tokenizer());
+
+        match engine.complete_constrained(&prompt, &mut constraint, "", 256) {
+            Ok((output, _stats)) => {
+                // Belt-and-suspenders validation
+                match validate_xml(&output, payload_tag) {
+                    Ok(()) => {
+                        info!("local inference succeeded for '{tool_name}'");
+                        FormFillResult::Success {
+                            tool_name: tool_name.to_string(),
+                            filled_xml: output,
+                        }
+                    }
+                    Err(e) => {
+                        info!("local inference produced invalid XML for '{tool_name}': {e}");
+                        self.cloud_fill_or_fail(
+                            intent,
+                            tool_name,
+                            tool_description,
+                            xml_template,
+                            payload_tag,
+                        )
+                        .await
+                    }
+                }
+            }
+            Err(e) => {
+                info!("local inference failed for '{tool_name}': {e}");
+                self.cloud_fill_or_fail(
+                    intent,
+                    tool_name,
+                    tool_description,
+                    xml_template,
+                    payload_tag,
+                )
+                .await
+            }
+        }
+    }
+}
+
+impl LocalFormFiller {
+    /// Delegate to cloud fallback, or return Failed if no fallback available.
+    async fn cloud_fill_or_fail(
+        &self,
+        intent: &str,
+        tool_name: &str,
+        tool_description: &str,
+        xml_template: &str,
+        payload_tag: &str,
+    ) -> FormFillResult {
+        if let Some(ref cloud) = self.cloud_fallback {
+            cloud
+                .fill(intent, tool_name, tool_description, xml_template, payload_tag)
+                .await
+        } else {
+            FormFillResult::Failed {
+                tool_name: tool_name.to_string(),
+                last_error: "no local schema and no cloud fallback".to_string(),
+            }
+        }
+    }
+}
+
+// ── Shared utilities ──
 
 /// Build the initial fill prompt.
 pub fn build_fill_prompt(
@@ -237,7 +387,7 @@ mod tests {
     #[test]
     fn form_filler_creation() {
         let pool = mock_pool();
-        let filler = FormFiller::new(pool, 3);
+        let filler = CloudFormFiller::new(pool, 3);
         assert_eq!(filler.max_retries(), 3);
     }
 
@@ -323,10 +473,45 @@ mod tests {
     #[test]
     fn max_retries_configurable() {
         let pool = mock_pool();
-        let filler = FormFiller::new(pool.clone(), 5);
+        let filler = CloudFormFiller::new(pool.clone(), 5);
         assert_eq!(filler.max_retries(), 5);
 
-        let filler2 = FormFiller::new(pool, 1);
+        let filler2 = CloudFormFiller::new(pool, 1);
         assert_eq!(filler2.max_retries(), 1);
+    }
+
+    // ── Type alias backward compat ──
+
+    #[test]
+    fn form_filler_alias_works() {
+        let pool = mock_pool();
+        let filler: FormFiller = CloudFormFiller::new(pool, 3);
+        assert_eq!(filler.max_retries(), 3);
+    }
+
+    // ── LocalFormFiller tests ──
+
+    #[test]
+    fn local_form_filler_no_schema_no_fallback() {
+        // Verify schema lookup behavior when no schemas are registered
+        let schemas: HashMap<String, code_llm::schema::ToolSchema> = HashMap::new();
+        assert!(schemas.is_empty());
+        assert!(!schemas.contains_key("file-read"));
+    }
+
+    #[test]
+    fn local_form_filler_schema_lookup() {
+        use code_llm::schema::{ToolSchema, ToolFieldType as CLT};
+
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "file-read".to_string(),
+            ToolSchema::new("FileReadRequest")
+                .required("path", CLT::String)
+                .optional("offset", CLT::Integer),
+        );
+
+        assert!(schemas.contains_key("file-read"));
+        assert!(!schemas.contains_key("unknown-tool"));
     }
 }

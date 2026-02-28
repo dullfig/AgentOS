@@ -1146,7 +1146,7 @@ mod tests {
     fn build_test_router() -> crate::routing::SemanticRouter {
         use crate::embedding::tfidf::TfIdfProvider;
         use crate::embedding::{EmbeddingIndex, EmbeddingProvider};
-        use crate::routing::form_filler::FormFiller;
+        use crate::routing::form_filler::CloudFormFiller;
         use crate::routing::ToolMetadata;
         use std::collections::HashMap as StdHashMap;
 
@@ -1160,7 +1160,7 @@ mod tests {
         index.register("file-read", provider.embed(descriptions[0]));
         index.register("command-exec", provider.embed(descriptions[1]));
 
-        let filler = FormFiller::new(mock_pool(), 3);
+        let filler = CloudFormFiller::new(mock_pool(), 3);
 
         let mut metadata = StdHashMap::new();
         metadata.insert(
@@ -1180,7 +1180,7 @@ mod tests {
             },
         );
 
-        crate::routing::SemanticRouter::new(Box::new(provider), index, filler, metadata)
+        crate::routing::SemanticRouter::new(Box::new(provider), index, Box::new(filler), metadata)
     }
 
     #[test]

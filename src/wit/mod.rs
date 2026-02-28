@@ -140,12 +140,40 @@ impl ToolInterface {
             input_schema: serde_json::Value::Object(schema),
         }
     }
+
+    /// Generate a `code_llm::schema::ToolSchema` for local constrained decoding.
+    ///
+    /// Maps WIT types to codeLlm's `ToolFieldType`. `List<T>` fields are skipped
+    /// (codeLlm can't represent arrays). Returns `None` if zero fields are flattenable.
+    pub fn to_codellm_schema(&self, root_tag: &str) -> Option<code_llm::schema::ToolSchema> {
+        let mut schema = code_llm::schema::ToolSchema::new(root_tag);
+        let mut field_count = 0;
+
+        for field in &self.request.fields {
+            if let Some((required, codellm_type)) = wit_to_codellm_type(&field.field_type) {
+                let name = wit_name_to_underscore(&field.name);
+                if required {
+                    schema = schema.required(name, codellm_type);
+                } else {
+                    schema = schema.optional(name, codellm_type);
+                }
+                field_count += 1;
+            }
+            // List fields silently skipped — no codeLlm representation
+        }
+
+        if field_count == 0 {
+            None
+        } else {
+            Some(schema)
+        }
+    }
 }
 
 /// Convert a WIT kebab-case name to underscore (XML/JSON convention).
 ///
 /// "old-string" → "old_string", "case-insensitive" → "case_insensitive"
-fn wit_name_to_underscore(name: &str) -> String {
+pub(crate) fn wit_name_to_underscore(name: &str) -> String {
     name.replace('-', "_")
 }
 
@@ -180,6 +208,29 @@ fn wit_to_json_schema(ty: &ToolFieldType) -> (bool, String) {
             (false, json_type) // option = not required
         }
         ToolFieldType::List(_) => (true, "array".into()),
+    }
+}
+
+/// Map a WIT type to (required, codeLlm ToolFieldType).
+///
+/// Returns `None` for `List<T>` — codeLlm has no array representation.
+fn wit_to_codellm_type(
+    ty: &ToolFieldType,
+) -> Option<(bool, code_llm::schema::ToolFieldType)> {
+    match ty {
+        ToolFieldType::String => Some((true, code_llm::schema::ToolFieldType::String)),
+        ToolFieldType::Bool => Some((true, code_llm::schema::ToolFieldType::Boolean)),
+        ToolFieldType::U32 | ToolFieldType::U64 | ToolFieldType::S32 | ToolFieldType::S64 => {
+            Some((true, code_llm::schema::ToolFieldType::Integer))
+        }
+        ToolFieldType::F32 | ToolFieldType::F64 => {
+            Some((true, code_llm::schema::ToolFieldType::Float))
+        }
+        ToolFieldType::Option(inner) => {
+            let (_, codellm_type) = wit_to_codellm_type(inner)?;
+            Some((false, codellm_type)) // option = not required
+        }
+        ToolFieldType::List(_) => None, // no codeLlm representation
     }
 }
 
@@ -456,5 +507,158 @@ interface file-write {
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("file-read"));
         let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+    }
+
+    // ── codeLlm schema tests ──
+
+    #[test]
+    fn to_codellm_schema_basic() {
+        let iface = sample_interface();
+        let schema = iface.to_codellm_schema("FileReadRequest").unwrap();
+        assert_eq!(schema.root_tag, "FileReadRequest");
+        assert_eq!(schema.fields.len(), 3);
+
+        // path: required string
+        assert_eq!(schema.fields[0].name, "path");
+        assert!(schema.fields[0].required);
+        assert_eq!(schema.fields[0].field_type, code_llm::schema::ToolFieldType::String);
+
+        // offset: optional integer
+        assert_eq!(schema.fields[1].name, "offset");
+        assert!(!schema.fields[1].required);
+        assert_eq!(schema.fields[1].field_type, code_llm::schema::ToolFieldType::Integer);
+
+        // limit: optional integer
+        assert_eq!(schema.fields[2].name, "limit");
+        assert!(!schema.fields[2].required);
+        assert_eq!(schema.fields[2].field_type, code_llm::schema::ToolFieldType::Integer);
+    }
+
+    #[test]
+    fn to_codellm_schema_all_types() {
+        let iface = ToolInterface {
+            name: "multi-type".into(),
+            description: "All types".into(),
+            request: ToolRecord {
+                fields: vec![
+                    ToolField {
+                        name: "name".into(),
+                        field_type: ToolFieldType::String,
+                        description: None,
+                    },
+                    ToolField {
+                        name: "count".into(),
+                        field_type: ToolFieldType::U64,
+                        description: None,
+                    },
+                    ToolField {
+                        name: "flag".into(),
+                        field_type: ToolFieldType::Bool,
+                        description: None,
+                    },
+                    ToolField {
+                        name: "score".into(),
+                        field_type: ToolFieldType::F64,
+                        description: None,
+                    },
+                ],
+            },
+        };
+        let schema = iface.to_codellm_schema("MultiTypeRequest").unwrap();
+        assert_eq!(schema.fields.len(), 4);
+        assert_eq!(schema.fields[0].field_type, code_llm::schema::ToolFieldType::String);
+        assert_eq!(schema.fields[1].field_type, code_llm::schema::ToolFieldType::Integer);
+        assert_eq!(schema.fields[2].field_type, code_llm::schema::ToolFieldType::Boolean);
+        assert_eq!(schema.fields[3].field_type, code_llm::schema::ToolFieldType::Float);
+    }
+
+    #[test]
+    fn to_codellm_schema_skips_list_fields() {
+        let iface = ToolInterface {
+            name: "list-tool".into(),
+            description: "Has list".into(),
+            request: ToolRecord {
+                fields: vec![
+                    ToolField {
+                        name: "path".into(),
+                        field_type: ToolFieldType::String,
+                        description: None,
+                    },
+                    ToolField {
+                        name: "items".into(),
+                        field_type: ToolFieldType::List(Box::new(ToolFieldType::String)),
+                        description: None,
+                    },
+                ],
+            },
+        };
+        let schema = iface.to_codellm_schema("ListToolRequest").unwrap();
+        // List field skipped, only path remains
+        assert_eq!(schema.fields.len(), 1);
+        assert_eq!(schema.fields[0].name, "path");
+    }
+
+    #[test]
+    fn to_codellm_schema_all_list_returns_none() {
+        let iface = ToolInterface {
+            name: "all-list".into(),
+            description: "Only lists".into(),
+            request: ToolRecord {
+                fields: vec![ToolField {
+                    name: "items".into(),
+                    field_type: ToolFieldType::List(Box::new(ToolFieldType::String)),
+                    description: None,
+                }],
+            },
+        };
+        assert!(iface.to_codellm_schema("AllListRequest").is_none());
+    }
+
+    #[test]
+    fn to_codellm_schema_kebab_to_underscore() {
+        let iface = ToolInterface {
+            name: "kebab-tool".into(),
+            description: "Kebab fields".into(),
+            request: ToolRecord {
+                fields: vec![ToolField {
+                    name: "old-string".into(),
+                    field_type: ToolFieldType::String,
+                    description: None,
+                }],
+            },
+        };
+        let schema = iface.to_codellm_schema("KebabToolRequest").unwrap();
+        assert_eq!(schema.fields[0].name, "old_string");
+    }
+
+    #[test]
+    fn to_codellm_schema_empty_fields() {
+        let iface = ToolInterface {
+            name: "empty".into(),
+            description: "No fields".into(),
+            request: ToolRecord { fields: vec![] },
+        };
+        assert!(iface.to_codellm_schema("EmptyRequest").is_none());
+    }
+
+    #[test]
+    fn to_codellm_schema_roundtrip_from_wit() {
+        let wit = r#"
+/// Read file contents.
+interface file-read {
+    record request {
+        /// The file path
+        path: string,
+        /// Starting line
+        offset: option<u32>,
+    }
+}
+"#;
+        let iface = parser::parse_wit(wit).unwrap();
+        let schema = iface.to_codellm_schema("FileReadRequest").unwrap();
+        assert_eq!(schema.root_tag, "FileReadRequest");
+        assert_eq!(schema.fields.len(), 2);
+        assert!(schema.fields[0].required);  // path
+        assert!(!schema.fields[1].required); // offset (option)
     }
 }
