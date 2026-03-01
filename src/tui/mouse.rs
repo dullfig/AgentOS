@@ -8,7 +8,7 @@
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use super::app::{ActiveTab, MessagesFocus, ThreadsFocus, TuiApp};
+use super::app::{TabId, MessagesFocus, ThreadsFocus, TuiApp};
 
 /// Cached layout regions for mouse hit-testing. Updated each render frame.
 #[derive(Default, Clone, Debug)]
@@ -18,8 +18,8 @@ pub struct LayoutAreas {
     pub content: Rect,
     pub input_bar: Rect,
     pub status_bar: Rect,
-    /// Tab label spans within tab_bar: (x_start, x_end, ActiveTab).
-    pub tab_regions: Vec<(u16, u16, ActiveTab)>,
+    /// Tab label spans within tab_bar: (x_start, x_end, TabId).
+    pub tab_regions: Vec<(u16, u16, TabId)>,
     /// Messages content area (inside the border, above embedded input).
     pub messages_content: Rect,
 }
@@ -66,8 +66,8 @@ pub fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
 fn handle_scroll(app: &mut TuiApp, col: u16, row: u16, up: bool) {
     let areas = &app.layout_areas;
 
-    // Input area scroll (embedded within Messages content)
-    if app.active_tab == ActiveTab::Messages && rect_contains(app.input_area, col, row) {
+    // Input area scroll (embedded within agent tab content)
+    if app.active_tab.is_agent() && rect_contains(app.input_area, col, row) {
         for _ in 0..3 {
             if up {
                 app.input_scroll = app.input_scroll.saturating_sub(1);
@@ -81,7 +81,7 @@ fn handle_scroll(app: &mut TuiApp, col: u16, row: u16, up: bool) {
 
     if rect_contains(areas.content, col, row) {
         match app.active_tab {
-            ActiveTab::Messages => {
+            TabId::Agent(_) => {
                 for _ in 0..3 {
                     if up {
                         app.scroll_messages_up();
@@ -90,7 +90,7 @@ fn handle_scroll(app: &mut TuiApp, col: u16, row: u16, up: bool) {
                     }
                 }
             }
-            ActiveTab::Threads => {
+            TabId::Threads => {
                 // Route to focused sub-pane
                 match app.threads_focus {
                     ThreadsFocus::ThreadList => {
@@ -121,7 +121,7 @@ fn handle_scroll(app: &mut TuiApp, col: u16, row: u16, up: bool) {
                     }
                 }
             }
-            ActiveTab::Graph => {
+            TabId::Graph => {
                 for _ in 0..3 {
                     if up {
                         app.scroll_graph_up();
@@ -130,7 +130,7 @@ fn handle_scroll(app: &mut TuiApp, col: u16, row: u16, up: bool) {
                     }
                 }
             }
-            ActiveTab::Activity => {
+            TabId::Activity => {
                 for _ in 0..3 {
                     if up {
                         app.scroll_activity_up();
@@ -139,7 +139,7 @@ fn handle_scroll(app: &mut TuiApp, col: u16, row: u16, up: bool) {
                     }
                 }
             }
-            ActiveTab::Yaml => {
+            TabId::Yaml => {
                 // YAML editor handles its own scroll
             }
         }
@@ -152,9 +152,9 @@ fn handle_left_down(app: &mut TuiApp, col: u16, row: u16) {
 
     // Tab bar click → switch tab
     if rect_contains(areas.tab_bar, col, row) {
-        for &(x_start, x_end, tab) in &areas.tab_regions {
-            if col >= x_start && col < x_end {
-                app.active_tab = tab;
+        for (x_start, x_end, tab) in &areas.tab_regions {
+            if col >= *x_start && col < *x_end {
+                app.active_tab = tab.clone();
                 // Clear any active selection when switching tabs
                 app.text_selection.active = false;
                 return;
@@ -164,7 +164,7 @@ fn handle_left_down(app: &mut TuiApp, col: u16, row: u16) {
     }
 
     // Input bar click → position cursor (outer input bar OR embedded input area)
-    let input_rect = if app.active_tab == ActiveTab::Messages {
+    let input_rect = if app.active_tab.is_agent() {
         app.input_area // embedded inside content
     } else {
         areas.input_bar
@@ -178,8 +178,8 @@ fn handle_left_down(app: &mut TuiApp, col: u16, row: u16) {
         return;
     }
 
-    // Content area click on Messages tab → check code block copy, then text selection
-    if rect_contains(areas.content, col, row) && app.active_tab == ActiveTab::Messages {
+    // Content area click on agent tab → check code block copy, then text selection
+    if rect_contains(areas.content, col, row) && app.active_tab.is_agent() {
         app.messages_focus = MessagesFocus::Messages;
         let msg_content = areas.messages_content;
         if rect_contains(msg_content, col, row) {
@@ -217,7 +217,7 @@ fn handle_left_drag(app: &mut TuiApp, col: u16, row: u16) {
     if !app.text_selection.active {
         return;
     }
-    if app.active_tab != ActiveTab::Messages {
+    if !app.active_tab.is_agent() {
         return;
     }
 
@@ -305,11 +305,11 @@ mod tests {
             input_bar: Rect::new(0, 22, 80, 3),
             status_bar: Rect::new(0, 25, 80, 1),
             tab_regions: vec![
-                (1, 16, ActiveTab::Messages),
-                (17, 30, ActiveTab::Threads),
-                (31, 42, ActiveTab::Graph),
-                (43, 52, ActiveTab::Yaml),
-                (53, 66, ActiveTab::Activity),
+                (1, 16, TabId::Agent("planner".into())),
+                (17, 30, TabId::Threads),
+                (31, 42, TabId::Graph),
+                (43, 52, TabId::Yaml),
+                (53, 66, TabId::Activity),
             ],
             messages_content: Rect::new(1, 3, 78, 16),
         };
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn tab_click_switches_tab() {
         let mut app = make_app_with_areas();
-        assert_eq!(app.active_tab, ActiveTab::Messages);
+        assert_eq!(app.active_tab, TabId::Agent("planner".into()));
 
         // Click on Threads tab region (col 20, row 1)
         handle_mouse(&mut app, MouseEvent {
@@ -361,7 +361,7 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::NONE,
         });
 
-        assert_eq!(app.active_tab, ActiveTab::Threads);
+        assert_eq!(app.active_tab, TabId::Threads);
     }
 
     #[test]
@@ -375,7 +375,7 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::NONE,
         });
 
-        assert_eq!(app.active_tab, ActiveTab::Graph);
+        assert_eq!(app.active_tab, TabId::Graph);
     }
 
     #[test]
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn scroll_on_activity_tab() {
         let mut app = make_app_with_areas();
-        app.active_tab = ActiveTab::Activity;
+        app.active_tab = TabId::Activity;
         app.activity_scroll = 10;
 
         handle_mouse(&mut app, MouseEvent {
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn scroll_on_graph_tab() {
         let mut app = make_app_with_areas();
-        app.active_tab = ActiveTab::Graph;
+        app.active_tab = TabId::Graph;
         app.graph_scroll = 10;
 
         handle_mouse(&mut app, MouseEvent {
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn input_cursor_positioning() {
         let mut app = make_app_with_areas();
-        app.active_tab = ActiveTab::Messages;
+        app.active_tab = TabId::Agent("planner".into());
         // input_area is set by the renderer; simulate it
         app.input_area = Rect::new(3, 22, 75, 1);
         app.input_line.set_content("hello world");

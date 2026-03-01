@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use super::super::app::{ActiveTab, AgentStatus, TuiApp};
+use super::super::app::{TabId, AgentStatus, TuiApp};
 use super::super::dashboard;
 use super::wrap::plain_cursor_xy;
 
@@ -186,7 +186,12 @@ pub(super) fn draw_ghost_text(f: &mut Frame, app: &TuiApp, area: Rect) {
 }
 
 pub(super) fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
-    let status_text = match &app.agent_status {
+    let agent_status = if let Some(tab) = app.active_agent_tab() {
+        &tab.agent_status
+    } else {
+        &app.agent_status
+    };
+    let status_text = match agent_status {
         AgentStatus::Idle => Span::styled("idle", Style::default().fg(Color::Green)),
         AgentStatus::Thinking => Span::styled("thinking...", Style::default().fg(Color::Yellow)),
         AgentStatus::ToolCall(name) => Span::styled(
@@ -199,19 +204,14 @@ pub(super) fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
         ),
     };
 
-    let tab_name = match app.active_tab {
-        ActiveTab::Messages => "Messages",
-        ActiveTab::Threads => "Threads",
-        ActiveTab::Graph => "Graph",
-        ActiveTab::Yaml => "YAML",
-        ActiveTab::Activity => "Activity",
-    };
+    let tab_name = app.active_tab.label();
 
-    let tab_hint = "^1/2/3/4/5:Tabs";
+    let tab_hint = "^1..9:Tabs";
 
-    let agent_label = match &app.selected_agent {
-        Some(name) => format!("[Agent: {name}]"),
-        None => String::new(),
+    let agent_label = if let TabId::Agent(ref name) = app.active_tab {
+        format!("[Agent: {name}]")
+    } else {
+        String::new()
     };
 
     let mut spans = vec![
@@ -251,13 +251,13 @@ pub(super) fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
     ]);
 
     // YAML tab: show diagnostics + extra shortcuts
-    if app.active_tab == ActiveTab::Yaml && !app.diag_summary.is_empty() {
+    if app.active_tab == TabId::Yaml && !app.diag_summary.is_empty() {
         let diag_color = if app.diag_summary.contains("error") { Color::Red } else { Color::Yellow };
         spans.push(Span::raw("  "));
         spans.push(Span::styled(format!("[{}]", app.diag_summary), Style::default().fg(diag_color)));
     }
 
-    let shortcuts = if app.active_tab == ActiveTab::Yaml {
+    let shortcuts = if app.active_tab == TabId::Yaml {
         format!("^S:Validate  ^Space:Complete  ^H:Hover  {tab_hint}  ^C:Quit")
     } else {
         format!("Enter:Send  {tab_hint}  Tab:Focus  \u{2191}\u{2193}:Scroll  Esc:Clear  ^C:Quit")

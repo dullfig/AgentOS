@@ -11,7 +11,7 @@ use tui_menu::MenuEvent;
 use crate::lsp::LanguageService;
 
 use crate::agent::permissions::ApprovalVerdict;
-use super::app::{ActiveTab, AgentStatus, ChatEntry, InputMode, MenuAction, MessagesFocus, ProviderCompletion, ThreadsFocus, TuiApp};
+use super::app::{TabId, AgentStatus, ChatEntry, InputMode, MenuAction, MessagesFocus, ProviderCompletion, ThreadsFocus, TuiApp};
 
 /// Dispatch a selected menu action.
 fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
@@ -44,8 +44,11 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
                 concat!(
                     "Keyboard shortcuts:\n",
                     "  F10             Open/close menu bar\n",
-                    "  Alt+F/V/O/A/M/H Open File/View/Modify/Agents/Model/Help menu\n",
-                    "  Ctrl+1..5       Switch tabs\n",
+                    "  Alt+F/R/I/M/H  Open File/Run/Inspect/Model/Help menu\n",
+                    "  Ctrl+1..9       Switch to tab by position\n",
+                    "  Ctrl+W          Close active tab\n",
+                    "  Ctrl+T          Threads   Ctrl+G  Graph\n",
+                    "  Ctrl+Y          YAML      Ctrl+A  Activity\n",
                     "  Shift+Enter     Insert newline\n",
                     "  Tab             Cycle focus (Threads) / autocomplete (/commands)\n",
                     "  Enter           Submit task or confirm\n",
@@ -58,15 +61,12 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             ));
             app.message_auto_scroll = true;
         }
-        MenuAction::SelectAgent(name) => {
-            app.selected_agent = Some(name.clone());
-            push_feedback(app, &format!("Agent: {name}"));
-            app.rebuild_menu();
+        MenuAction::OpenAgentTab(name) => {
+            app.open_agent_tab(&name);
         }
-        MenuAction::ResetAgent => {
-            app.selected_agent = None;
-            push_feedback(app, "Agent: (default)");
-            app.rebuild_menu();
+        MenuAction::CloseTab => {
+            let tab = app.active_tab.clone();
+            app.close_tab(&tab);
         }
     }
 }
@@ -75,6 +75,22 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
 fn push_feedback(app: &mut TuiApp, text: &str) {
     app.chat_log.push(ChatEntry::new("system", text));
     app.message_auto_scroll = true;
+}
+
+/// Toggle a utility tab open/close. If already open and active, close it.
+/// If open but not active, switch to it. If not open, open and switch.
+fn toggle_utility_tab(app: &mut TuiApp, tab: TabId) {
+    if app.active_tab == tab {
+        // Already focused — close it
+        app.close_tab(&tab);
+    } else if app.open_tabs.contains(&tab) {
+        // Open but not focused — switch to it
+        app.active_tab = tab;
+    } else {
+        // Not open — open and switch
+        app.open_tabs.push(tab.clone());
+        app.active_tab = tab;
+    }
 }
 
 /// Get the current input text (first line).
@@ -164,11 +180,10 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::ALT) {
         let menu_index = match key.code {
             KeyCode::Char('f') => Some(0), // File
-            KeyCode::Char('v') => Some(1), // View
-            KeyCode::Char('o') => Some(2), // mOdify
-            KeyCode::Char('a') => Some(3), // Agents
-            KeyCode::Char('m') => Some(4), // Model
-            KeyCode::Char('h') => Some(5), // Help
+            KeyCode::Char('r') => Some(1), // Run
+            KeyCode::Char('i') => Some(2), // Inspect
+            KeyCode::Char('m') => Some(3), // Model
+            KeyCode::Char('h') => Some(4), // Help
             _ => None,
         };
         if let Some(index) = menu_index {
@@ -237,27 +252,37 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         }
     }
 
-    // Ctrl+1/2/3/4/5 switch tabs
+    // Ctrl+1..9 switch tabs by position (like browser tabs)
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
-            KeyCode::Char('1') => {
-                app.active_tab = ActiveTab::Messages;
+            KeyCode::Char(c @ '1'..='9') => {
+                let idx = (c as usize) - ('1' as usize);
+                if let Some(tab) = app.open_tabs.get(idx) {
+                    app.active_tab = tab.clone();
+                }
                 return;
             }
-            KeyCode::Char('2') => {
-                app.active_tab = ActiveTab::Threads;
+            // Ctrl+W closes active tab
+            KeyCode::Char('w') => {
+                let tab = app.active_tab.clone();
+                app.close_tab(&tab);
                 return;
             }
-            KeyCode::Char('3') => {
-                app.active_tab = ActiveTab::Graph;
+            // Utility tab shortcuts: Ctrl+T/G/Y/A toggle open/close
+            KeyCode::Char('t') => {
+                toggle_utility_tab(app, TabId::Threads);
                 return;
             }
-            KeyCode::Char('4') => {
-                app.active_tab = ActiveTab::Yaml;
+            KeyCode::Char('g') => {
+                toggle_utility_tab(app, TabId::Graph);
                 return;
             }
-            KeyCode::Char('5') => {
-                app.active_tab = ActiveTab::Activity;
+            KeyCode::Char('y') => {
+                toggle_utility_tab(app, TabId::Yaml);
+                return;
+            }
+            KeyCode::Char('a') => {
+                toggle_utility_tab(app, TabId::Activity);
                 return;
             }
             _ => {}
@@ -265,7 +290,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
     }
 
     // YAML tab: route keys to code editor when active
-    if app.active_tab == ActiveTab::Yaml {
+    if app.active_tab == TabId::Yaml {
         if let Some(ref mut editor) = app.yaml_editor {
             match key.code {
                 // Ctrl+S validates YAML
@@ -406,7 +431,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         // Enter: submit task or slash command
         KeyCode::Enter => {
             // On Threads tab with ContextTree focus, toggle the selected node
-            if app.active_tab == ActiveTab::Threads
+            if app.active_tab == TabId::Threads
                 && app.threads_focus == ThreadsFocus::ContextTree
             {
                 app.context_tree_state.toggle_selected();
@@ -417,6 +442,13 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     // Slash command — always allowed, even while agent is busy
                     app.pending_command = Some(text);
                 } else if app.agent_status == AgentStatus::Idle {
+                    // Push to active agent tab
+                    if let Some(tab) = app.active_agent_tab_mut() {
+                        tab.chat_log.push(ChatEntry::new("user", text.clone()));
+                        tab.agent_status = AgentStatus::Thinking;
+                        tab.message_auto_scroll = true;
+                    }
+                    // Bridge: keep global state
                     app.chat_log.push(ChatEntry::new("user", text.clone()));
                     app.agent_status = AgentStatus::Thinking;
                     app.message_auto_scroll = true;
@@ -429,7 +461,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         }
         // Tab: focus cycling on Threads tab, otherwise forward to input
         KeyCode::Tab => {
-            if app.active_tab == ActiveTab::Threads {
+            if app.active_tab == TabId::Threads {
                 app.threads_focus = match app.threads_focus {
                     ThreadsFocus::ThreadList => ThreadsFocus::Conversation,
                     ThreadsFocus::Conversation => ThreadsFocus::ContextTree,
@@ -445,17 +477,17 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             app.clear_input();
         }
         // Arrow keys dispatched based on active tab + focus
-        KeyCode::Up if app.active_tab == ActiveTab::Messages => {
+        KeyCode::Up if app.active_tab.is_agent() => {
             for _ in 0..3 {
                 app.scroll_messages_up();
             }
         }
-        KeyCode::Down if app.active_tab == ActiveTab::Messages => {
+        KeyCode::Down if app.active_tab.is_agent() => {
             for _ in 0..3 {
                 app.scroll_messages_down();
             }
         }
-        KeyCode::Up if app.active_tab == ActiveTab::Threads => match app.threads_focus {
+        KeyCode::Up if app.active_tab == TabId::Threads => match app.threads_focus {
             ThreadsFocus::ThreadList => {
                 app.move_up();
             }
@@ -468,7 +500,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 app.context_tree_state.key_up();
             }
         },
-        KeyCode::Down if app.active_tab == ActiveTab::Threads => match app.threads_focus {
+        KeyCode::Down if app.active_tab == TabId::Threads => match app.threads_focus {
             ThreadsFocus::ThreadList => {
                 app.move_down();
             }
@@ -482,41 +514,41 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             }
         },
         // Activity tab: arrow keys scroll activity trace
-        KeyCode::Up if app.active_tab == ActiveTab::Activity => {
+        KeyCode::Up if app.active_tab == TabId::Activity => {
             for _ in 0..3 {
                 app.scroll_activity_up();
             }
         }
-        KeyCode::Down if app.active_tab == ActiveTab::Activity => {
+        KeyCode::Down if app.active_tab == TabId::Activity => {
             for _ in 0..3 {
                 app.scroll_activity_down();
             }
         }
         // Graph tab: arrow keys scroll
-        KeyCode::Up if app.active_tab == ActiveTab::Graph => {
+        KeyCode::Up if app.active_tab == TabId::Graph => {
             for _ in 0..3 {
                 app.scroll_graph_up();
             }
         }
-        KeyCode::Down if app.active_tab == ActiveTab::Graph => {
+        KeyCode::Down if app.active_tab == TabId::Graph => {
             for _ in 0..3 {
                 app.scroll_graph_down();
             }
         }
-        KeyCode::Left if app.active_tab == ActiveTab::Graph => {
+        KeyCode::Left if app.active_tab == TabId::Graph => {
             app.scroll_graph_left();
         }
-        KeyCode::Right if app.active_tab == ActiveTab::Graph => {
+        KeyCode::Right if app.active_tab == TabId::Graph => {
             app.scroll_graph_right();
         }
         // Left/Right on Messages tab: depends on focus
-        KeyCode::Left if app.active_tab == ActiveTab::Messages => {
+        KeyCode::Left if app.active_tab.is_agent() => {
             match app.messages_focus {
                 MessagesFocus::Input => app.input_line.move_left(),
                 MessagesFocus::Messages => app.scroll_messages_left(),
             }
         }
-        KeyCode::Right if app.active_tab == ActiveTab::Messages => {
+        KeyCode::Right if app.active_tab.is_agent() => {
             match app.messages_focus {
                 MessagesFocus::Input => app.input_line.move_right(),
                 MessagesFocus::Messages => app.scroll_messages_right(),
@@ -524,32 +556,32 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         }
         // Left/Right on ContextTree focus: collapse/expand
         KeyCode::Left
-            if app.active_tab == ActiveTab::Threads
+            if app.active_tab == TabId::Threads
                 && app.threads_focus == ThreadsFocus::ContextTree =>
         {
             app.context_tree_state.key_left();
         }
         KeyCode::Right
-            if app.active_tab == ActiveTab::Threads
+            if app.active_tab == TabId::Threads
                 && app.threads_focus == ThreadsFocus::ContextTree =>
         {
             app.context_tree_state.key_right();
         }
         // Page scroll — full page minus 2 overlap lines, dispatched to active tab
         KeyCode::PageUp => match app.active_tab {
-            ActiveTab::Threads if app.threads_focus == ThreadsFocus::Conversation => {
+            TabId::Threads if app.threads_focus == ThreadsFocus::Conversation => {
                 let page = app.conversation_viewport_height.saturating_sub(2).max(1);
                 for _ in 0..page {
                     app.scroll_conversation_up();
                 }
             }
-            ActiveTab::Activity => {
+            TabId::Activity => {
                 let page = app.activity_viewport_height.saturating_sub(2).max(1);
                 for _ in 0..page {
                     app.scroll_activity_up();
                 }
             }
-            ActiveTab::Graph => {
+            TabId::Graph => {
                 let page = app.graph_viewport_height.saturating_sub(2).max(1);
                 for _ in 0..page {
                     app.scroll_graph_up();
@@ -563,19 +595,19 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             }
         },
         KeyCode::PageDown => match app.active_tab {
-            ActiveTab::Threads if app.threads_focus == ThreadsFocus::Conversation => {
+            TabId::Threads if app.threads_focus == ThreadsFocus::Conversation => {
                 let page = app.conversation_viewport_height.saturating_sub(2).max(1);
                 for _ in 0..page {
                     app.scroll_conversation_down();
                 }
             }
-            ActiveTab::Activity => {
+            TabId::Activity => {
                 let page = app.activity_viewport_height.saturating_sub(2).max(1);
                 for _ in 0..page {
                     app.scroll_activity_down();
                 }
             }
-            ActiveTab::Graph => {
+            TabId::Graph => {
                 let page = app.graph_viewport_height.saturating_sub(2).max(1);
                 for _ in 0..page {
                     app.scroll_graph_down();
@@ -590,7 +622,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         },
         // Jump to top/bottom, dispatched to active tab + focus
         KeyCode::Home => match app.active_tab {
-            ActiveTab::Threads => match app.threads_focus {
+            TabId::Threads => match app.threads_focus {
                 ThreadsFocus::ThreadList => {
                     app.selected_thread = 0;
                 }
@@ -602,11 +634,11 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     app.context_tree_state.select_first();
                 }
             },
-            ActiveTab::Activity => {
+            TabId::Activity => {
                 app.activity_scroll = 0;
                 app.activity_auto_scroll = false;
             }
-            ActiveTab::Graph => {
+            TabId::Graph => {
                 app.graph_scroll = 0;
                 app.graph_h_scroll = 0;
             }
@@ -617,7 +649,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             }
         },
         KeyCode::End => match app.active_tab {
-            ActiveTab::Threads => match app.threads_focus {
+            TabId::Threads => match app.threads_focus {
                 ThreadsFocus::ThreadList => {
                     if !app.threads.is_empty() {
                         app.selected_thread = app.threads.len() - 1;
@@ -630,10 +662,10 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     app.context_tree_state.select_last();
                 }
             },
-            ActiveTab::Activity => {
+            TabId::Activity => {
                 app.activity_auto_scroll = true;
             }
-            ActiveTab::Graph => {
+            TabId::Graph => {
                 // Scroll to bottom
                 app.graph_scroll = u16::MAX;
             }
@@ -643,7 +675,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         },
         // Everything else → input line (typing implicitly focuses input)
         _ => {
-            if app.active_tab == ActiveTab::Messages {
+            if app.active_tab.is_agent() {
                 app.messages_focus = MessagesFocus::Input;
             }
             app.input_line.handle_key(key);
@@ -724,7 +756,7 @@ mod tests {
     #[test]
     fn tab_cycles_threads_focus() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         assert_eq!(app.threads_focus, ThreadsFocus::ThreadList);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -740,7 +772,7 @@ mod tests {
     #[test]
     fn tab_on_messages_tab_goes_to_editor() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Messages;
+        app.active_tab = TabId::Agent("planner".into());
         type_text(&mut app, "hello");
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -753,7 +785,7 @@ mod tests {
     #[test]
     fn up_down_on_thread_list() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         app.threads_focus = ThreadsFocus::ThreadList;
         app.threads = vec![
             super::super::app::ThreadView {
@@ -780,7 +812,7 @@ mod tests {
     #[test]
     fn up_down_on_context_tree() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         app.threads_focus = ThreadsFocus::ContextTree;
 
         // key_up/key_down on TreeState with no rendered items is a no-op — just verify no panic
@@ -792,7 +824,7 @@ mod tests {
     #[test]
     fn up_down_on_activity_tab() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Activity;
+        app.active_tab = TabId::Activity;
         app.activity_scroll = 10;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
@@ -803,31 +835,31 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_5_switches_to_activity() {
+    fn ctrl_a_toggles_activity() {
         let mut app = TuiApp::new();
 
         handle_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         );
-        assert_eq!(app.active_tab, ActiveTab::Activity);
+        assert_eq!(app.active_tab, TabId::Activity);
     }
 
     #[test]
-    fn ctrl_3_switches_to_graph() {
+    fn ctrl_g_toggles_graph() {
         let mut app = TuiApp::new();
 
         handle_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
         );
-        assert_eq!(app.active_tab, ActiveTab::Graph);
+        assert_eq!(app.active_tab, TabId::Graph);
     }
 
     #[test]
     fn home_end_on_activity_tab() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Activity;
+        app.active_tab = TabId::Activity;
         app.activity_scroll = 50;
         app.activity_auto_scroll = false;
 
@@ -842,7 +874,7 @@ mod tests {
     #[test]
     fn left_right_on_context_tree() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         app.threads_focus = ThreadsFocus::ContextTree;
 
         // No rendered items yet, just verify no panic
@@ -853,7 +885,7 @@ mod tests {
     #[test]
     fn enter_on_context_tree() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         app.threads_focus = ThreadsFocus::ContextTree;
 
         // Enter should toggle_selected (no-op when nothing selected, but no panic)
@@ -900,8 +932,8 @@ mod tests {
     fn menu_action_switch_tab() {
         let mut app = TuiApp::new();
         app.menu_active = true;
-        dispatch_menu_action(&mut app, MenuAction::SwitchTab(ActiveTab::Threads));
-        assert_eq!(app.active_tab, ActiveTab::Threads);
+        dispatch_menu_action(&mut app, MenuAction::SwitchTab(TabId::Threads));
+        assert_eq!(app.active_tab, TabId::Threads);
         assert!(!app.menu_active);
     }
 
@@ -910,7 +942,7 @@ mod tests {
         let app = TuiApp::new();
         assert!(!app.menu_active);
         // Menu state exists but is not user-activated
-        assert_eq!(app.active_tab, ActiveTab::Messages);
+        assert_eq!(app.active_tab, TabId::Agent("planner".into()));
     }
 
     #[test]
@@ -951,7 +983,7 @@ mod tests {
     #[test]
     fn up_down_on_conversation_focus() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         app.threads_focus = ThreadsFocus::Conversation;
         app.conversation_scroll = 10;
 
@@ -965,7 +997,7 @@ mod tests {
     #[test]
     fn home_end_on_conversation_focus() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         app.threads_focus = ThreadsFocus::Conversation;
         app.conversation_scroll = 50;
         app.conversation_auto_scroll = true;

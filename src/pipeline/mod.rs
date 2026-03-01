@@ -829,6 +829,7 @@ impl AgentPipelineBuilder {
 
             // Create handler from config
             let mut handler = CodingAgentHandler::from_config(
+                def.name.clone(),
                 pool.clone(),
                 tool_definitions,
                 system_prompt,
@@ -2606,6 +2607,7 @@ profiles:
             "http://localhost:19999".into(),
         )));
         let handler = crate::agent::handler::CodingAgentHandler::new(
+            "test-agent".into(),
             pool,
             vec![],
             "test".into(),

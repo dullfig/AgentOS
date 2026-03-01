@@ -58,6 +58,8 @@ pub struct AgentThreadSnapshot {
 
 /// The coding agent handler — stateful, per-thread conversation management.
 pub struct CodingAgentHandler {
+    /// Listener name (e.g., "planner", "coding-agent"). Included in emitted events.
+    name: String,
     pool: Arc<Mutex<LlmPool>>,
     librarian: Option<Arc<Mutex<Librarian>>>,
     tool_definitions: Vec<ToolDefinition>,
@@ -94,11 +96,13 @@ const DEFAULT_MAX_AGENTIC_ITERATIONS: usize = 25;
 impl CodingAgentHandler {
     /// Create a new coding agent handler.
     pub fn new(
+        name: String,
         pool: Arc<Mutex<LlmPool>>,
         tool_definitions: Vec<ToolDefinition>,
         system_prompt: String,
     ) -> Self {
         Self {
+            name,
             pool,
             librarian: None,
             tool_definitions,
@@ -117,12 +121,14 @@ impl CodingAgentHandler {
 
     /// Create from an AgentConfig (YAML-defined agent).
     pub fn from_config(
+        name: String,
         pool: Arc<Mutex<LlmPool>>,
         tool_definitions: Vec<ToolDefinition>,
         system_prompt: String,
         config: &AgentConfig,
     ) -> Self {
         Self {
+            name,
             pool,
             librarian: None,
             tool_definitions,
@@ -141,12 +147,14 @@ impl CodingAgentHandler {
 
     /// Create with an attached Librarian for context curation.
     pub fn with_librarian(
+        name: String,
         pool: Arc<Mutex<LlmPool>>,
         librarian: Arc<Mutex<Librarian>>,
         tool_definitions: Vec<ToolDefinition>,
         system_prompt: String,
     ) -> Self {
         Self {
+            name,
             pool,
             librarian: Some(librarian),
             tool_definitions,
@@ -165,12 +173,14 @@ impl CodingAgentHandler {
 
     /// Create with a semantic router for invisible tool dispatch.
     pub fn with_semantic_router(
+        name: String,
         pool: Arc<Mutex<LlmPool>>,
         router: SemanticRouter,
         tool_definitions: Vec<ToolDefinition>,
         system_prompt: String,
     ) -> Self {
         Self {
+            name,
             pool,
             librarian: None,
             tool_definitions,
@@ -226,6 +236,7 @@ impl CodingAgentHandler {
             PermissionTier::Auto => {
                 self.maybe_emit(PipelineEvent::ToolApproval {
                     thread_id: thread_id.to_string(),
+                    agent_name: self.name.clone(),
                     tool_name: tool_name.to_string(),
                     verdict: "auto".into(),
                 });
@@ -234,6 +245,7 @@ impl CodingAgentHandler {
             PermissionTier::Deny => {
                 self.maybe_emit(PipelineEvent::ToolApproval {
                     thread_id: thread_id.to_string(),
+                    agent_name: self.name.clone(),
                     tool_name: tool_name.to_string(),
                     verdict: "denied_by_policy".into(),
                 });
@@ -259,6 +271,7 @@ impl CodingAgentHandler {
                         Ok(ApprovalVerdict::Approved) => {
                             self.maybe_emit(PipelineEvent::ToolApproval {
                                 thread_id: thread_id.to_string(),
+                                agent_name: self.name.clone(),
                                 tool_name: tool_name.to_string(),
                                 verdict: "approved".into(),
                             });
@@ -267,6 +280,7 @@ impl CodingAgentHandler {
                         Ok(ApprovalVerdict::Denied) | Err(_) => {
                             self.maybe_emit(PipelineEvent::ToolApproval {
                                 thread_id: thread_id.to_string(),
+                                agent_name: self.name.clone(),
                                 tool_name: tool_name.to_string(),
                                 verdict: "denied".into(),
                             });
@@ -292,6 +306,7 @@ impl CodingAgentHandler {
                     .unwrap_or_else(|| text.to_string());
                 let _ = tx.send(PipelineEvent::AgentResponse {
                     thread_id: thread_id.to_string(),
+                    agent_name: self.name.clone(),
                     text: response_text,
                 });
             }
@@ -310,6 +325,7 @@ impl CodingAgentHandler {
         if let Some(ref tx) = self.event_tx {
             let _ = tx.send(PipelineEvent::AgentResponse {
                 thread_id: thread_id.to_string(),
+                agent_name: self.name.clone(),
                 text: format!("Error: {error}"),
             });
         }
@@ -321,6 +337,7 @@ impl CodingAgentHandler {
             let entries = build_conversation_entries(&thread.messages);
             let _ = tx.send(PipelineEvent::ConversationSync {
                 thread_id: thread_id.to_string(),
+                agent_name: self.name.clone(),
                 entries,
             });
         }
@@ -584,6 +601,7 @@ impl CodingAgentHandler {
                                             let name = next.tool_name.clone();
                                             self.maybe_emit(PipelineEvent::ToolDispatched {
                                                 thread_id: thread_id.to_string(),
+                                                agent_name: self.name.clone(),
                                                 tool_name: next.tool_name.clone(),
                                                 detail: summarize_tool_input(
                                                     &next.tool_name,
@@ -619,6 +637,7 @@ impl CodingAgentHandler {
 
                                 self.maybe_emit(PipelineEvent::AgentThinking {
                                     thread_id: thread_id.to_string(),
+                                    agent_name: self.name.clone(),
                                 });
 
                                 if let Some(limit_result) = self.check_agentic_limit(thread) {
@@ -823,6 +842,7 @@ impl Handler for CodingAgentHandler {
                     };
                     self.maybe_emit(PipelineEvent::ToolCompleted {
                         thread_id: thread_id.clone(),
+                        agent_name: self.name.clone(),
                         tool_name: completed_tool,
                         success: !is_error,
                         detail: completed_detail,
@@ -856,6 +876,7 @@ impl Handler for CodingAgentHandler {
 
                                 self.maybe_emit(PipelineEvent::ToolDispatched {
                                     thread_id: thread_id.clone(),
+                                    agent_name: self.name.clone(),
                                     tool_name: next.tool_name.clone(),
                                     detail: summarize_tool_input(
                                         &next.tool_name,
@@ -894,6 +915,7 @@ impl Handler for CodingAgentHandler {
                     // Lifecycle: thinking (after all tools collected)
                     self.maybe_emit(PipelineEvent::AgentThinking {
                         thread_id: thread_id.clone(),
+                        agent_name: self.name.clone(),
                     });
 
                     // Check agentic iteration limit before calling Opus
@@ -917,6 +939,7 @@ impl Handler for CodingAgentHandler {
                         if let Some(first) = pending.first() {
                             self.maybe_emit(PipelineEvent::ToolDispatched {
                                 thread_id: thread_id.clone(),
+                                agent_name: self.name.clone(),
                                 tool_name: first.tool_name.clone(),
                                 detail: summarize_tool_input(&first.tool_name, &first.input),
                             });
@@ -951,6 +974,7 @@ impl Handler for CodingAgentHandler {
             // Lifecycle: thinking (new task)
             self.maybe_emit(PipelineEvent::AgentThinking {
                 thread_id: thread_id.clone(),
+                agent_name: self.name.clone(),
             });
 
             // Check agentic iteration limit before calling Opus
@@ -974,6 +998,7 @@ impl Handler for CodingAgentHandler {
                 if let Some(first) = pending.first() {
                     self.maybe_emit(PipelineEvent::ToolDispatched {
                         thread_id: thread_id.clone(),
+                        agent_name: self.name.clone(),
                         tool_name: first.tool_name.clone(),
                         detail: summarize_tool_input(&first.tool_name, &first.input),
                     });
@@ -1141,7 +1166,7 @@ mod tests {
     fn handler_creation() {
         let pool = mock_pool();
         let handler =
-            CodingAgentHandler::new(pool, sample_tool_defs(), "You are a test agent.".into());
+            CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "You are a test agent.".into());
         assert_eq!(handler.tool_definitions.len(), 2);
         assert_eq!(handler.system_prompt, "You are a test agent.");
     }
@@ -1156,6 +1181,7 @@ mod tests {
         let lib = Arc::new(Mutex::new(Librarian::new(pool.clone(), kernel_arc)));
 
         let handler = CodingAgentHandler::with_librarian(
+            "test-agent".into(),
             pool,
             lib,
             sample_tool_defs(),
@@ -1180,7 +1206,7 @@ mod tests {
     #[test]
     fn process_response_end_turn() {
         let pool = mock_pool();
-        let handler = CodingAgentHandler::new(pool, sample_tool_defs(), "test".into());
+        let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
         let response = crate::llm::types::MessagesResponse {
             id: "msg_1".into(),
             model: "test".into(),
@@ -1203,7 +1229,7 @@ mod tests {
     #[test]
     fn process_response_tool_use() {
         let pool = mock_pool();
-        let handler = CodingAgentHandler::new(pool, sample_tool_defs(), "test".into());
+        let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
         let response = crate::llm::types::MessagesResponse {
             id: "msg_2".into(),
             model: "test".into(),
@@ -1237,7 +1263,7 @@ mod tests {
     #[test]
     fn process_response_multiple_tool_calls() {
         let pool = mock_pool();
-        let handler = CodingAgentHandler::new(pool, sample_tool_defs(), "test".into());
+        let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
         let response = crate::llm::types::MessagesResponse {
             id: "msg_3".into(),
             model: "test".into(),
@@ -1341,7 +1367,7 @@ mod tests {
     #[tokio::test]
     async fn handle_unexpected_tool_response() {
         let pool = mock_pool();
-        let handler = CodingAgentHandler::new(pool, sample_tool_defs(), "test".into());
+        let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
 
         // Inject a tool response when no thread exists (will create with Ready state)
         let payload = ValidatedPayload {
@@ -1440,6 +1466,7 @@ mod tests {
         let pool = mock_pool();
         let router = build_test_router();
         let handler = CodingAgentHandler::with_semantic_router(
+            "test-agent".into(),
             pool,
             router,
             sample_tool_defs(),
@@ -1454,6 +1481,7 @@ mod tests {
         let pool = mock_pool();
         let router = build_test_router();
         let handler = CodingAgentHandler::with_semantic_router(
+            "test-agent".into(),
             pool,
             router,
             sample_tool_defs(),
@@ -1475,6 +1503,7 @@ mod tests {
         let pool = mock_pool();
         let router = build_test_router();
         let mut handler = CodingAgentHandler::with_semantic_router(
+            "test-agent".into(),
             pool,
             router,
             sample_tool_defs(),
@@ -1492,7 +1521,7 @@ mod tests {
         // at a reasonable threshold. If it does match weakly, that's fine — the binary
         // fork is still correct.
         // The key test: when there's no router, it returns None
-        let no_router = CodingAgentHandler::new(mock_pool(), sample_tool_defs(), "test".into());
+        let no_router = CodingAgentHandler::new("test-agent".into(), mock_pool(), sample_tool_defs(), "test".into());
         let no_decision = no_router
             .try_semantic_route("anything", &allowed)
             .await;
@@ -1578,6 +1607,7 @@ mod tests {
         let pool = mock_pool();
         let router = build_test_router();
         let mut handler = CodingAgentHandler::with_semantic_router(
+            "test-agent".into(),
             pool,
             router,
             sample_tool_defs(),
@@ -1594,6 +1624,7 @@ mod tests {
         let pool = mock_pool();
         let config = AgentConfig::default();
         let handler = CodingAgentHandler::from_config(
+            "test-agent".into(),
             pool,
             sample_tool_defs(),
             "test prompt".into(),
@@ -1614,6 +1645,7 @@ mod tests {
             ..AgentConfig::default()
         };
         let handler = CodingAgentHandler::from_config(
+            "test-agent".into(),
             pool,
             sample_tool_defs(),
             "test".into(),
@@ -1630,6 +1662,7 @@ mod tests {
             ..AgentConfig::default()
         };
         let handler = CodingAgentHandler::from_config(
+            "test-agent".into(),
             pool,
             sample_tool_defs(),
             "test".into(),
@@ -1647,7 +1680,7 @@ mod tests {
         let kernel_arc = Arc::new(Mutex::new(kernel));
         let lib = Arc::new(Mutex::new(Librarian::new(pool.clone(), kernel_arc)));
 
-        let handler = CodingAgentHandler::new(pool, sample_tool_defs(), "test".into())
+        let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into())
             .with_librarian_attached(lib);
         assert!(handler.librarian.is_some());
     }
@@ -1656,7 +1689,7 @@ mod tests {
     fn builder_attach_router() {
         let pool = mock_pool();
         let router = build_test_router();
-        let handler = CodingAgentHandler::new(pool, sample_tool_defs(), "test".into())
+        let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into())
             .with_router_attached(router);
         assert!(handler.has_semantic_router());
     }
@@ -1671,6 +1704,7 @@ mod tests {
             ..AgentConfig::default()
         };
         let handler = CodingAgentHandler::from_config(
+            "test-agent".into(),
             pool,
             sample_tool_defs(),
             "test".into(),
@@ -1682,7 +1716,7 @@ mod tests {
     #[test]
     fn check_agentic_limit_increments_counter() {
         let pool = mock_pool();
-        let handler = CodingAgentHandler::new(pool, sample_tool_defs(), "test".into());
+        let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
         let mut thread = AgentThread::new();
         assert_eq!(thread.agentic_iterations, 0);
 
@@ -1699,6 +1733,7 @@ mod tests {
             ..AgentConfig::default()
         };
         let handler = CodingAgentHandler::from_config(
+            "test-agent".into(),
             pool,
             sample_tool_defs(),
             "test".into(),

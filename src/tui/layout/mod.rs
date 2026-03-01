@@ -27,7 +27,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use tui_menu::Menu;
 
-use super::app::{ActiveTab, TuiApp};
+use super::app::{TabId, TuiApp};
 
 /// Subtle dark background for fixed-width blocks (tables, code, diagrams).
 /// Works on 256-color and truecolor terminals; falls back gracefully on 16-color.
@@ -40,7 +40,7 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     // YAML tab: input is hidden (editor takes full area).
     // Other tabs: external input bar below content.
     let input_height = match app.active_tab {
-        ActiveTab::Messages | ActiveTab::Yaml => 0,
+        TabId::Agent(_) | TabId::Yaml => 0,
         _ => 3,
     };
     let outer = Layout::default()
@@ -64,11 +64,11 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     draw_tab_bar(f, app, outer[1]);
 
     match app.active_tab {
-        ActiveTab::Messages => messages::draw_messages(f, app, outer[2]),
-        ActiveTab::Threads => threads::draw_threads(f, app, outer[2]),
-        ActiveTab::Yaml => yaml::draw_yaml_editor(f, app, outer[2]),
-        ActiveTab::Graph => graph::draw_graph(f, app, outer[2]),
-        ActiveTab::Activity => activity::draw_activity(f, app, outer[2]),
+        TabId::Agent(_) => messages::draw_messages(f, app, outer[2]),
+        TabId::Threads => threads::draw_threads(f, app, outer[2]),
+        TabId::Yaml => yaml::draw_yaml_editor(f, app, outer[2]),
+        TabId::Graph => graph::draw_graph(f, app, outer[2]),
+        TabId::Activity => activity::draw_activity(f, app, outer[2]),
     }
 
     if input_height > 0 {
@@ -130,15 +130,14 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     f.render_stateful_widget(menu_widget, menu_area, &mut app.menu_state);
 
     // Underline accelerator letters by overwriting specific cells.
-    // tui-menu renders items as: " " + " File " + " View " + " Modify " + ...
-    // The accelerator letter offset within each name: F(0), V(0), O(1 in mOdify), A(0), M(0), H(0).
+    // Menu layout: File, Run, Inspect, Model, Help
     let accel_style = Style::default()
         .fg(Color::Black)
         .bg(Color::White)
         .add_modifier(Modifier::UNDERLINED);
-    let names = ["File", "View", "Modify", "Agents", "Model", "Help"];
-    let accels = ['F', 'V', 'O', 'A', 'M', 'H'];
-    let accel_offsets: [u16; 6] = [0, 0, 1, 0, 0, 0]; // char offset within each name
+    let names = ["File", "Run", "Inspect", "Model", "Help"];
+    let accels = ['F', 'R', 'I', 'M', 'H'];
+    let accel_offsets: [u16; 5] = [0, 0, 0, 0, 0]; // char offset within each name
     let mut x = outer[0].x + 1; // skip initial " "
     for (i, name) in names.iter().enumerate() {
         x += 1; // leading space of " name "
@@ -152,21 +151,14 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
 }
 
 fn draw_tab_bar(f: &mut Frame, app: &mut TuiApp, area: Rect) {
-    let tabs: Vec<(&str, ActiveTab, &str)> = vec![
-        ("Messages", ActiveTab::Messages, "1"),
-        ("Threads", ActiveTab::Threads, "2"),
-        ("Graph", ActiveTab::Graph, "3"),
-        ("YAML", ActiveTab::Yaml, "4"),
-        ("Activity", ActiveTab::Activity, "5"),
-    ];
-
     // Build tab_regions for mouse hit-testing
     let mut tab_regions = Vec::new();
     let mut x = area.x;
 
-    let spans: Vec<Span> = tabs
+    let spans: Vec<Span> = app.open_tabs
         .iter()
-        .flat_map(|(name, tab, num)| {
+        .enumerate()
+        .flat_map(|(i, tab)| {
             let is_active = *tab == app.active_tab;
             let style = if is_active {
                 Style::default()
@@ -175,12 +167,13 @@ fn draw_tab_bar(f: &mut Frame, app: &mut TuiApp, area: Rect) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            let label = format!("[^{num} {name}]");
+            let num = i + 1;
+            let label = format!("[^{num} {}]", tab.label());
             let label_len = label.len() as u16;
             // " " prefix (1 col) + label
             let x_start = x + 1; // after the space
             let x_end = x_start + label_len;
-            tab_regions.push((x_start, x_end, *tab));
+            tab_regions.push((x_start, x_end, tab.clone()));
             x = x_end;
             vec![
                 Span::raw(" "),

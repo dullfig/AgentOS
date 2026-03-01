@@ -3,6 +3,7 @@
 //! All state lives here. Update receives TuiMessages, mutates state.
 //! View reads state to produce ratatui widgets. No side effects in view.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use ratatui::layout::Rect;
 use tokio::sync::Mutex;
@@ -22,14 +23,73 @@ use crate::pipeline::events::PipelineEvent;
 
 use super::event::TuiMessage;
 
-/// Which tab is currently visible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActiveTab {
-    Messages, // Ctrl+1, default
-    Threads,  // Ctrl+2 (threads + context)
-    Graph,    // Ctrl+3 (organism topology)
-    Yaml,     // Ctrl+4 (organism YAML editor)
-    Activity, // Ctrl+5 (activity trace — always visible)
+/// Identifies an open tab — either an agent conversation or a utility pane.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TabId {
+    Agent(String),  // listener name: "planner", "coding-agent"
+    Threads,
+    Graph,
+    Yaml,
+    Activity,
+}
+
+impl TabId {
+    /// Returns true if this is an agent conversation tab.
+    pub fn is_agent(&self) -> bool {
+        matches!(self, TabId::Agent(_))
+    }
+
+    /// Display label for the tab bar.
+    pub fn label(&self) -> &str {
+        match self {
+            TabId::Agent(name) => name,
+            TabId::Threads => "Threads",
+            TabId::Graph => "Graph",
+            TabId::Yaml => "YAML",
+            TabId::Activity => "Activity",
+        }
+    }
+}
+
+/// Per-agent conversation state (independent scroll, chat log, status).
+pub struct AgentTabState {
+    pub agent_name: String,
+    pub chat_log: Vec<ChatEntry>,
+    pub agent_status: AgentStatus,
+    pub last_response: Option<String>,
+    pub message_scroll: u16,
+    pub message_h_scroll: u16,
+    pub message_auto_scroll: bool,
+    pub scroll_to_last_entry: bool,
+    pub viewport_height: u16,
+    pub messages_focus: MessagesFocus,
+    pub rendered_messages_text: Vec<String>,
+    pub rendered_messages_entry_map: Vec<Option<usize>>,
+    pub code_block_copies: Vec<(usize, String)>,
+    pub rendered_messages_scroll: u16,
+    pub text_selection: super::mouse::TextSelection,
+}
+
+impl AgentTabState {
+    pub fn new(name: &str) -> Self {
+        Self {
+            agent_name: name.to_string(),
+            chat_log: Vec::new(),
+            agent_status: AgentStatus::Idle,
+            last_response: None,
+            message_scroll: 0,
+            message_h_scroll: 0,
+            message_auto_scroll: true,
+            scroll_to_last_entry: false,
+            viewport_height: 20,
+            messages_focus: MessagesFocus::Input,
+            rendered_messages_text: Vec::new(),
+            rendered_messages_entry_map: Vec::new(),
+            code_block_copies: Vec::new(),
+            rendered_messages_scroll: 0,
+            text_selection: super::mouse::TextSelection::default(),
+        }
+    }
 }
 
 /// Which sub-pane has focus within the Threads tab.
@@ -50,14 +110,14 @@ pub enum MessagesFocus {
 /// Actions that can be triggered from the menu bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
-    SwitchTab(ActiveTab),
+    SwitchTab(TabId),
+    OpenAgentTab(String),
+    CloseTab,
     NewTask,
     Quit,
     SetModel,
     ShowAbout,
     ShowShortcuts,
-    SelectAgent(String),
-    ResetAgent,
 }
 
 /// Agent processing status.
@@ -221,7 +281,13 @@ impl ChatEntry {
 /// The main TUI application state (TEA model).
 pub struct TuiApp {
     /// Which tab is currently visible.
-    pub active_tab: ActiveTab,
+    pub active_tab: TabId,
+    /// Ordered list of open tabs.
+    pub open_tabs: Vec<TabId>,
+    /// Per-agent conversation state.
+    pub agent_tabs: HashMap<String, AgentTabState>,
+    /// Available agent names (from organism, for Run menu).
+    pub available_agents: Vec<String>,
     /// Whether the app should quit.
     pub should_quit: bool,
     /// Currently selected thread index.
@@ -377,49 +443,37 @@ const ACTIVITY_LOG_CAPACITY: usize = 512;
 
 /// Build the menu item tree for the menu bar.
 pub fn build_menu_items(
-    _debug_mode: bool,
-    favorites: &[String],
-    selected: Option<&str>,
+    available_agents: &[String],
 ) -> Vec<MenuItem<MenuAction>> {
-    let view_items = vec![
-        MenuItem::item("Messages  ^1", MenuAction::SwitchTab(ActiveTab::Messages)),
-        MenuItem::item("Threads   ^2", MenuAction::SwitchTab(ActiveTab::Threads)),
-        MenuItem::item("Graph     ^3", MenuAction::SwitchTab(ActiveTab::Graph)),
-        MenuItem::item("Activity  ^5", MenuAction::SwitchTab(ActiveTab::Activity)),
-    ];
-
-    let modify_items = vec![
-        MenuItem::item("Organism  ^4", MenuAction::SwitchTab(ActiveTab::Yaml)),
-    ];
-
-    // Build Agents menu items from favorites
-    let mut agent_items: Vec<MenuItem<MenuAction>> = favorites
+    // Build Run menu items from available agents
+    let run_items: Vec<MenuItem<MenuAction>> = available_agents
         .iter()
         .map(|name| {
-            let marker = if selected == Some(name.as_str()) {
-                " \u{2713}"
-            } else {
-                ""
-            };
             MenuItem::item(
-                format!("{name}{marker}"),
-                MenuAction::SelectAgent(name.clone()),
+                name.clone(),
+                MenuAction::OpenAgentTab(name.clone()),
             )
         })
         .collect();
-    agent_items.push(MenuItem::item("(default)", MenuAction::ResetAgent));
+
+    let inspect_items = vec![
+        MenuItem::item("Threads   ^T", MenuAction::SwitchTab(TabId::Threads)),
+        MenuItem::item("Graph     ^G", MenuAction::SwitchTab(TabId::Graph)),
+        MenuItem::item("YAML      ^Y", MenuAction::SwitchTab(TabId::Yaml)),
+        MenuItem::item("Activity  ^A", MenuAction::SwitchTab(TabId::Activity)),
+    ];
 
     vec![
         MenuItem::group(
             "File",
             vec![
                 MenuItem::item("New Task", MenuAction::NewTask),
-                MenuItem::item("Quit     ^C", MenuAction::Quit),
+                MenuItem::item("Close Tab ^W", MenuAction::CloseTab),
+                MenuItem::item("Quit      ^C", MenuAction::Quit),
             ],
         ),
-        MenuItem::group("View", view_items),
-        MenuItem::group("Modify", modify_items),
-        MenuItem::group("Agents", agent_items),
+        MenuItem::group("Run", run_items),
+        MenuItem::group("Inspect", inspect_items),
         MenuItem::group(
             "Model",
             vec![MenuItem::item("/model ...", MenuAction::SetModel)],
@@ -438,7 +492,14 @@ impl TuiApp {
     /// Create a new TuiApp with default state.
     pub fn new() -> Self {
         Self {
-            active_tab: ActiveTab::Messages,
+            active_tab: TabId::Agent("planner".into()),
+            open_tabs: vec![TabId::Agent("planner".into())],
+            agent_tabs: {
+                let mut m = HashMap::new();
+                m.insert("planner".into(), AgentTabState::new("planner"));
+                m
+            },
+            available_agents: Vec::new(),
             should_quit: false,
             selected_thread: 0,
             message_scroll: 0,
@@ -472,7 +533,7 @@ impl TuiApp {
             messages_focus: MessagesFocus::Input,
             context_tree_state: tui_tree_widget::TreeState::default(),
             debug_mode: false,
-            menu_state: MenuState::new(build_menu_items(false, &[], None)),
+            menu_state: MenuState::new(build_menu_items(&[])),
             menu_active: false,
             command_popup_index: 0,
             cmd_service: CommandLineService::new(),
@@ -510,13 +571,60 @@ impl TuiApp {
         }
     }
 
-    /// Rebuild the menu item tree (e.g., after toggling debug mode or changing favorites).
+    /// Rebuild the menu item tree.
     pub fn rebuild_menu(&mut self) {
         self.menu_state = MenuState::new(build_menu_items(
-            self.debug_mode,
-            &self.agents_config.favorites,
-            self.selected_agent.as_deref(),
+            &self.available_agents,
         ));
+    }
+
+    /// Get the active agent tab state (if current tab is an agent tab).
+    pub fn active_agent_tab(&self) -> Option<&AgentTabState> {
+        if let TabId::Agent(ref name) = self.active_tab {
+            self.agent_tabs.get(name)
+        } else {
+            None
+        }
+    }
+
+    /// Get the active agent tab state mutably (if current tab is an agent tab).
+    pub fn active_agent_tab_mut(&mut self) -> Option<&mut AgentTabState> {
+        if let TabId::Agent(ref name) = self.active_tab {
+            let name = name.clone();
+            self.agent_tabs.get_mut(&name)
+        } else {
+            None
+        }
+    }
+
+    /// Open an agent tab (creates state if needed, adds to open_tabs, switches focus).
+    pub fn open_agent_tab(&mut self, name: &str) {
+        let tab_id = TabId::Agent(name.to_string());
+        if !self.agent_tabs.contains_key(name) {
+            self.agent_tabs.insert(name.to_string(), AgentTabState::new(name));
+        }
+        if !self.open_tabs.contains(&tab_id) {
+            self.open_tabs.push(tab_id.clone());
+        }
+        self.active_tab = tab_id;
+    }
+
+    /// Close a tab (removes from open_tabs, switches to adjacent).
+    pub fn close_tab(&mut self, tab_id: &TabId) {
+        if let Some(pos) = self.open_tabs.iter().position(|t| t == tab_id) {
+            self.open_tabs.remove(pos);
+            // If we closed the active tab, switch to adjacent
+            if &self.active_tab == tab_id {
+                if self.open_tabs.is_empty() {
+                    // Re-open a default agent tab
+                    let name = self.available_agents.first().cloned().unwrap_or_else(|| "planner".into());
+                    self.open_agent_tab(&name);
+                } else {
+                    let new_idx = pos.min(self.open_tabs.len() - 1);
+                    self.active_tab = self.open_tabs[new_idx].clone();
+                }
+            }
+        }
     }
 
     /// High-contrast theme tuned for YAML readability on dark terminals.
@@ -738,22 +846,32 @@ impl TuiApp {
                 self.total_input_tokens += *input_tokens as u64;
                 self.total_output_tokens += *output_tokens as u64;
             }
-            PipelineEvent::AgentResponse { text, .. } => {
-                if text.starts_with("Error: ") {
-                    self.agent_status = AgentStatus::Error(text.clone());
+            PipelineEvent::AgentResponse { agent_name, text, .. } => {
+                let status = if text.starts_with("Error: ") {
+                    AgentStatus::Error(text.clone())
                 } else {
-                    self.agent_status = AgentStatus::Idle;
+                    AgentStatus::Idle
+                };
+                // Route to per-agent tab state
+                if let Some(tab) = self.agent_tabs.get_mut(agent_name) {
+                    tab.agent_status = status.clone();
+                    tab.last_response = Some(text.clone());
+                    tab.chat_log.push(ChatEntry::new("agent", text));
+                    tab.message_auto_scroll = false;
+                    tab.scroll_to_last_entry = true;
                 }
+                // Bridge: keep global state for backward compat
+                self.agent_status = status;
                 self.last_response = Some(text.clone());
-                // ChatEntry::new normalizes \r\n → \n
                 self.chat_log.push(ChatEntry::new("agent", text));
-                // Scroll to the start of this response, not the bottom
                 self.message_auto_scroll = false;
                 self.scroll_to_last_entry = true;
-                // Complete any pending "thinking" activity
                 self.complete_thinking();
             }
-            PipelineEvent::AgentThinking { .. } => {
+            PipelineEvent::AgentThinking { agent_name, .. } => {
+                if let Some(tab) = self.agent_tabs.get_mut(agent_name) {
+                    tab.agent_status = AgentStatus::Thinking;
+                }
                 self.agent_status = AgentStatus::Thinking;
                 self.push_activity(ActivityEntry {
                     timestamp: now_secs(),
@@ -763,8 +881,11 @@ impl TuiApp {
                 });
             }
             PipelineEvent::ToolDispatched {
-                tool_name, detail, ..
+                agent_name, tool_name, detail, ..
             } => {
+                if let Some(tab) = self.agent_tabs.get_mut(agent_name) {
+                    tab.agent_status = AgentStatus::ToolCall(tool_name.clone());
+                }
                 self.agent_status = AgentStatus::ToolCall(tool_name.clone());
                 self.push_activity(ActivityEntry {
                     timestamp: now_secs(),
@@ -986,7 +1107,7 @@ mod tests {
     #[test]
     fn app_default_state() {
         let app = TuiApp::new();
-        assert_eq!(app.active_tab, ActiveTab::Messages);
+        assert_eq!(app.active_tab, TabId::Agent("planner".into()));
         assert!(!app.should_quit);
         assert_eq!(app.selected_thread, 0);
     }
@@ -1155,16 +1276,16 @@ mod tests {
     #[test]
     fn tab_switching() {
         let mut app = TuiApp::new();
-        assert_eq!(app.active_tab, ActiveTab::Messages);
+        assert_eq!(app.active_tab, TabId::Agent("planner".into()));
 
-        app.active_tab = ActiveTab::Threads;
-        assert_eq!(app.active_tab, ActiveTab::Threads);
+        app.active_tab = TabId::Threads;
+        assert_eq!(app.active_tab, TabId::Threads);
 
-        app.active_tab = ActiveTab::Yaml;
-        assert_eq!(app.active_tab, ActiveTab::Yaml);
+        app.active_tab = TabId::Yaml;
+        assert_eq!(app.active_tab, TabId::Yaml);
 
-        app.active_tab = ActiveTab::Graph;
-        assert_eq!(app.active_tab, ActiveTab::Graph);
+        app.active_tab = TabId::Graph;
+        assert_eq!(app.active_tab, TabId::Graph);
     }
 
     #[test]
@@ -1190,6 +1311,7 @@ mod tests {
         let mut app = TuiApp::new();
         app.update(TuiMessage::Pipeline(PipelineEvent::AgentThinking {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
         }));
         assert_eq!(app.activity_log.len(), 1);
         assert_eq!(app.activity_log[0].label, "thinking");
@@ -1202,6 +1324,7 @@ mod tests {
         let mut app = TuiApp::new();
         app.update(TuiMessage::Pipeline(PipelineEvent::ToolDispatched {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
             tool_name: "file-read".into(),
             detail: "src/main.rs".into(),
         }));
@@ -1217,11 +1340,13 @@ mod tests {
         let mut app = TuiApp::new();
         app.update(TuiMessage::Pipeline(PipelineEvent::ToolDispatched {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
             tool_name: "file-read".into(),
             detail: "src/main.rs".into(),
         }));
         app.update(TuiMessage::Pipeline(PipelineEvent::ToolCompleted {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
             tool_name: "file-read".into(),
             success: true,
             detail: String::new(),
@@ -1236,11 +1361,13 @@ mod tests {
         let mut app = TuiApp::new();
         app.update(TuiMessage::Pipeline(PipelineEvent::ToolDispatched {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
             tool_name: "command-exec".into(),
             detail: "rm -rf /".into(),
         }));
         app.update(TuiMessage::Pipeline(PipelineEvent::ToolCompleted {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
             tool_name: "command-exec".into(),
             success: false,
             detail: "permission denied".into(),
@@ -1271,11 +1398,13 @@ mod tests {
         let mut app = TuiApp::new();
         app.update(TuiMessage::Pipeline(PipelineEvent::AgentThinking {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
         }));
         assert_eq!(app.activity_log[0].status, ActivityStatus::InProgress);
 
         app.update(TuiMessage::Pipeline(PipelineEvent::AgentResponse {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
             text: "Done!".into(),
         }));
         assert_eq!(app.activity_log[0].status, ActivityStatus::Done);
@@ -1322,7 +1451,7 @@ mod tests {
     #[test]
     fn arrow_keys_on_threads_tab_with_threadlist_focus() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         app.threads_focus = super::ThreadsFocus::ThreadList;
         app.threads = vec![
             ThreadView {
@@ -1355,7 +1484,7 @@ mod tests {
     #[test]
     fn home_end_dispatch_to_active_tab() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Activity;
+        app.active_tab = TabId::Activity;
         app.activity_scroll = 50;
         app.activity_auto_scroll = true;
 
@@ -1394,7 +1523,7 @@ mod tests {
     fn yaml_ctrl_s_validates_good() {
         let mut app = TuiApp::new();
         app.load_yaml_editor("organism:\n  name: test\n");
-        app.active_tab = ActiveTab::Yaml;
+        app.active_tab = TabId::Yaml;
 
         // Ctrl+S triggers validation
         handle_key(
@@ -1411,7 +1540,7 @@ mod tests {
     fn yaml_ctrl_s_validates_bad() {
         let mut app = TuiApp::new();
         app.load_yaml_editor("key: [invalid\n");
-        app.active_tab = ActiveTab::Yaml;
+        app.active_tab = TabId::Yaml;
 
         handle_key(
             &mut app,
@@ -1426,7 +1555,7 @@ mod tests {
     fn yaml_tab_receives_keys() {
         let mut app = TuiApp::new();
         app.load_yaml_editor("hello");
-        app.active_tab = ActiveTab::Yaml;
+        app.active_tab = TabId::Yaml;
         app.yaml_area = Rect::new(0, 0, 80, 24);
 
         // Type a character — should go to editor, not textarea
@@ -1445,7 +1574,7 @@ mod tests {
     fn yaml_esc_clears_status() {
         let mut app = TuiApp::new();
         app.load_yaml_editor("bad: [yaml\n");
-        app.active_tab = ActiveTab::Yaml;
+        app.active_tab = TabId::Yaml;
         app.yaml_status = Some("parse error".into());
 
         handle_key(
@@ -1480,6 +1609,7 @@ mod tests {
         ];
         app.update(TuiMessage::Pipeline(PipelineEvent::ConversationSync {
             thread_id: "thread-1".into(),
+            agent_name: "test-agent".into(),
             entries,
         }));
         assert!(app.thread_conversations.contains_key("thread-1"));
@@ -1516,7 +1646,7 @@ mod tests {
     #[test]
     fn threads_focus_cycles_through_conversation() {
         let mut app = TuiApp::new();
-        app.active_tab = ActiveTab::Threads;
+        app.active_tab = TabId::Threads;
         assert_eq!(app.threads_focus, ThreadsFocus::ThreadList);
 
         // Simulate Tab presses

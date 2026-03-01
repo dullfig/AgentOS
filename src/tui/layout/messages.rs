@@ -16,14 +16,19 @@ use super::BLOCK_BG;
 pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     // ── Single-outline layout: messages + embedded input ──
     //
-    // ┌─ Messages ────────────────────────┐
-    // │  chat content                     │
-    // │                                   │
-    // │                                   │  ← 1-line gap
-    // │░░> input text_                   ░│  ← shaded, grows up
-    // └───────────────────────────────────┘
+    // ┌─ [agent name] ─────────────────────┐
+    // │  chat content                       │
+    // │                                     │
+    // │                                     │  ← 1-line gap
+    // │░░> input text_                     ░│  ← shaded, grows up
+    // └─────────────────────────────────────┘
+    let title = if let super::super::app::TabId::Agent(ref name) = app.active_tab {
+        format!(" {} ", name)
+    } else {
+        " Messages ".to_string()
+    };
     let block = Block::default()
-        .title(" Messages ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(area);
@@ -69,7 +74,18 @@ pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     let mut code_block_copies: Vec<(usize, String)> = Vec::new(); // (visual_line, raw fenced text)
     let mut last_entry_start: u32 = 0;
 
-    for (entry_idx, entry) in app.chat_log.iter().enumerate() {
+    // Read chat log from active agent tab (fallback to global)
+    let chat_log = if let Some(tab) = app.active_agent_tab() {
+        tab.chat_log.clone()
+    } else {
+        app.chat_log.clone()
+    };
+    let agent_status = if let Some(tab) = app.active_agent_tab() {
+        tab.agent_status.clone()
+    } else {
+        app.agent_status.clone()
+    };
+    for (entry_idx, entry) in chat_log.iter().enumerate() {
         last_entry_start = lines.len() as u32;
         match entry.role.as_str() {
             "user" => {
@@ -158,7 +174,7 @@ pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         }
     }
 
-    if app.agent_status == AgentStatus::Thinking {
+    if agent_status == AgentStatus::Thinking {
         lines.push(Line::from(""));
         nowrap.push(false);
         lines.push(Line::from(vec![Span::styled(
@@ -166,7 +182,7 @@ pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
             Style::default().fg(Color::Yellow),
         )]));
         nowrap.push(false);
-    } else if let AgentStatus::ToolCall(ref name) = app.agent_status {
+    } else if let AgentStatus::ToolCall(ref name) = agent_status {
         lines.push(Line::from(""));
         nowrap.push(false);
         lines.push(Line::from(vec![Span::styled(

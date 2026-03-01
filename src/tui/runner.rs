@@ -114,6 +114,14 @@ pub async fn run_tui(
     app.agents_config = agents_config;
     app.load_yaml_editor(organism_yaml);
     app.load_organism_graph(pipeline.organism());
+
+    // Populate available agents from organism and open first agent tab
+    app.available_agents = pipeline.organism().agent_listeners().iter().map(|a| a.name.clone()).collect();
+    // Clear default tabs and open the first agent
+    app.open_tabs.clear();
+    app.agent_tabs.clear();
+    let first_agent = app.available_agents.first().cloned().unwrap_or_else(|| "planner".into());
+    app.open_agent_tab(&first_agent);
     app.rebuild_menu();
 
     // If no LLM pool at boot, show a helpful welcome message
@@ -291,7 +299,12 @@ pub async fn run_tui(
 
         // Check for pending task submission (set by input handler on Enter)
         if let Some(task) = app.pending_task.take() {
-            inject_task(pipeline, &kernel, &task, app.selected_agent.as_deref()).await;
+            let agent_name = if let super::app::TabId::Agent(ref name) = app.active_tab {
+                Some(name.as_str())
+            } else {
+                app.selected_agent.as_deref()
+            };
+            inject_task(pipeline, &kernel, &task, agent_name).await;
         }
     }
 
@@ -656,6 +669,7 @@ profiles:
 
         app.update(TuiMessage::Pipeline(PipelineEvent::AgentResponse {
             thread_id: "t1".into(),
+            agent_name: "test-agent".into(),
             text: "Done! Here is the summary.".into(),
         }));
 
@@ -669,38 +683,45 @@ profiles:
     #[test]
     fn ctrl_keys_switch_tabs() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use super::super::app::ActiveTab;
+        use super::super::app::TabId;
 
         let mut app = TuiApp::new();
-        assert_eq!(app.active_tab, ActiveTab::Messages);
+        // Set up open_tabs with multiple tabs for positional switching
+        app.open_tabs = vec![
+            TabId::Agent("planner".into()),
+            TabId::Threads,
+            TabId::Graph,
+            TabId::Yaml,
+        ];
+        assert!(app.active_tab.is_agent());
 
-        // Ctrl+2 → Threads
+        // Ctrl+2 → Threads (position 2)
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Char('2'),
             KeyModifiers::CONTROL,
         )));
-        assert_eq!(app.active_tab, ActiveTab::Threads);
+        assert_eq!(app.active_tab, TabId::Threads);
 
-        // Ctrl+3 → Graph
+        // Ctrl+3 → Graph (position 3)
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Char('3'),
             KeyModifiers::CONTROL,
         )));
-        assert_eq!(app.active_tab, ActiveTab::Graph);
+        assert_eq!(app.active_tab, TabId::Graph);
 
-        // Ctrl+4 → Yaml
+        // Ctrl+4 → Yaml (position 4)
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Char('4'),
             KeyModifiers::CONTROL,
         )));
-        assert_eq!(app.active_tab, ActiveTab::Yaml);
+        assert_eq!(app.active_tab, TabId::Yaml);
 
-        // Ctrl+1 → Messages
+        // Ctrl+1 → Agent (position 1)
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Char('1'),
             KeyModifiers::CONTROL,
         )));
-        assert_eq!(app.active_tab, ActiveTab::Messages);
+        assert!(app.active_tab.is_agent());
     }
 
     #[test]
@@ -760,7 +781,7 @@ profiles:
         app.message_auto_scroll = false;
 
         // Switch to Threads tab (default focus = ThreadList)
-        app.active_tab = super::super::app::ActiveTab::Threads;
+        app.active_tab = super::super::app::TabId::Threads;
 
         // Up arrow should NOT scroll messages — dispatches to thread list instead
         app.update(TuiMessage::Input(KeyEvent::new(

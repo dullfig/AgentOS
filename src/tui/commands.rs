@@ -273,6 +273,13 @@ pub async fn execute(
             }
         }
         "/clear" => {
+            // Clear active agent tab if on one
+            if let Some(tab) = app.active_agent_tab_mut() {
+                tab.chat_log.clear();
+                tab.message_scroll = 0;
+                tab.message_auto_scroll = true;
+            }
+            // Bridge: clear global
             app.chat_log.clear();
             app.message_scroll = 0;
             app.message_auto_scroll = true;

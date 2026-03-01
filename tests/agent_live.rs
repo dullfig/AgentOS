@@ -26,7 +26,7 @@ async fn agent_simple_text_response() {
 
     let pool = Arc::new(Mutex::new(pool));
     // No tools → the model can't use tools, must respond with text
-    let handler = CodingAgentHandler::new(pool, vec![], "You are a helpful test agent. Be very brief.".into());
+    let handler = CodingAgentHandler::new("test-agent".into(), pool, vec![], "You are a helpful test agent. Be very brief.".into());
 
     let payload = ValidatedPayload {
         xml: b"<AgentTask><task>What is 2+2? Reply with just the number.</task></AgentTask>"
@@ -81,6 +81,7 @@ async fn agent_tool_call_dispatch() {
     }];
 
     let handler = CodingAgentHandler::new(
+        "test-agent".into(),
         pool,
         tool_defs,
         "You are a coding agent. When asked to read a file, use the file-read tool.".into(),
@@ -129,6 +130,7 @@ async fn agent_multi_turn_tool_sequence() {
     let tool_defs = build_tool_definitions(&["file-read"]);
 
     let handler = CodingAgentHandler::new(
+        "test-agent".into(),
         pool,
         tool_defs,
         "You are a coding agent. Use file-read to read files when asked. After reading, summarize what you found.".into(),
@@ -246,6 +248,7 @@ async fn agent_codebase_index_tool() {
     let tool_defs = build_tool_definitions(&["codebase-index"]);
 
     let handler = CodingAgentHandler::new(
+        "test-agent".into(),
         pool,
         tool_defs,
         "You are a coding agent. Use the codebase-index tool to search for symbols.".into(),

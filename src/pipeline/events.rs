@@ -44,21 +44,25 @@ pub enum PipelineEvent {
     /// Coding agent produced a final response.
     AgentResponse {
         thread_id: String,
+        agent_name: String,
         text: String,
     },
     /// Agent is about to call the LLM (thinking).
     AgentThinking {
         thread_id: String,
+        agent_name: String,
     },
     /// A tool call has been dispatched.
     ToolDispatched {
         thread_id: String,
+        agent_name: String,
         tool_name: String,
         detail: String,
     },
     /// A tool call completed (result received).
     ToolCompleted {
         thread_id: String,
+        agent_name: String,
         tool_name: String,
         success: bool,
         detail: String,
@@ -66,11 +70,13 @@ pub enum PipelineEvent {
     /// Conversation state sync — full conversation for a thread (for TUI display).
     ConversationSync {
         thread_id: String,
+        agent_name: String,
         entries: Vec<ConversationEntry>,
     },
     /// Tool permission check result (for activity trace).
     ToolApproval {
         thread_id: String,
+        agent_name: String,
         tool_name: String,
         verdict: String, // "approved", "denied", "auto", "denied_by_policy"
     },
