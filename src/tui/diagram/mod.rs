@@ -143,7 +143,7 @@ mod organism_tests {
             parameters: vec![],
             required: vec![],
             requires: vec![],
-            organism: "child.yaml".into(),
+            organism: Some("child.yaml".into()),
             max_concurrency: 5,
             timeout_secs: 300,
         });

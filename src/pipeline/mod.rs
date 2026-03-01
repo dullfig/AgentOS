@@ -445,15 +445,22 @@ impl AgentPipelineBuilder {
         for def in &buffer_listeners {
             let buf = def.buffer.as_ref().unwrap(); // safe: filtered by buffer_listeners()
 
-            // Load child organism
-            let child_org =
-                crate::buffer::load_child_organism(base_dir, &buf.organism)?;
+            // Load child organism: from file if specified, clone self if absent
+            let child_org = match &buf.organism {
+                Some(path) => crate::buffer::load_child_organism(base_dir, path)?,
+                None => self.organism.clone(), // self-referential buffer
+            };
+            let org_label = buf
+                .organism
+                .as_deref()
+                .unwrap_or("<self>")
+                .to_string();
 
             // Validate: child has at least one agent
             if child_org.agent_listeners().is_empty() {
                 return Err(format!(
                     "buffer '{}': child organism '{}' has no agent listeners",
-                    def.name, buf.organism
+                    def.name, org_label
                 ));
             }
 

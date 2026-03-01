@@ -64,6 +64,9 @@ pub struct CallableParam {
 /// A `buffer:` block on a listener makes it a callable tool backed by a child pipeline.
 /// The tool schema (description, parameters) and spawn config (organism, concurrency)
 /// live together because the buffer IS the tool.
+///
+/// When `organism` is `None`, the buffer clones the current organism to spawn
+/// children — self-referential recursion. The agent can call itself in parallel.
 #[derive(Debug, Clone)]
 pub struct BufferConfig {
     // ── Tool interface (what callers see) ──
@@ -72,9 +75,9 @@ pub struct BufferConfig {
     pub required: Vec<String>,
     pub requires: Vec<String>,
     // ── Spawn config (how the system implements it) ──
-    pub organism: String,       // path to child organism YAML
-    pub max_concurrency: usize, // default 5
-    pub timeout_secs: u64,      // default 300
+    pub organism: Option<String>, // None = clone self (recursive buffer)
+    pub max_concurrency: usize,   // default 5
+    pub timeout_secs: u64,        // default 300
 }
 
 impl BufferConfig {

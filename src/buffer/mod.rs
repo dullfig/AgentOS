@@ -323,7 +323,7 @@ profiles:
             ],
             required: vec!["to".to_string()],
             requires: vec![],
-            organism: "child.yaml".to_string(),
+            organism: Some("child.yaml".to_string()),
             max_concurrency: 5,
             timeout_secs: 300,
         };

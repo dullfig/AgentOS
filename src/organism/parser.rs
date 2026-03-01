@@ -142,7 +142,8 @@ struct BufferYaml {
     #[serde(default)]
     requires: Vec<String>,
     // ── Spawn config ──
-    organism: String,
+    #[serde(default)]
+    organism: Option<String>,
     #[serde(default = "default_max_concurrency")]
     max_concurrency: usize,
     #[serde(default = "default_timeout_secs")]
@@ -1024,7 +1025,7 @@ profiles:
         assert_eq!(buffer.parameters.len(), 3);
         assert_eq!(buffer.required, vec!["to", "subject", "body"]);
         assert_eq!(buffer.requires, vec!["command-exec"]);
-        assert_eq!(buffer.organism, "email-agent.yaml");
+        assert_eq!(buffer.organism.as_deref(), Some("email-agent.yaml"));
         assert_eq!(buffer.max_concurrency, 5);
         assert_eq!(buffer.timeout_secs, 120);
 
@@ -1064,6 +1065,57 @@ profiles:
         let buffer = listener.buffer.as_ref().unwrap();
         assert_eq!(buffer.max_concurrency, 5);
         assert_eq!(buffer.timeout_secs, 300);
+    }
+
+    #[test]
+    fn parse_self_referential_buffer() {
+        let yaml = r#"
+organism:
+  name: test-self-ref
+
+listeners:
+  - name: researcher
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Research agent"
+    agent:
+      prompt: "research_base"
+      max_agentic_iterations: 25
+    peers: [file-read, researcher]
+    buffer:
+      description: "Research a sub-topic"
+      parameters:
+        topic: { type: string, description: "The sub-topic to research" }
+      required: [topic]
+      max_concurrency: 3
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+profiles:
+  default:
+    linux_user: agentos
+    listeners: [researcher, file-read]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let listener = org.get_listener("researcher").unwrap();
+
+        let buffer = listener.buffer.as_ref().unwrap();
+        assert_eq!(buffer.organism, None); // self-referential: no child organism
+        assert_eq!(buffer.max_concurrency, 3);
+        assert_eq!(buffer.description, "Research a sub-topic");
+        assert_eq!(buffer.parameters.len(), 1);
+
+        // Also an agent
+        assert!(listener.is_agent);
+        assert!(listener.agent_config.is_some());
+
+        // Appears in both agent and buffer listener lists
+        assert_eq!(org.agent_listeners().len(), 1);
+        assert_eq!(org.buffer_listeners().len(), 1);
     }
 
     #[test]
