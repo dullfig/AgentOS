@@ -39,26 +39,34 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             app.message_auto_scroll = true;
         }
         MenuAction::ShowShortcuts => {
-            app.chat_log.push(ChatEntry::new(
-                "system",
-                concat!(
-                    "Keyboard shortcuts:\n",
-                    "  F10             Open/close menu bar\n",
-                    "  Alt+F/R/I/M/H  Open File/Run/Inspect/Model/Help menu\n",
-                    "  Ctrl+1..9       Switch to tab by position\n",
-                    "  Ctrl+W          Close active tab\n",
-                    "  Ctrl+T          Threads   Ctrl+G  Graph\n",
-                    "  Ctrl+Y          YAML      Ctrl+A  Activity\n",
-                    "  Shift+Enter     Insert newline\n",
-                    "  Tab             Cycle focus (Threads) / autocomplete (/commands)\n",
-                    "  Enter           Submit task or confirm\n",
-                    "  Esc             Clear input\n",
-                    "  Up/Down         Scroll or navigate\n",
-                    "  PageUp/Dn       Page scroll\n",
-                    "  Home/End        Jump to top/bottom\n",
-                    "  Ctrl+C          Quit",
-                ),
-            ));
+            let menu_line = if app.debug_mode {
+                "  Alt+F/R/I/D/H  Open File/Run/Inspect/Debug/Help menu\n"
+            } else {
+                "  Alt+F/R/I/H    Open File/Run/Inspect/Help menu\n"
+            };
+            let activity_line = if app.debug_mode {
+                "  Ctrl+Y          YAML      Ctrl+A  Activity\n"
+            } else {
+                "  Ctrl+Y          YAML\n"
+            };
+            let text = format!(
+                "Keyboard shortcuts:\n\
+                 {menu_line}\
+                 {activity_line}\
+                 \x20 F10             Open/close menu bar\n\
+                 \x20 Ctrl+1..9       Switch to tab by position\n\
+                 \x20 Ctrl+W          Close active tab\n\
+                 \x20 Ctrl+T          Threads   Ctrl+G  Graph\n\
+                 \x20 Shift+Enter     Insert newline\n\
+                 \x20 Tab             Cycle focus (Threads) / autocomplete (/commands)\n\
+                 \x20 Enter           Submit task or confirm\n\
+                 \x20 Esc             Clear input\n\
+                 \x20 Up/Down         Scroll or navigate\n\
+                 \x20 PageUp/Dn       Page scroll\n\
+                 \x20 Home/End        Jump to top/bottom\n\
+                 \x20 Ctrl+C          Quit"
+            );
+            app.chat_log.push(ChatEntry::new("system", text));
             app.message_auto_scroll = true;
         }
         MenuAction::OpenAgentTab(name) => {
@@ -177,13 +185,15 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
     }
 
     // Alt+letter opens a specific menu group (Windows-style accelerators)
+    // Non-debug: File(0) Run(1) Inspect(2) Help(3)
+    // Debug:     File(0) Run(1) Inspect(2) Debug(3) Help(4)
     if key.modifiers.contains(KeyModifiers::ALT) {
         let menu_index = match key.code {
             KeyCode::Char('f') => Some(0), // File
             KeyCode::Char('r') => Some(1), // Run
             KeyCode::Char('i') => Some(2), // Inspect
-            KeyCode::Char('m') => Some(3), // Model
-            KeyCode::Char('h') => Some(4), // Help
+            KeyCode::Char('d') if app.debug_mode => Some(3), // Debug (debug only)
+            KeyCode::Char('h') => Some(if app.debug_mode { 4 } else { 3 }), // Help
             _ => None,
         };
         if let Some(index) = menu_index {
@@ -281,7 +291,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 toggle_utility_tab(app, TabId::Yaml);
                 return;
             }
-            KeyCode::Char('a') => {
+            KeyCode::Char('a') if app.debug_mode => {
                 toggle_utility_tab(app, TabId::Activity);
                 return;
             }
@@ -835,14 +845,29 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_toggles_activity() {
+    fn ctrl_a_toggles_activity_in_debug_mode() {
         let mut app = TuiApp::new();
+        app.debug_mode = true;
 
         handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         );
         assert_eq!(app.active_tab, TabId::Activity);
+    }
+
+    #[test]
+    fn ctrl_a_noop_without_debug() {
+        let mut app = TuiApp::new();
+        // debug_mode is false by default
+        let original_tab = app.active_tab.clone();
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        // Tab should not have changed — Ctrl+A is ignored outside debug mode
+        assert_eq!(app.active_tab, original_tab);
     }
 
     #[test]
@@ -1053,5 +1078,25 @@ mod tests {
 
         assert!(app.in_wizard()); // still in wizard
         assert!(app.pending_provider_completion.is_none());
+    }
+
+    // ── Debug mode menu tests ──
+
+    #[test]
+    fn debug_mode_shows_debug_menu() {
+        use super::super::app::build_menu_items;
+
+        let items = build_menu_items(&[], true);
+        // Debug mode: File, Run, Inspect, Debug, Help = 5 groups
+        assert_eq!(items.len(), 5);
+    }
+
+    #[test]
+    fn non_debug_omits_debug_menu() {
+        use super::super::app::build_menu_items;
+
+        let items = build_menu_items(&[], false);
+        // Non-debug: File, Run, Inspect, Help = 4 groups
+        assert_eq!(items.len(), 4);
     }
 }

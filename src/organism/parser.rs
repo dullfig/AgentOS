@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::profile::{RetentionPolicy, SecurityProfile};
@@ -15,54 +16,76 @@ use super::{
 use crate::agent::permissions::{PermissionMap, PermissionTier};
 use crate::wasm::capabilities::{EnvGrant, FsGrant, WasmCapabilities};
 
-/// Top-level YAML structure.
-#[derive(Debug, Deserialize)]
+/// Top-level organism YAML configuration.
+///
+/// Defines an organism: its identity, listeners (handlers), security
+/// profiles, and named prompt templates.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct OrganismYaml {
+    /// Organism identity metadata.
     organism: OrganismMeta,
+    /// Array of listener definitions — each handles one payload type.
     #[serde(default)]
     listeners: Vec<ListenerYaml>,
+    /// Security profiles — map of profile name to access rules.
     #[serde(default)]
     profiles: std::collections::HashMap<String, ProfileYaml>,
+    /// Named prompt templates for agent identity. Values can be inline text or `file:path`.
     #[serde(default)]
     prompts: std::collections::HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+/// Organism identity metadata.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct OrganismMeta {
+    /// Unique name for this organism configuration.
     name: String,
 }
 
-#[derive(Debug, Deserialize)]
+/// A listener definition — handles one payload type via a handler function.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ListenerYaml {
+    /// Unique identifier for this listener, kebab-case.
     name: String,
+    /// Fully qualified payload class (e.g., `agent.AgentTask`). Last component becomes payload tag.
     payload_class: String,
+    /// Handler: dotted path (e.g., `tools.file_read.handle`), `wasm`, or `buffer`.
     handler: String,
+    /// Human-readable purpose of this listener.
     description: String,
-    /// Supports both `agent: true` (bool) and `agent: { prompt: ... }` (config block).
-    /// Also supports `is_agent: true` as an alias.
+    /// Agent config. `true` for defaults, or block: `{ prompt, max_tokens, ... }`. Alias: `is_agent`.
     #[serde(default, alias = "is_agent")]
     agent: AgentFieldYaml,
+    /// Listeners this one may call (dispatch table entries).
     #[serde(default)]
     peers: Vec<String>,
+    /// LLM model override — `opus`, `sonnet`, or `haiku`. Default: pool default.
     #[serde(default)]
     model: Option<String>,
+    /// Network port declarations.
     #[serde(default)]
     ports: Vec<PortYaml>,
+    /// `true` to auto-curate context via Haiku librarian. Default: `false`.
     #[serde(default)]
     librarian: bool,
+    /// WASM sandboxed tool configuration.
     #[serde(default)]
     wasm: Option<WasmYaml>,
+    /// Natural language description for embedding-based semantic routing.
     #[serde(default)]
     semantic_description: Option<String>,
+    /// Buffer node: callable tool interface + child pipeline spawn config.
     #[serde(default)]
     buffer: Option<BufferYaml>,
 }
 
-/// Agent field: bool or config block (untagged for YAML flexibility).
-#[derive(Debug, Deserialize)]
+/// Agent field: `true` for defaults, or a configuration block. Untagged for YAML flexibility.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
 enum AgentFieldYaml {
+    /// Boolean shorthand — `true` enables agent with defaults.
     Bool(bool),
+    /// Full agent configuration block.
     Config(AgentConfigYaml),
 }
 
@@ -72,81 +95,115 @@ impl Default for AgentFieldYaml {
     }
 }
 
-/// Agent configuration block parsed from YAML.
-#[derive(Debug, Deserialize)]
+/// Agent configuration block.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct AgentConfigYaml {
+    /// Prompt label(s). Use `&` to compose: `"safety & coding_base"`. Labels must exist in `prompts:` section.
     #[serde(default)]
     prompt: Option<String>,
+    /// Maximum LLM completion tokens. Default: 4096.
     #[serde(default)]
     max_tokens: Option<u32>,
+    /// Maximum semantic routing iterations. Default: 5.
     #[serde(default)]
     max_iterations: Option<usize>,
+    /// Maximum tool-call loop iterations. Default: 25.
     #[serde(default)]
     max_agentic_iterations: Option<usize>,
+    /// LLM model override — `opus`, `sonnet`, or `haiku`.
     #[serde(default)]
     model: Option<String>,
+    /// Per-tool permission tiers: `auto` (no approval), `prompt` (ask user), `deny` (never).
     #[serde(default)]
     permissions: std::collections::HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+/// WASM sandboxed tool configuration.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct WasmYaml {
+    /// Path to the WASM binary (relative to organism directory).
     path: String,
+    /// Sandbox capability grants.
     #[serde(default)]
     capabilities: Option<WasmCapabilitiesYaml>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+/// WASM sandbox capabilities — filesystem, environment, and stdio grants.
+#[derive(Debug, Deserialize, Default, JsonSchema)]
 struct WasmCapabilitiesYaml {
+    /// Filesystem mount grants.
     #[serde(default)]
     filesystem: Vec<FsGrantYaml>,
+    /// Environment variable grants.
     #[serde(default)]
     env: Vec<EnvGrantYaml>,
+    /// Allow stdio access. Default: `false`.
     #[serde(default)]
     stdio: bool,
 }
 
-#[derive(Debug, Deserialize)]
+/// Filesystem mount grant for WASM sandbox.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct FsGrantYaml {
+    /// Host filesystem path to mount.
     host_path: String,
+    /// Guest filesystem path (inside WASM).
     guest_path: String,
+    /// Mount as read-only. Default: `false`.
     #[serde(default)]
     read_only: bool,
 }
 
-#[derive(Debug, Deserialize)]
+/// Environment variable grant for WASM sandbox.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct EnvGrantYaml {
+    /// Environment variable name.
     key: String,
+    /// Environment variable value.
     value: String,
 }
 
-#[derive(Debug, Deserialize)]
+/// Tool parameter definition for buffer callable interface.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CallableParamYaml {
+    /// Parameter type: `string`, `integer`, `boolean`, etc.
     #[serde(rename = "type")]
     param_type: String,
+    /// Human-readable parameter description.
     #[serde(default)]
     description: Option<String>,
+    /// Allowed values (enum constraint).
     #[serde(default, rename = "enum")]
     enum_values: Option<Vec<String>>,
 }
 
-/// Buffer node YAML: callable tool interface + child pipeline spawn config.
-#[derive(Debug, Deserialize)]
+/// Buffer node: callable tool interface + child pipeline spawn config.
+///
+/// A buffer makes a listener callable as a tool. The calling agent sends
+/// parameters; the system spawns an isolated child pipeline to execute.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct BufferYaml {
-    // ── Tool interface ──
+    /// Tool description shown to the calling agent.
     description: String,
+    /// Tool parameters — map of parameter name to type/description.
     #[serde(default)]
     parameters: std::collections::HashMap<String, CallableParamYaml>,
+    /// Which parameters are mandatory.
     #[serde(default)]
     required: Vec<String>,
+    /// Tools available inside the child pipeline (e.g., `[file-read, command-exec]`).
     #[serde(default)]
     requires: Vec<String>,
-    // ── Spawn config ──
+    /// Child organism YAML file (relative to `--dir`). Omit to clone current organism (self-referential).
     #[serde(default)]
     organism: Option<String>,
+    /// Maximum parallel child instances. Default: 5.
     #[serde(default = "default_max_concurrency")]
+    #[schemars(default = "default_max_concurrency")]
     max_concurrency: usize,
+    /// Execution timeout in seconds. Default: 300.
     #[serde(default = "default_timeout_secs")]
+    #[schemars(default = "default_timeout_secs")]
     timeout_secs: u64,
 }
 
@@ -158,39 +215,53 @@ fn default_timeout_secs() -> u64 {
     300
 }
 
-#[derive(Debug, Deserialize)]
+/// Network port declaration for a listener.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct PortYaml {
+    /// Port number.
     port: u16,
+    /// Direction: `inbound` or `outbound`.
     direction: String,
+    /// Network protocol: `https`, `http`, `ssh`, etc.
     protocol: String,
+    /// Target hosts for outbound connections (e.g., `["api.anthropic.com"]`).
     #[serde(default)]
     hosts: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+/// Security profile — access rules for a set of listeners.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ProfileYaml {
+    /// Linux user for process isolation (e.g., `agentos-root`).
     linux_user: String,
+    /// Which listeners this profile may access: `"all"` or a list of names.
     listeners: ListenersSpec,
+    /// Message retention policy. Default: `retain_forever`.
     #[serde(default)]
     journal: JournalSpec,
+    /// Listeners whose network ports this profile may use.
     #[serde(default)]
     network: Vec<String>,
 }
 
-/// Listeners can be "all" or a list of names.
-#[derive(Debug, Deserialize)]
+/// Listeners access spec: `"all"` or a list of listener names.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
 enum ListenersSpec {
-    All(String),       // "all"
-    List(Vec<String>), // ["file-ops", "shell"]
+    /// Grant access to all listeners.
+    All(String),
+    /// Grant access to specific listeners by name.
+    List(Vec<String>),
 }
 
-/// Journal retention spec.
-#[derive(Debug, Deserialize)]
+/// Journal retention policy.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
 enum JournalSpec {
-    Simple(String),            // "retain_forever" or "prune_on_delivery"
-    WithDays(JournalDaysSpec), // { retain_days: 90 }
+    /// Simple policy: `"retain_forever"` or `"prune_on_delivery"`.
+    Simple(String),
+    /// Retain for a number of days.
+    WithDays(JournalDaysSpec),
 }
 
 impl Default for JournalSpec {
@@ -199,9 +270,17 @@ impl Default for JournalSpec {
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// Journal retention by day count.
+#[derive(Debug, Deserialize, JsonSchema)]
 struct JournalDaysSpec {
+    /// Number of days to retain journal messages.
     retain_days: u16,
+}
+
+/// Generate the JSON Schema for the organism YAML format.
+pub fn generate_schema() -> serde_json::Value {
+    let schema = schemars::schema_for!(OrganismYaml);
+    serde_json::to_value(schema).expect("schema serialization cannot fail")
 }
 
 /// Load an organism from a YAML file.
@@ -1344,5 +1423,47 @@ profiles:
         let err = parse_organism(yaml).unwrap_err();
         assert!(err.contains("unknown permission tier"));
         assert!(err.contains("always"));
+    }
+
+    // ── JSON Schema generation ──
+
+    #[test]
+    fn generate_schema_produces_valid_json() {
+        let schema = generate_schema();
+        assert!(schema.is_object());
+        let obj = schema.as_object().unwrap();
+        assert!(obj.contains_key("$schema") || obj.contains_key("definitions") || obj.contains_key("properties"),
+            "Schema should have standard JSON Schema keys");
+    }
+
+    #[test]
+    fn schema_stays_in_sync() {
+        let generated = serde_json::to_string_pretty(&generate_schema()).unwrap();
+        let committed = std::fs::read_to_string("organisms/organism.schema.json")
+            .expect("organisms/organism.schema.json must exist — run: cargo test generate_schema_file -- --ignored");
+        assert_eq!(
+            generated.trim(),
+            committed.trim(),
+            "Schema drift detected! Regenerate with: cargo test generate_schema_file -- --ignored"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn generate_schema_file() {
+        let schema = generate_schema();
+        let pretty = serde_json::to_string_pretty(&schema).unwrap();
+        std::fs::write("organisms/organism.schema.json", format!("{pretty}\n")).unwrap();
+        println!("Wrote organisms/organism.schema.json");
+    }
+
+    #[test]
+    fn existing_organisms_parse() {
+        for path in &["organisms/default.yaml", "organisms/coder.yaml", "organisms/organism-builder.yaml"] {
+            let content = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+            parse_organism(&content)
+                .unwrap_or_else(|e| panic!("{path} failed to parse: {e}"));
+        }
     }
 }

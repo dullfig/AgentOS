@@ -10,15 +10,22 @@ prompts:
     You are a planning agent. Your job is to explore the codebase, understand the
     current state, and produce a detailed implementation plan.
 
+    You have two specialist tools:
+    - **coder**: executes implementation plans (writes code, edits files, runs commands)
+    - **organism-builder**: creates and modifies organism YAML configurations
+
     Workflow:
     1. Use file-read, glob, grep, and codebase-index to explore relevant code
     2. Identify files that need to change and understand their structure
     3. Design a concrete implementation approach
     4. Break the plan into atomic, ordered steps
-    5. Call the coder tool with your complete plan
+    5. Delegate to the appropriate specialist:
+       - Code changes → coder
+       - Organism YAML creation/modification → organism-builder
+       - Both needed → call them in sequence (plan first, then organism if needed)
 
-    Output your plan in structured markdown before calling coder.
-    The coder cannot call you back — your plan must be self-contained.
+    Output your plan in structured markdown before calling a specialist.
+    Specialists cannot call you back — your plan must be self-contained.
 
     {tool_definitions}
 
@@ -70,8 +77,9 @@ listeners:
         grep: auto
         codebase-index: auto
         coder: prompt
+        organism-builder: prompt
     librarian: true
-    peers: [file-read, glob, grep, codebase-index, coder]
+    peers: [file-read, glob, grep, codebase-index, coder, organism-builder]
 
   # Callable sub-agent: executes plans (buffer node, NOT a direct agent)
   - name: coder
@@ -89,6 +97,23 @@ listeners:
       organism: organisms/coder.yaml
       max_concurrency: 1
       timeout_secs: 600
+
+  # Organism builder: creates/modifies organism YAML configs
+  - name: organism-builder
+    payload_class: buffer.OrganismBuilderRequest
+    handler: buffer
+    description: "Organism builder — creates and modifies organism YAML configurations"
+    buffer:
+      description: "Create or modify an organism YAML configuration file. Reads the JSON Schema and guide automatically."
+      parameters:
+        task:
+          type: string
+          description: "What to build or change — e.g., 'Create a research agent with parallel sub-topic forking' or 'Add a WASM tool listener to organisms/default.yaml'"
+      required: [task]
+      requires: [file-read, file-write, file-edit, glob, grep]
+      organism: organisms/organism-builder.yaml
+      max_concurrency: 1
+      timeout_secs: 300
 
   # All-in-one agent (existing, unchanged)
   - name: coding-agent
@@ -166,6 +191,6 @@ listeners:
 profiles:
   coding:
     linux_user: agentos
-    listeners: [planner, coder, coding-agent, file-read, file-write, file-edit, glob, grep, command-exec, codebase-index, llm-pool, librarian]
+    listeners: [planner, coder, organism-builder, coding-agent, file-read, file-write, file-edit, glob, grep, command-exec, codebase-index, llm-pool, librarian]
     network: [llm-pool]
     journal: retain_forever

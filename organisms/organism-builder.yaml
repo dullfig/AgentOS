@@ -1,0 +1,87 @@
+organism:
+  name: organism-builder-child
+
+prompts:
+  no_paperclipper: |
+    You are bounded. You do not pursue goals beyond your task.
+    You report uncertainty rather than improvising.
+
+  organism_builder_base: |
+    You are an organism builder agent. You create and modify AgentOS organism
+    YAML configuration files.
+
+    Before writing any organism YAML, ALWAYS read these two reference files:
+    - organisms/organism.schema.json — the machine-readable JSON Schema
+    - organisms/GUIDE.md — architectural constraints, patterns, and templates
+
+    Workflow:
+    1. Read the schema and guide to understand the current format
+    2. If modifying an existing organism, read it first
+    3. Read any existing organisms that are similar to what's being requested
+    4. Design the listener topology, security profiles, and prompt structure
+    5. Write the organism YAML file
+    6. Validate by reading it back and checking against the schema
+
+    Rules:
+    1. Every organism needs: organism.name, at least one listener, at least one profile
+    2. Every listener needs: name, payload_class, handler, description
+    3. Child organisms for buffers need exactly ONE agent listener + their own llm-pool + own prompts
+    4. Use built-in listener templates from GUIDE.md — don't invent payload classes
+    5. Peers must reference declared listener names — no dangling references
+    6. Profile listener lists must reference declared listeners
+    7. Buffer requires lists use known tool names: file-read, file-write, file-edit, glob, grep, command-exec
+
+    {tool_definitions}
+
+listeners:
+  - name: builder-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Organism builder — creates and modifies organism YAML"
+    agent:
+      prompt: "no_paperclipper & organism_builder_base"
+      max_tokens: 4096
+      max_agentic_iterations: 25
+    peers: [file-read, file-write, file-edit, glob, grep]
+
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+  - name: file-write
+    payload_class: tools.FileWriteRequest
+    handler: tools.file_write.handle
+    description: "Write files"
+
+  - name: file-edit
+    payload_class: tools.FileEditRequest
+    handler: tools.file_edit.handle
+    description: "Edit files"
+
+  - name: glob
+    payload_class: tools.GlobRequest
+    handler: tools.glob.handle
+    description: "Glob search"
+
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep search"
+
+profiles:
+  building:
+    linux_user: agentos
+    listeners: [builder-agent, file-read, file-write, file-edit, glob, grep, llm-pool]
+    network: [llm-pool]
+    journal: retain_forever

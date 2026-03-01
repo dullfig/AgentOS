@@ -120,13 +120,22 @@ impl LanguageService for OrganismYamlService {
                     &[
                         "name", "payload_class", "handler", "description", "agent",
                         "peers", "model", "ports", "librarian", "wasm",
-                        "semantic_description",
+                        "semantic_description", "buffer",
                     ],
                     trimmed,
                 )
             }
             Context::AgentBlock => {
-                complete_keys(&["prompt", "max_tokens", "max_iterations", "model"], trimmed)
+                complete_keys(
+                    &["prompt", "max_tokens", "max_iterations", "max_agentic_iterations", "model", "permissions"],
+                    trimmed,
+                )
+            }
+            Context::BufferBlock => {
+                complete_keys(
+                    &["description", "parameters", "required", "requires", "organism", "max_concurrency", "timeout_secs"],
+                    trimmed,
+                )
             }
             Context::Profile => {
                 complete_keys(&["linux_user", "listeners", "journal", "network"], trimmed)
@@ -310,6 +319,7 @@ fn validate_listeners(
         let valid_fields = [
             "name", "payload_class", "handler", "description", "agent", "is_agent",
             "peers", "model", "ports", "librarian", "wasm", "semantic_description",
+            "buffer",
         ];
         for (key, _) in map {
             if let Some(name) = key.as_str() {
@@ -536,6 +546,7 @@ enum Context {
     Organism,
     ListenerItem,
     AgentBlock,
+    BufferBlock,
     Profile,
     PortItem,
     WasmBlock,
@@ -585,6 +596,7 @@ fn determine_context(lines: &[&str], cursor_line: usize) -> Context {
             match parent_key {
                 "organism" => return Context::Organism,
                 "agent" | "is_agent" => return Context::AgentBlock,
+                "buffer" => return Context::BufferBlock,
                 "ports" => return Context::PortItem,
                 "wasm" => return Context::WasmBlock,
                 _ => {}
@@ -665,7 +677,7 @@ fn complete_value(
     let values: Vec<&str> = match field {
         "model" => vec!["opus", "sonnet", "haiku"],
         "journal" => vec!["retain_forever", "prune_on_delivery"],
-        "handler" => vec!["wasm"],
+        "handler" => vec!["wasm", "buffer"],
         "direction" => vec!["inbound", "outbound"],
         "protocol" => vec!["https", "http", "ssh"],
         "librarian" => vec!["true", "false"],
@@ -722,7 +734,7 @@ fn complete_value(
 
 fn hover_for_key(key: &str) -> Option<HoverInfo> {
     let desc = match key {
-        "organism" => "Top-level organism metadata block.",
+        "organism" => "Top-level: organism metadata block. Inside `buffer:`: child organism YAML file (relative to `--dir`). Omit to clone current organism.",
         "name" => "Unique name for this organism configuration. *Required.*",
         "listeners" => "Array of listener definitions — each handles one payload type.",
         "profiles" => "Security profiles — map of profile name to access rules.",
@@ -750,6 +762,13 @@ fn hover_for_key(key: &str) -> Option<HoverInfo> {
         "hosts" => "Target hosts for outbound connections (e.g., `[\"api.anthropic.com\"]`).",
         "path" => "Path to the WASM binary.",
         "capabilities" => "WASM sandbox capabilities — `{ filesystem, env, stdio }`.",
+        "buffer" => "Buffer node — callable tool interface + child pipeline spawn config.",
+        "max_agentic_iterations" => "Maximum tool-call loop iterations. Default: `25`.",
+        "permissions" => "Per-tool permission tiers: `auto`, `prompt` (default), or `deny`.",
+        "required" => "List of mandatory parameter names for the buffer tool interface.",
+        "requires" => "Tools available inside the child pipeline (e.g., `[file-read, command-exec]`).",
+        "max_concurrency" => "Maximum parallel child instances. Default: `5`.",
+        "timeout_secs" => "Execution timeout in seconds. Default: `300`.",
         _ => return None,
     };
 

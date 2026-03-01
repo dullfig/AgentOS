@@ -442,8 +442,12 @@ const EVENT_LOG_CAPACITY: usize = 256;
 const ACTIVITY_LOG_CAPACITY: usize = 512;
 
 /// Build the menu item tree for the menu bar.
+///
+/// When `debug_mode` is false: File / Run / Inspect / Help
+/// When `debug_mode` is true:  File / Run / Inspect / Debug / Help
 pub fn build_menu_items(
     available_agents: &[String],
+    debug_mode: bool,
 ) -> Vec<MenuItem<MenuAction>> {
     // Build Run menu items from available agents
     let run_items: Vec<MenuItem<MenuAction>> = available_agents
@@ -460,10 +464,9 @@ pub fn build_menu_items(
         MenuItem::item("Threads   ^T", MenuAction::SwitchTab(TabId::Threads)),
         MenuItem::item("Graph     ^G", MenuAction::SwitchTab(TabId::Graph)),
         MenuItem::item("YAML      ^Y", MenuAction::SwitchTab(TabId::Yaml)),
-        MenuItem::item("Activity  ^A", MenuAction::SwitchTab(TabId::Activity)),
     ];
 
-    vec![
+    let mut menus = vec![
         MenuItem::group(
             "File",
             vec![
@@ -474,18 +477,27 @@ pub fn build_menu_items(
         ),
         MenuItem::group("Run", run_items),
         MenuItem::group("Inspect", inspect_items),
-        MenuItem::group(
-            "Model",
-            vec![MenuItem::item("/model ...", MenuAction::SetModel)],
-        ),
-        MenuItem::group(
-            "Help",
+    ];
+
+    if debug_mode {
+        menus.push(MenuItem::group(
+            "Debug",
             vec![
-                MenuItem::item("About", MenuAction::ShowAbout),
-                MenuItem::item("Shortcuts", MenuAction::ShowShortcuts),
+                MenuItem::item("/model ...", MenuAction::SetModel),
+                MenuItem::item("Activity  ^A", MenuAction::SwitchTab(TabId::Activity)),
             ],
-        ),
-    ]
+        ));
+    }
+
+    menus.push(MenuItem::group(
+        "Help",
+        vec![
+            MenuItem::item("About", MenuAction::ShowAbout),
+            MenuItem::item("Shortcuts", MenuAction::ShowShortcuts),
+        ],
+    ));
+
+    menus
 }
 
 impl TuiApp {
@@ -533,7 +545,7 @@ impl TuiApp {
             messages_focus: MessagesFocus::Input,
             context_tree_state: tui_tree_widget::TreeState::default(),
             debug_mode: false,
-            menu_state: MenuState::new(build_menu_items(&[])),
+            menu_state: MenuState::new(build_menu_items(&[], false)),
             menu_active: false,
             command_popup_index: 0,
             cmd_service: CommandLineService::new(),
@@ -575,6 +587,7 @@ impl TuiApp {
     pub fn rebuild_menu(&mut self) {
         self.menu_state = MenuState::new(build_menu_items(
             &self.available_agents,
+            self.debug_mode,
         ));
     }
 

@@ -1,0 +1,526 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentConfigYaml": {
+      "description": "Agent configuration block.",
+      "properties": {
+        "max_agentic_iterations": {
+          "default": null,
+          "description": "Maximum tool-call loop iterations. Default: 25.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_iterations": {
+          "default": null,
+          "description": "Maximum semantic routing iterations. Default: 5.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_tokens": {
+          "default": null,
+          "description": "Maximum LLM completion tokens. Default: 4096.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model": {
+          "default": null,
+          "description": "LLM model override — `opus`, `sonnet`, or `haiku`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permissions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Per-tool permission tiers: `auto` (no approval), `prompt` (ask user), `deny` (never).",
+          "type": "object"
+        },
+        "prompt": {
+          "default": null,
+          "description": "Prompt label(s). Use `&` to compose: `\"safety & coding_base\"`. Labels must exist in `prompts:` section.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AgentFieldYaml": {
+      "anyOf": [
+        {
+          "description": "Boolean shorthand — `true` enables agent with defaults.",
+          "type": "boolean"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentConfigYaml"
+            }
+          ],
+          "description": "Full agent configuration block."
+        }
+      ],
+      "description": "Agent field: `true` for defaults, or a configuration block. Untagged for YAML flexibility."
+    },
+    "BufferYaml": {
+      "description": "Buffer node: callable tool interface + child pipeline spawn config.\n\nA buffer makes a listener callable as a tool. The calling agent sends parameters; the system spawns an isolated child pipeline to execute.",
+      "properties": {
+        "description": {
+          "description": "Tool description shown to the calling agent.",
+          "type": "string"
+        },
+        "max_concurrency": {
+          "default": 5,
+          "description": "Maximum parallel child instances. Default: 5.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "organism": {
+          "default": null,
+          "description": "Child organism YAML file (relative to `--dir`). Omit to clone current organism (self-referential).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/definitions/CallableParamYaml"
+          },
+          "description": "Tool parameters — map of parameter name to type/description.",
+          "type": "object"
+        },
+        "required": {
+          "default": [],
+          "description": "Which parameters are mandatory.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requires": {
+          "default": [],
+          "description": "Tools available inside the child pipeline (e.g., `[file-read, command-exec]`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "timeout_secs": {
+          "default": 300,
+          "description": "Execution timeout in seconds. Default: 300.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "type": "object"
+    },
+    "CallableParamYaml": {
+      "description": "Tool parameter definition for buffer callable interface.",
+      "properties": {
+        "description": {
+          "default": null,
+          "description": "Human-readable parameter description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enum": {
+          "default": null,
+          "description": "Allowed values (enum constraint).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "Parameter type: `string`, `integer`, `boolean`, etc.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "EnvGrantYaml": {
+      "description": "Environment variable grant for WASM sandbox.",
+      "properties": {
+        "key": {
+          "description": "Environment variable name.",
+          "type": "string"
+        },
+        "value": {
+          "description": "Environment variable value.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "type": "object"
+    },
+    "FsGrantYaml": {
+      "description": "Filesystem mount grant for WASM sandbox.",
+      "properties": {
+        "guest_path": {
+          "description": "Guest filesystem path (inside WASM).",
+          "type": "string"
+        },
+        "host_path": {
+          "description": "Host filesystem path to mount.",
+          "type": "string"
+        },
+        "read_only": {
+          "default": false,
+          "description": "Mount as read-only. Default: `false`.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "guest_path",
+        "host_path"
+      ],
+      "type": "object"
+    },
+    "JournalDaysSpec": {
+      "description": "Journal retention by day count.",
+      "properties": {
+        "retain_days": {
+          "description": "Number of days to retain journal messages.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "retain_days"
+      ],
+      "type": "object"
+    },
+    "JournalSpec": {
+      "anyOf": [
+        {
+          "description": "Simple policy: `\"retain_forever\"` or `\"prune_on_delivery\"`.",
+          "type": "string"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/JournalDaysSpec"
+            }
+          ],
+          "description": "Retain for a number of days."
+        }
+      ],
+      "description": "Journal retention policy."
+    },
+    "ListenerYaml": {
+      "description": "A listener definition — handles one payload type via a handler function.",
+      "properties": {
+        "agent": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentFieldYaml"
+            }
+          ],
+          "description": "Agent config. `true` for defaults, or block: `{ prompt, max_tokens, ... }`. Alias: `is_agent`."
+        },
+        "buffer": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BufferYaml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Buffer node: callable tool interface + child pipeline spawn config."
+        },
+        "description": {
+          "description": "Human-readable purpose of this listener.",
+          "type": "string"
+        },
+        "handler": {
+          "description": "Handler: dotted path (e.g., `tools.file_read.handle`), `wasm`, or `buffer`.",
+          "type": "string"
+        },
+        "librarian": {
+          "default": false,
+          "description": "`true` to auto-curate context via Haiku librarian. Default: `false`.",
+          "type": "boolean"
+        },
+        "model": {
+          "default": null,
+          "description": "LLM model override — `opus`, `sonnet`, or `haiku`. Default: pool default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Unique identifier for this listener, kebab-case.",
+          "type": "string"
+        },
+        "payload_class": {
+          "description": "Fully qualified payload class (e.g., `agent.AgentTask`). Last component becomes payload tag.",
+          "type": "string"
+        },
+        "peers": {
+          "default": [],
+          "description": "Listeners this one may call (dispatch table entries).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ports": {
+          "description": "Network port declarations.",
+          "items": {
+            "$ref": "#/definitions/PortYaml"
+          },
+          "type": "array"
+        },
+        "semantic_description": {
+          "default": null,
+          "description": "Natural language description for embedding-based semantic routing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wasm": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WasmYaml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "WASM sandboxed tool configuration."
+        }
+      },
+      "required": [
+        "description",
+        "handler",
+        "name",
+        "payload_class"
+      ],
+      "type": "object"
+    },
+    "ListenersSpec": {
+      "anyOf": [
+        {
+          "description": "Grant access to all listeners.",
+          "type": "string"
+        },
+        {
+          "description": "Grant access to specific listeners by name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "Listeners access spec: `\"all\"` or a list of listener names."
+    },
+    "OrganismMeta": {
+      "description": "Organism identity metadata.",
+      "properties": {
+        "name": {
+          "description": "Unique name for this organism configuration.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "PortYaml": {
+      "description": "Network port declaration for a listener.",
+      "properties": {
+        "direction": {
+          "description": "Direction: `inbound` or `outbound`.",
+          "type": "string"
+        },
+        "hosts": {
+          "default": [],
+          "description": "Target hosts for outbound connections (e.g., `[\"api.anthropic.com\"]`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "port": {
+          "description": "Port number.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "protocol": {
+          "description": "Network protocol: `https`, `http`, `ssh`, etc.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "direction",
+        "port",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "ProfileYaml": {
+      "description": "Security profile — access rules for a set of listeners.",
+      "properties": {
+        "journal": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/JournalSpec"
+            }
+          ],
+          "description": "Message retention policy. Default: `retain_forever`."
+        },
+        "linux_user": {
+          "description": "Linux user for process isolation (e.g., `agentos-root`).",
+          "type": "string"
+        },
+        "listeners": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ListenersSpec"
+            }
+          ],
+          "description": "Which listeners this profile may access: `\"all\"` or a list of names."
+        },
+        "network": {
+          "default": [],
+          "description": "Listeners whose network ports this profile may use.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "linux_user",
+        "listeners"
+      ],
+      "type": "object"
+    },
+    "WasmCapabilitiesYaml": {
+      "description": "WASM sandbox capabilities — filesystem, environment, and stdio grants.",
+      "properties": {
+        "env": {
+          "description": "Environment variable grants.",
+          "items": {
+            "$ref": "#/definitions/EnvGrantYaml"
+          },
+          "type": "array"
+        },
+        "filesystem": {
+          "description": "Filesystem mount grants.",
+          "items": {
+            "$ref": "#/definitions/FsGrantYaml"
+          },
+          "type": "array"
+        },
+        "stdio": {
+          "default": false,
+          "description": "Allow stdio access. Default: `false`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "WasmYaml": {
+      "description": "WASM sandboxed tool configuration.",
+      "properties": {
+        "capabilities": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WasmCapabilitiesYaml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sandbox capability grants."
+        },
+        "path": {
+          "description": "Path to the WASM binary (relative to organism directory).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Top-level organism YAML configuration.\n\nDefines an organism: its identity, listeners (handlers), security profiles, and named prompt templates.",
+  "properties": {
+    "listeners": {
+      "description": "Array of listener definitions — each handles one payload type.",
+      "items": {
+        "$ref": "#/definitions/ListenerYaml"
+      },
+      "type": "array"
+    },
+    "organism": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/OrganismMeta"
+        }
+      ],
+      "description": "Organism identity metadata."
+    },
+    "profiles": {
+      "additionalProperties": {
+        "$ref": "#/definitions/ProfileYaml"
+      },
+      "description": "Security profiles — map of profile name to access rules.",
+      "type": "object"
+    },
+    "prompts": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Named prompt templates for agent identity. Values can be inline text or `file:path`.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "organism"
+  ],
+  "title": "OrganismYaml",
+  "type": "object"
+}

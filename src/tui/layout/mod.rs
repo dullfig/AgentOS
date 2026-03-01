@@ -130,18 +130,23 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     f.render_stateful_widget(menu_widget, menu_area, &mut app.menu_state);
 
     // Underline accelerator letters by overwriting specific cells.
-    // Menu layout: File, Run, Inspect, Model, Help
+    // Non-debug: File, Run, Inspect, Help — accels F, R, I, H
+    // Debug:     File, Run, Inspect, Debug, Help — accels F, R, I, D, H
     let accel_style = Style::default()
         .fg(Color::Black)
         .bg(Color::White)
         .add_modifier(Modifier::UNDERLINED);
-    let names = ["File", "Run", "Inspect", "Model", "Help"];
-    let accels = ['F', 'R', 'I', 'M', 'H'];
-    let accel_offsets: [u16; 5] = [0, 0, 0, 0, 0]; // char offset within each name
+    let (names, accels): (&[&str], &[char]) = if app.debug_mode {
+        (&["File", "Run", "Inspect", "Debug", "Help"],
+         &['F', 'R', 'I', 'D', 'H'])
+    } else {
+        (&["File", "Run", "Inspect", "Help"],
+         &['F', 'R', 'I', 'H'])
+    };
     let mut x = outer[0].x + 1; // skip initial " "
     for (i, name) in names.iter().enumerate() {
         x += 1; // leading space of " name "
-        let cell = Rect::new(x + accel_offsets[i], outer[0].y, 1, 1);
+        let cell = Rect::new(x, outer[0].y, 1, 1);
         f.render_widget(
             Paragraph::new(Span::styled(accels[i].to_string(), accel_style)),
             cell,

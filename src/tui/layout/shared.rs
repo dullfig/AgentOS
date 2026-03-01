@@ -214,11 +214,18 @@ pub(super) fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
         String::new()
     };
 
-    let mut spans = vec![
+    let mut spans = Vec::new();
+    if app.debug_mode {
+        spans.push(Span::styled(
+            " [DEBUG]",
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.extend([
         Span::styled(" [", Style::default().fg(Color::DarkGray)),
         status_text,
         Span::styled("]", Style::default().fg(Color::DarkGray)),
-    ];
+    ]);
 
     if !agent_label.is_empty() {
         spans.push(Span::raw("  "));
