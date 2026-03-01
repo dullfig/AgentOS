@@ -4,6 +4,7 @@
 //! barycenter heuristic for crossing minimization, centered coordinate assignment.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use unicode_width::UnicodeWidthStr;
 use super::parser::{Graph, Shape, EdgeDir};
 
 /// A node with computed position and size.
@@ -95,7 +96,7 @@ pub fn layout(graph: &Graph, max_width: usize) -> PositionedGraph {
         .nodes
         .iter()
         .map(|n| {
-            let label_w = n.label.len();
+            let label_w = n.label.width();
             // Box width = label + 2 border chars + 2 padding spaces
             (n.id.clone(), label_w + 4)
         })

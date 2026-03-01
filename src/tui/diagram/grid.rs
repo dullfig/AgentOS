@@ -6,6 +6,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use super::layout::{PositionedGraph, PositionedNode, PositionedEdge, PositionedContainer};
 use super::parser::{Shape, EdgeDir};
 
@@ -70,8 +71,17 @@ impl CharGrid {
     }
 
     fn put_str(&mut self, x: usize, y: usize, s: &str, cat: CellCategory) {
-        for (i, ch) in s.chars().enumerate() {
-            self.set(x + i, y, ch, cat.clone());
+        let mut col = 0;
+        for ch in s.chars() {
+            self.set(x + col, y, ch, cat.clone());
+            let w = ch.width().unwrap_or(0);
+            // Wide chars (emoji, CJK) occupy 2 cells — fill the second with a space
+            if w > 1 {
+                for extra in 1..w {
+                    self.set(x + col + extra, y, ' ', cat.clone());
+                }
+            }
+            col += w.max(1);
         }
     }
 
@@ -163,7 +173,7 @@ fn draw_node(grid: &mut CharGrid, node: &PositionedNode) {
     }
 
     // Label centered in the box (all shapes use middle row)
-    let label_x = x + (w.saturating_sub(node.label.len())) / 2;
+    let label_x = x + (w.saturating_sub(node.label.width())) / 2;
     let label_y = y + node.height / 2;
     grid.put_str(label_x, label_y, &node.label, CellCategory::NodeLabel);
 }
@@ -327,7 +337,7 @@ fn draw_container(grid: &mut CharGrid, container: &PositionedContainer) {
     grid.set(x + w - 1, y, '╗', CellCategory::ContainerBorder);
 
     // Label in top border
-    if container.label.len() + 2 < w {
+    if container.label.width() + 2 < w {
         let lx = x + 2;
         grid.put_str(lx, y, &container.label, CellCategory::ContainerLabel);
     }
@@ -413,9 +423,25 @@ mod tests {
         let pg = layout(&g, 40);
         let lines = render_to_lines(&pg, 40);
         for line in &lines {
-            // Count display width (characters, not bytes — box-drawing chars are multi-byte)
-            let len: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            // Count display width (emoji/CJK = 2 cells, not 1)
+            let len: usize = line.spans.iter().map(|s| s.content.width()).sum();
             assert!(len <= 40, "line exceeds max width: {len}");
+        }
+    }
+
+    #[test]
+    fn emoji_label_box_alignment() {
+        // Emoji are 2 cells wide — box must account for display width, not char count
+        let lines = render("rocket: 🚀 Launch");
+        let text = lines_to_text(&lines);
+        assert!(text.contains("🚀"), "emoji should appear in rendered output: {text}");
+        // Verify every line of the box has consistent display width:
+        // top border width == bottom border width
+        let box_lines: Vec<&str> = text.lines().filter(|l| l.contains('┌') || l.contains('└')).collect();
+        if box_lines.len() == 2 {
+            let top_w: usize = box_lines[0].width();
+            let bot_w: usize = box_lines[1].width();
+            assert_eq!(top_w, bot_w, "top and bottom border widths must match");
         }
     }
 }
