@@ -82,7 +82,6 @@ mod tests {
                 wasm: None,
                 semantic_description: None,
                 agent_config: None,
-                callable: None,
                 buffer: None,
             },
         );

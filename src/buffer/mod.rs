@@ -23,7 +23,7 @@ use tokio::sync::{broadcast, Mutex, Semaphore};
 
 use crate::llm::LlmPool;
 use crate::organism::parser::load_organism;
-use crate::organism::{BufferConfig, CallableConfig, Organism};
+use crate::organism::{BufferConfig, Organism};
 use crate::pipeline::events::PipelineEvent;
 use crate::pipeline::AgentPipelineBuilder;
 use crate::tools::{self, ToolResponse};
@@ -32,8 +32,7 @@ use crate::tools::{self, ToolResponse};
 pub struct BufferHandler {
     pool: Arc<Mutex<LlmPool>>,
     child_organism: Organism,
-    callable: CallableConfig,
-    buffer_config: BufferConfig,
+    config: BufferConfig,
     semaphore: Arc<Semaphore>,
     /// Event sender from the host pipeline (for forwarding child events).
     _event_tx: Option<broadcast::Sender<PipelineEvent>>,
@@ -44,16 +43,14 @@ impl BufferHandler {
     pub fn new(
         pool: Arc<Mutex<LlmPool>>,
         child_organism: Organism,
-        callable: CallableConfig,
-        buffer_config: BufferConfig,
+        config: BufferConfig,
         event_tx: Option<broadcast::Sender<PipelineEvent>>,
     ) -> Self {
-        let semaphore = Arc::new(Semaphore::new(buffer_config.max_concurrency));
+        let semaphore = Arc::new(Semaphore::new(config.max_concurrency));
         Self {
             pool,
             child_organism,
-            callable,
-            buffer_config,
+            config,
             semaphore,
             _event_tx: event_tx,
         }
@@ -81,7 +78,7 @@ impl BufferHandler {
         builder = builder.with_shared_llm_pool(self.pool.clone())?;
 
         // Register required tools as fresh instances
-        builder = register_required_tools(builder, &self.callable.requires)?;
+        builder = register_required_tools(builder, &self.config.requires)?;
 
         // Wire agents from child organism config
         builder = builder.with_agents()?;
@@ -129,7 +126,7 @@ impl BufferHandler {
         child_pipeline.inject_raw(envelope).await?;
 
         // Await AgentResponse with timeout
-        let timeout = std::time::Duration::from_secs(self.buffer_config.timeout_secs);
+        let timeout = std::time::Duration::from_secs(self.config.timeout_secs);
         let result = tokio::time::timeout(timeout, async {
             loop {
                 match rx.recv().await {
@@ -146,7 +143,7 @@ impl BufferHandler {
         .map_err(|_| {
             format!(
                 "buffer timeout after {}s",
-                self.buffer_config.timeout_secs
+                self.config.timeout_secs
             )
         })?;
 
@@ -170,7 +167,7 @@ impl Handler for BufferHandler {
 
         // Build a text representation of the parameters for the child agent
         let mut task_parts = Vec::new();
-        for param in &self.callable.parameters {
+        for param in &self.config.parameters {
             if let Some(value) = tools::extract_tag(&xml, &param.name) {
                 task_parts.push(format!("{}: {}", param.name, value));
             }
@@ -234,7 +231,7 @@ pub fn load_child_organism(base_dir: &std::path::Path, organism_path: &str) -> R
 mod tests {
     use super::*;
     use crate::organism::parser::parse_organism;
-    use crate::organism::{CallableParam};
+    use crate::organism::CallableParam;
 
     #[test]
     fn register_required_tools_known() {
@@ -307,8 +304,8 @@ profiles:
     }
 
     #[test]
-    fn callable_config_to_tool_definition() {
-        let config = CallableConfig {
+    fn buffer_config_to_tool_definition() {
+        let config = BufferConfig {
             description: "Send email".to_string(),
             parameters: vec![
                 CallableParam {
@@ -326,6 +323,9 @@ profiles:
             ],
             required: vec!["to".to_string()],
             requires: vec![],
+            organism: "child.yaml".to_string(),
+            max_concurrency: 5,
+            timeout_secs: 300,
         };
 
         let def = config.to_tool_definition("email-sender");

@@ -1,0 +1,171 @@
+organism:
+  name: agentos
+
+prompts:
+  no_paperclipper: |
+    You are bounded. You do not pursue goals beyond your task.
+    You report uncertainty rather than improvising.
+
+  planner_base: |
+    You are a planning agent. Your job is to explore the codebase, understand the
+    current state, and produce a detailed implementation plan.
+
+    Workflow:
+    1. Use file-read, glob, grep, and codebase-index to explore relevant code
+    2. Identify files that need to change and understand their structure
+    3. Design a concrete implementation approach
+    4. Break the plan into atomic, ordered steps
+    5. Call the coder tool with your complete plan
+
+    Output your plan in structured markdown before calling coder.
+    The coder cannot call you back — your plan must be self-contained.
+
+    {tool_definitions}
+
+  coding_base: |
+    You are a coding agent running inside AgentOS. You have access to tools for
+    file operations, shell commands, and codebase indexing.
+
+    Your output is rendered in a TUI with full markdown support. You can use:
+    - Headings, bold, italic, code blocks (with syntax highlighting)
+    - Pipe-delimited markdown tables (rendered as box-drawing art)
+    - D2 diagrams in fenced code blocks (```d2)
+
+    Rules:
+    1. Read before you write. Always understand existing code before modifying it.
+    2. Make the smallest change that solves the problem.
+    3. Test your changes when possible (run tests, verify output).
+    4. If a tool call fails, analyze the error and try a different approach.
+    5. When done, provide a clear summary of what you did.
+
+    {tool_definitions}
+
+  coder_base: |
+    You are a coding agent that executes implementation plans. You receive a
+    structured plan and execute it step by step.
+
+    Rules:
+    1. Follow the plan precisely. Don't deviate unless you encounter an error.
+    2. Read before you write — verify the file matches what the plan expects.
+    3. Make the smallest change that solves each step.
+    4. Test your changes when possible.
+    5. If a step fails, report the error clearly — do not improvise a workaround.
+    6. When done, summarize what you changed.
+
+    {tool_definitions}
+
+listeners:
+  # Primary agent: explores and plans, then delegates to coder
+  - name: planner
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Planning agent — explores codebase and creates implementation plans"
+    agent:
+      prompt: "no_paperclipper & planner_base"
+      max_tokens: 4096
+      max_agentic_iterations: 25
+      permissions:
+        file-read: auto
+        glob: auto
+        grep: auto
+        codebase-index: auto
+        coder: prompt
+    librarian: true
+    peers: [file-read, glob, grep, codebase-index, coder]
+
+  # Callable sub-agent: executes plans (buffer node, NOT a direct agent)
+  - name: coder
+    payload_class: buffer.CoderRequest
+    handler: buffer
+    description: "Coding agent — executes implementation plans"
+    buffer:
+      description: "Execute an implementation plan by writing code, editing files, and running commands"
+      parameters:
+        plan:
+          type: string
+          description: "The complete implementation plan to execute, with ordered steps"
+      required: [plan]
+      requires: [file-read, file-write, file-edit, glob, grep, command-exec]
+      organism: organisms/coder.yaml
+      max_concurrency: 1
+      timeout_secs: 600
+
+  # All-in-one agent (existing, unchanged)
+  - name: coding-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "AI coding agent (all-in-one)"
+    agent:
+      prompt: "no_paperclipper & coding_base"
+      max_tokens: 4096
+      max_agentic_iterations: 25
+      permissions:
+        file-read: auto
+        glob: auto
+        grep: auto
+        codebase-index: auto
+        file-write: prompt
+        file-edit: prompt
+        command-exec: prompt
+    librarian: true
+    peers: [file-read, file-write, file-edit, glob, grep, command-exec, codebase-index]
+
+  # Infrastructure + tools
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    librarian: true
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: librarian
+    payload_class: librarian.LibrarianRequest
+    handler: librarian.handle
+    description: "Context curator"
+    peers: [llm-pool]
+
+  - name: codebase-index
+    payload_class: treesitter.CodeIndexRequest
+    handler: treesitter.handle
+    description: "Tree-sitter code indexing"
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+  - name: file-write
+    payload_class: tools.FileWriteRequest
+    handler: tools.file_write.handle
+    description: "Write files"
+
+  - name: file-edit
+    payload_class: tools.FileEditRequest
+    handler: tools.file_edit.handle
+    description: "Edit files"
+
+  - name: glob
+    payload_class: tools.GlobRequest
+    handler: tools.glob.handle
+    description: "Glob search"
+
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep search"
+
+  - name: command-exec
+    payload_class: tools.CommandExecRequest
+    handler: tools.command_exec.handle
+    description: "Command execution"
+
+profiles:
+  coding:
+    linux_user: agentos
+    listeners: [planner, coder, coding-agent, file-read, file-write, file-edit, glob, grep, command-exec, codebase-index, llm-pool, librarian]
+    network: [llm-pool]
+    journal: retain_forever

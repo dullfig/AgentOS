@@ -26,7 +26,7 @@ pub fn render_d2(d2_source: &str, max_width: usize) -> Vec<Line<'static>> {
 fn listener_shape(def: &ListenerDef) -> &'static str {
     if def.is_agent {
         "diamond"
-    } else if def.callable.is_some() || def.buffer.is_some() {
+    } else if def.buffer.is_some() {
         "hexagon"
     } else if def.wasm.is_some() {
         "cylinder"
@@ -88,7 +88,6 @@ mod organism_tests {
             wasm: None,
             semantic_description: None,
             agent_config: None,
-            callable: None,
             buffer: None,
         }
     }
@@ -136,14 +135,17 @@ mod organism_tests {
     }
 
     #[test]
-    fn callable_gets_hexagon() {
+    fn buffer_gets_hexagon() {
         let mut org = Organism::new("test");
         let mut tool = sample_listener("sub-agent");
-        tool.callable = Some(crate::organism::CallableConfig {
+        tool.buffer = Some(crate::organism::BufferConfig {
             description: "A sub-agent".into(),
             parameters: vec![],
             required: vec![],
             requires: vec![],
+            organism: "child.yaml".into(),
+            max_concurrency: 5,
+            timeout_secs: 300,
         });
         org.register_listener(tool).unwrap();
 

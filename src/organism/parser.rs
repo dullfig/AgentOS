@@ -10,8 +10,7 @@ use serde::Deserialize;
 
 use super::profile::{RetentionPolicy, SecurityProfile};
 use super::{
-    AgentConfig, BufferConfig, CallableConfig, CallableParam, ListenerDef, Organism, PortDef,
-    WasmToolConfig,
+    AgentConfig, BufferConfig, CallableParam, ListenerDef, Organism, PortDef, WasmToolConfig,
 };
 use crate::agent::permissions::{PermissionMap, PermissionTier};
 use crate::wasm::capabilities::{EnvGrant, FsGrant, WasmCapabilities};
@@ -55,8 +54,6 @@ struct ListenerYaml {
     wasm: Option<WasmYaml>,
     #[serde(default)]
     semantic_description: Option<String>,
-    #[serde(default)]
-    callable: Option<CallableYaml>,
     #[serde(default)]
     buffer: Option<BufferYaml>,
 }
@@ -124,17 +121,6 @@ struct EnvGrantYaml {
 }
 
 #[derive(Debug, Deserialize)]
-struct CallableYaml {
-    description: String,
-    #[serde(default)]
-    parameters: std::collections::HashMap<String, CallableParamYaml>,
-    #[serde(default)]
-    required: Vec<String>,
-    #[serde(default)]
-    requires: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct CallableParamYaml {
     #[serde(rename = "type")]
     param_type: String,
@@ -144,8 +130,18 @@ struct CallableParamYaml {
     enum_values: Option<Vec<String>>,
 }
 
+/// Buffer node YAML: callable tool interface + child pipeline spawn config.
 #[derive(Debug, Deserialize)]
 struct BufferYaml {
+    // ── Tool interface ──
+    description: String,
+    #[serde(default)]
+    parameters: std::collections::HashMap<String, CallableParamYaml>,
+    #[serde(default)]
+    required: Vec<String>,
+    #[serde(default)]
+    requires: Vec<String>,
+    // ── Spawn config ──
     organism: String,
     #[serde(default = "default_max_concurrency")]
     max_concurrency: usize,
@@ -320,8 +316,8 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
                     capabilities: caps,
                 }
             }),
-            callable: l.callable.map(|c| {
-                let parameters = c
+            buffer: l.buffer.map(|b| {
+                let parameters = b
                     .parameters
                     .into_iter()
                     .map(|(name, p)| CallableParam {
@@ -331,17 +327,15 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
                         enum_values: p.enum_values,
                     })
                     .collect();
-                CallableConfig {
-                    description: c.description,
+                BufferConfig {
+                    description: b.description,
                     parameters,
-                    required: c.required,
-                    requires: c.requires,
+                    required: b.required,
+                    requires: b.requires,
+                    organism: b.organism,
+                    max_concurrency: b.max_concurrency,
+                    timeout_secs: b.timeout_secs,
                 }
-            }),
-            buffer: l.buffer.map(|b| BufferConfig {
-                organism: b.organism,
-                max_concurrency: b.max_concurrency,
-                timeout_secs: b.timeout_secs,
             }),
         })?;
     }
@@ -993,7 +987,7 @@ listeners: []
     // ── Buffer Node: callable + buffer parsing ──
 
     #[test]
-    fn parse_callable_and_buffer() {
+    fn parse_buffer() {
         let yaml = r#"
 organism:
   name: test-buffer
@@ -1004,10 +998,6 @@ listeners:
     handler: buffer
     description: "Send marketing email"
     buffer:
-      organism: email-agent.yaml
-      max_concurrency: 5
-      timeout_secs: 120
-    callable:
       description: "Send a marketing email to a recipient"
       parameters:
         to: { type: string, description: "Recipient email" }
@@ -1015,6 +1005,9 @@ listeners:
         body: { type: string, description: "Email body" }
       required: [to, subject, body]
       requires: [command-exec]
+      organism: email-agent.yaml
+      max_concurrency: 5
+      timeout_secs: 120
 
 profiles:
   admin:
@@ -1025,23 +1018,20 @@ profiles:
         let org = parse_organism(yaml).unwrap();
         let listener = org.get_listener("email-sender").unwrap();
 
-        // callable config
-        let callable = listener.callable.as_ref().unwrap();
-        assert_eq!(callable.description, "Send a marketing email to a recipient");
-        assert_eq!(callable.parameters.len(), 3);
-        assert_eq!(callable.required, vec!["to", "subject", "body"]);
-        assert_eq!(callable.requires, vec!["command-exec"]);
-
-        // Verify params
-        let to_param = callable.parameters.iter().find(|p| p.name == "to").unwrap();
-        assert_eq!(to_param.param_type, "string");
-        assert_eq!(to_param.description.as_deref(), Some("Recipient email"));
-
-        // buffer config
+        // buffer config (tool interface + spawn config unified)
         let buffer = listener.buffer.as_ref().unwrap();
+        assert_eq!(buffer.description, "Send a marketing email to a recipient");
+        assert_eq!(buffer.parameters.len(), 3);
+        assert_eq!(buffer.required, vec!["to", "subject", "body"]);
+        assert_eq!(buffer.requires, vec!["command-exec"]);
         assert_eq!(buffer.organism, "email-agent.yaml");
         assert_eq!(buffer.max_concurrency, 5);
         assert_eq!(buffer.timeout_secs, 120);
+
+        // Verify params
+        let to_param = buffer.parameters.iter().find(|p| p.name == "to").unwrap();
+        assert_eq!(to_param.param_type, "string");
+        assert_eq!(to_param.description.as_deref(), Some("Recipient email"));
     }
 
     #[test]
@@ -1056,12 +1046,11 @@ listeners:
     handler: buffer
     description: "Worker"
     buffer:
-      organism: worker.yaml
-    callable:
       description: "Run a worker task"
       parameters:
         task: { type: string, description: "Task to run" }
       required: [task]
+      organism: worker.yaml
 
 profiles:
   admin:
@@ -1078,7 +1067,7 @@ profiles:
     }
 
     #[test]
-    fn parse_no_callable_or_buffer() {
+    fn parse_no_buffer() {
         let yaml = r#"
 organism:
   name: test-no-buffer
@@ -1097,12 +1086,11 @@ profiles:
 "#;
         let org = parse_organism(yaml).unwrap();
         let echo = org.get_listener("echo").unwrap();
-        assert!(echo.callable.is_none());
         assert!(echo.buffer.is_none());
     }
 
     #[test]
-    fn callable_to_tool_definition() {
+    fn buffer_to_tool_definition() {
         let yaml = r#"
 organism:
   name: test-tool-def
@@ -1113,13 +1101,12 @@ listeners:
     handler: buffer
     description: "Send email"
     buffer:
-      organism: email-agent.yaml
-    callable:
       description: "Send a marketing email"
       parameters:
         to: { type: string, description: "Recipient email" }
         count: { type: integer, description: "Number of emails" }
       required: [to]
+      organism: email-agent.yaml
 
 profiles:
   admin:
@@ -1129,9 +1116,9 @@ profiles:
 "#;
         let org = parse_organism(yaml).unwrap();
         let listener = org.get_listener("email-sender").unwrap();
-        let callable = listener.callable.as_ref().unwrap();
+        let buffer = listener.buffer.as_ref().unwrap();
 
-        let tool_def = callable.to_tool_definition("email-sender");
+        let tool_def = buffer.to_tool_definition("email-sender");
         assert_eq!(tool_def.name, "email-sender");
         assert_eq!(tool_def.description, "Send a marketing email");
 
@@ -1159,12 +1146,11 @@ listeners:
     handler: buffer
     description: "Send email"
     buffer:
-      organism: email-agent.yaml
-    callable:
       description: "Send email"
       parameters:
         to: { type: string }
       required: [to]
+      organism: email-agent.yaml
 
   - name: file-ops
     payload_class: tools.FileOpsRequest

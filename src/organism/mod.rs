@@ -50,16 +50,7 @@ impl Default for AgentConfig {
     }
 }
 
-/// Callable interface — declares a buffer node as a typed tool for LLM invocation.
-#[derive(Debug, Clone)]
-pub struct CallableConfig {
-    pub description: String,
-    pub parameters: Vec<CallableParam>,
-    pub required: Vec<String>,
-    pub requires: Vec<String>,
-}
-
-/// A parameter in a callable interface.
+/// A parameter in a buffer's callable interface.
 #[derive(Debug, Clone)]
 pub struct CallableParam {
     pub name: String,
@@ -68,16 +59,26 @@ pub struct CallableParam {
     pub enum_values: Option<Vec<String>>,
 }
 
-/// Buffer node configuration — ephemeral child pipeline lifecycle.
+/// Buffer node configuration — ephemeral child pipeline lifecycle + tool interface.
+///
+/// A `buffer:` block on a listener makes it a callable tool backed by a child pipeline.
+/// The tool schema (description, parameters) and spawn config (organism, concurrency)
+/// live together because the buffer IS the tool.
 #[derive(Debug, Clone)]
 pub struct BufferConfig {
-    pub organism: String,    // path to child organism YAML
+    // ── Tool interface (what callers see) ──
+    pub description: String,
+    pub parameters: Vec<CallableParam>,
+    pub required: Vec<String>,
+    pub requires: Vec<String>,
+    // ── Spawn config (how the system implements it) ──
+    pub organism: String,       // path to child organism YAML
     pub max_concurrency: usize, // default 5
-    pub timeout_secs: u64,   // default 300
+    pub timeout_secs: u64,      // default 300
 }
 
-impl CallableConfig {
-    /// Generate a ToolDefinition (JSON Schema) from this callable config.
+impl BufferConfig {
+    /// Generate a ToolDefinition (JSON Schema) from this buffer's callable interface.
     pub fn to_tool_definition(&self, name: &str) -> ToolDefinition {
         let mut properties = serde_json::Map::new();
         for param in &self.parameters {
@@ -159,9 +160,7 @@ pub struct ListenerDef {
     pub semantic_description: Option<String>,
     /// Agent configuration (present when is_agent == true with YAML config block).
     pub agent_config: Option<AgentConfig>,
-    /// Callable interface (declares this listener as an LLM-invocable tool).
-    pub callable: Option<CallableConfig>,
-    /// Buffer node config (ephemeral child pipeline).
+    /// Buffer node config (ephemeral child pipeline + callable tool interface).
     pub buffer: Option<BufferConfig>,
 }
 
@@ -278,11 +277,11 @@ impl Organism {
         self.listeners.values().filter(|l| l.is_agent).collect()
     }
 
-    /// Get all listeners that are buffer nodes (have both callable + buffer config).
+    /// Get all listeners that are buffer nodes (have buffer config).
     pub fn buffer_listeners(&self) -> Vec<&ListenerDef> {
         self.listeners
             .values()
-            .filter(|l| l.callable.is_some() && l.buffer.is_some())
+            .filter(|l| l.buffer.is_some())
             .collect()
     }
 
@@ -372,7 +371,6 @@ mod tests {
             wasm: None,
             semantic_description: None,
             agent_config: None,
-            callable: None,
             buffer: None,
         }
     }
@@ -502,7 +500,6 @@ mod tests {
             }),
             semantic_description: None,
             agent_config: None,
-            callable: None,
             buffer: None,
         })
         .unwrap();
@@ -533,7 +530,6 @@ mod tests {
             }),
             semantic_description: None,
             agent_config: None,
-            callable: None,
             buffer: None,
         })
         .unwrap();

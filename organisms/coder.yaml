@@ -1,0 +1,79 @@
+organism:
+  name: coder-child
+
+prompts:
+  no_paperclipper: |
+    You are bounded. You do not pursue goals beyond your task.
+    You report uncertainty rather than improvising.
+
+  coder_base: |
+    You are a coding agent that executes implementation plans. You receive a
+    structured plan and execute it step by step.
+
+    Rules:
+    1. Follow the plan precisely. Don't deviate unless you encounter an error.
+    2. Read before you write — verify the file matches what the plan expects.
+    3. Make the smallest change that solves each step.
+    4. Test your changes when possible.
+    5. If a step fails, report the error clearly — do not improvise a workaround.
+    6. When done, summarize what you changed.
+
+    {tool_definitions}
+
+listeners:
+  - name: coder-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Coding agent — executes plans"
+    agent:
+      prompt: "no_paperclipper & coder_base"
+      max_tokens: 4096
+      max_agentic_iterations: 25
+    peers: [file-read, file-write, file-edit, glob, grep, command-exec]
+
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+  - name: file-write
+    payload_class: tools.FileWriteRequest
+    handler: tools.file_write.handle
+    description: "Write files"
+
+  - name: file-edit
+    payload_class: tools.FileEditRequest
+    handler: tools.file_edit.handle
+    description: "Edit files"
+
+  - name: glob
+    payload_class: tools.GlobRequest
+    handler: tools.glob.handle
+    description: "Glob search"
+
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep search"
+
+  - name: command-exec
+    payload_class: tools.CommandExecRequest
+    handler: tools.command_exec.handle
+    description: "Command execution"
+
+profiles:
+  executing:
+    linux_user: agentos
+    listeners: [coder-agent, file-read, file-write, file-edit, glob, grep, command-exec, llm-pool]
+    network: [llm-pool]
+    journal: retain_forever

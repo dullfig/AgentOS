@@ -415,12 +415,12 @@ impl AgentPipelineBuilder {
         Ok(self)
     }
 
-    /// Load and register buffer nodes (callable organisms) from the organism config.
+    /// Load and register buffer nodes from the organism config.
     ///
-    /// For each listener with both `callable` and `buffer` config:
+    /// For each listener with a `buffer` config:
     /// 1. Load the child organism YAML
     /// 2. Validate: child has agents, all requires are known tools
-    /// 3. Generate ToolDefinition from callable config
+    /// 3. Generate ToolDefinition from buffer config
     /// 4. Create BufferHandler and register it
     ///
     /// Buffer tool definitions are stored for later inclusion by `with_agents()`.
@@ -443,18 +443,17 @@ impl AgentPipelineBuilder {
         }
 
         for def in &buffer_listeners {
-            let callable = def.callable.as_ref().unwrap(); // safe: filtered by buffer_listeners()
-            let buffer_cfg = def.buffer.as_ref().unwrap();
+            let buf = def.buffer.as_ref().unwrap(); // safe: filtered by buffer_listeners()
 
             // Load child organism
             let child_org =
-                crate::buffer::load_child_organism(base_dir, &buffer_cfg.organism)?;
+                crate::buffer::load_child_organism(base_dir, &buf.organism)?;
 
             // Validate: child has at least one agent
             if child_org.agent_listeners().is_empty() {
                 return Err(format!(
                     "buffer '{}': child organism '{}' has no agent listeners",
-                    def.name, buffer_cfg.organism
+                    def.name, buf.organism
                 ));
             }
 
@@ -467,7 +466,7 @@ impl AgentPipelineBuilder {
                 "grep",
                 "command-exec",
             ];
-            for req in &callable.requires {
+            for req in &buf.requires {
                 if !known_tools.contains(&req.as_str()) {
                     return Err(format!(
                         "buffer '{}': unknown required tool '{}'",
@@ -477,15 +476,14 @@ impl AgentPipelineBuilder {
             }
 
             // Generate ToolDefinition for the agent to see this as a tool
-            let tool_def = callable.to_tool_definition(&def.name);
+            let tool_def = buf.to_tool_definition(&def.name);
             self.buffer_tool_definitions.push(tool_def);
 
             // Create and register the BufferHandler
             let handler = crate::buffer::BufferHandler::new(
                 pool.clone(),
                 child_org,
-                callable.clone(),
-                buffer_cfg.clone(),
+                buf.clone(),
                 Some(self.event_tx.clone()),
             );
             self = self.register(&def.name, handler)?;
