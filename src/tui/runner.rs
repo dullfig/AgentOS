@@ -92,7 +92,7 @@ async fn inject_task(
 
 /// Run the TUI main loop. Blocks until quit.
 pub async fn run_tui(
-    pipeline: &AgentPipeline,
+    pipeline: &mut AgentPipeline,
     debug: bool,
     organism_yaml: &str,
     models_config: crate::config::ModelsConfig,
@@ -111,6 +111,7 @@ pub async fn run_tui(
     app.models_config = std::sync::Arc::new(tokio::sync::Mutex::new(models_config));
     app.agents_config = agents_config;
     app.load_yaml_editor(organism_yaml);
+    app.load_organism_graph(pipeline.organism());
     app.rebuild_menu();
 
     // If no LLM pool at boot, show a helpful welcome message
@@ -122,6 +123,7 @@ pub async fn run_tui(
     }
     let kernel = pipeline.kernel();
     let mut event_rx = pipeline.subscribe();
+    let mut approval_rx = pipeline.take_approval_receiver();
 
     // Dedicated input thread — reads crossterm events and sends through channel.
     // One thread, no polling/spinning. event::read() blocks until input arrives.
@@ -173,6 +175,9 @@ pub async fn run_tui(
                 if let Event::Key(key) = crossterm_event {
                     app.update(TuiMessage::Input(key));
                 }
+            }
+            Some(request) = async { match approval_rx.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                app.pending_approval = Some(request);
             }
         }
 
@@ -618,19 +623,19 @@ profiles:
         )));
         assert_eq!(app.active_tab, ActiveTab::Threads);
 
-        // Ctrl+3 → Yaml
+        // Ctrl+3 → Graph
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Char('3'),
             KeyModifiers::CONTROL,
         )));
-        assert_eq!(app.active_tab, ActiveTab::Yaml);
+        assert_eq!(app.active_tab, ActiveTab::Graph);
 
-        // Ctrl+4 → Wasm
+        // Ctrl+4 → Yaml
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Char('4'),
             KeyModifiers::CONTROL,
         )));
-        assert_eq!(app.active_tab, ActiveTab::Wasm);
+        assert_eq!(app.active_tab, ActiveTab::Yaml);
 
         // Ctrl+1 → Messages
         app.update(TuiMessage::Input(KeyEvent::new(

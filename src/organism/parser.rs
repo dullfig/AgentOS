@@ -13,6 +13,7 @@ use super::{
     AgentConfig, BufferConfig, CallableConfig, CallableParam, ListenerDef, Organism, PortDef,
     WasmToolConfig,
 };
+use crate::agent::permissions::{PermissionMap, PermissionTier};
 use crate::wasm::capabilities::{EnvGrant, FsGrant, WasmCapabilities};
 
 /// Top-level YAML structure.
@@ -87,6 +88,8 @@ struct AgentConfigYaml {
     max_agentic_iterations: Option<usize>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    permissions: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,12 +254,19 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
         // Resolve agent field: bool or config block
         let (is_agent, agent_config) = match l.agent {
             AgentFieldYaml::Config(cfg) => {
+                let mut permissions = PermissionMap::new();
+                for (tool, tier_str) in cfg.permissions {
+                    let tier = PermissionTier::from_str(&tier_str)
+                        .map_err(|e| format!("listener '{}': {e}", l.name))?;
+                    permissions.insert(tool, tier);
+                }
                 let config = AgentConfig {
                     prompt: cfg.prompt,
                     max_tokens: cfg.max_tokens.unwrap_or(4096),
                     max_routing_iterations: cfg.max_iterations.unwrap_or(5),
                     max_agentic_iterations: cfg.max_agentic_iterations.unwrap_or(25),
                     model: cfg.model,
+                    permissions,
                 };
                 (true, Some(config))
             }
@@ -1171,5 +1181,130 @@ profiles:
         let buffer_listeners = org.buffer_listeners();
         assert_eq!(buffer_listeners.len(), 1);
         assert_eq!(buffer_listeners[0].name, "email-sender");
+    }
+
+    // ── Permissions parsing ──
+
+    #[test]
+    fn parse_agent_permissions() {
+        let yaml = r#"
+organism:
+  name: test-permissions
+
+listeners:
+  - name: coding-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Coding agent"
+    agent:
+      prompt: "coding_base"
+      permissions:
+        file-read: auto
+        glob: auto
+        grep: auto
+        file-write: prompt
+        file-edit: prompt
+        command-exec: deny
+    peers: [file-read, file-write, file-edit, glob, grep, command-exec]
+  - name: file-read
+    payload_class: tools.FileRead
+    handler: tools.file_read
+    description: "Read files"
+  - name: file-write
+    payload_class: tools.FileWrite
+    handler: tools.file_write
+    description: "Write files"
+  - name: file-edit
+    payload_class: tools.FileEdit
+    handler: tools.file_edit
+    description: "Edit files"
+  - name: glob
+    payload_class: tools.Glob
+    handler: tools.glob
+    description: "Glob search"
+  - name: grep
+    payload_class: tools.Grep
+    handler: tools.grep
+    description: "Grep search"
+  - name: command-exec
+    payload_class: tools.CommandExec
+    handler: tools.command_exec
+    description: "Execute commands"
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, command-exec]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let agent = org.get_listener("coding-agent").unwrap();
+        let cfg = agent.agent_config.as_ref().unwrap();
+
+        use crate::agent::permissions::PermissionTier;
+        assert_eq!(cfg.permissions.get("file-read"), Some(&PermissionTier::Auto));
+        assert_eq!(cfg.permissions.get("glob"), Some(&PermissionTier::Auto));
+        assert_eq!(cfg.permissions.get("file-write"), Some(&PermissionTier::Prompt));
+        assert_eq!(cfg.permissions.get("command-exec"), Some(&PermissionTier::Deny));
+        // Unlisted tool → not in map (resolve_tier will return Prompt)
+        assert_eq!(cfg.permissions.get("codebase-index"), None);
+    }
+
+    #[test]
+    fn parse_agent_no_permissions() {
+        let yaml = r#"
+organism:
+  name: test-no-perms
+
+listeners:
+  - name: coding-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Coding agent"
+    agent:
+      prompt: "coding_base"
+    peers: [file-read]
+  - name: file-read
+    payload_class: tools.FileRead
+    handler: tools.file_read
+    description: "Read files"
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [coding-agent, file-read]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let agent = org.get_listener("coding-agent").unwrap();
+        let cfg = agent.agent_config.as_ref().unwrap();
+        assert!(cfg.permissions.is_empty());
+    }
+
+    #[test]
+    fn parse_invalid_permission_tier() {
+        let yaml = r#"
+organism:
+  name: test-bad-tier
+
+listeners:
+  - name: coding-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Coding agent"
+    agent:
+      prompt: "coding_base"
+      permissions:
+        file-read: always
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [coding-agent]
+    journal: retain_forever
+"#;
+        let err = parse_organism(yaml).unwrap_err();
+        assert!(err.contains("unknown permission tier"));
+        assert!(err.contains("always"));
     }
 }

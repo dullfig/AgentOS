@@ -68,6 +68,12 @@ pub enum PipelineEvent {
         thread_id: String,
         entries: Vec<ConversationEntry>,
     },
+    /// Tool permission check result (for activity trace).
+    ToolApproval {
+        thread_id: String,
+        tool_name: String,
+        verdict: String, // "approved", "denied", "auto", "denied_by_policy"
+    },
 }
 
 /// A conversation entry for TUI display (lightweight, no raw API content).

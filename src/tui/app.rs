@@ -16,6 +16,8 @@ use crate::llm::LlmPool;
 use crate::lsp::command_line::CommandLineService;
 use crate::lsp::organism::OrganismYamlService;
 use crate::lsp::{HoverInfo, LanguageService};
+use crate::agent::permissions::ToolApprovalRequest;
+use crate::organism::Organism;
 use crate::pipeline::events::PipelineEvent;
 
 use super::event::TuiMessage;
@@ -25,9 +27,9 @@ use super::event::TuiMessage;
 pub enum ActiveTab {
     Messages, // Ctrl+1, default
     Threads,  // Ctrl+2 (threads + context)
-    Yaml,     // Ctrl+3 (placeholder)
-    Wasm,     // Ctrl+4 (placeholder)
-    Debug,    // Ctrl+5 (activity trace — only when debug_mode)
+    Graph,    // Ctrl+3 (organism topology)
+    Yaml,     // Ctrl+4 (organism YAML editor)
+    Activity, // Ctrl+5 (activity trace — always visible)
 }
 
 /// Which sub-pane has focus within the Threads tab.
@@ -305,6 +307,21 @@ pub struct TuiApp {
     pub selected_agent: Option<String>,
     /// Agent favorites config (project-level persistence).
     pub agents_config: AgentsConfig,
+    /// Pending tool approval request from the agent handler.
+    /// When Some, the TUI shows an inline approval bar and waits for user input.
+    pub pending_approval: Option<ToolApprovalRequest>,
+    /// Cached D2 source for the Graph tab (generated from organism).
+    pub graph_d2_source: String,
+    /// Cached rendered lines for the Graph tab.
+    pub graph_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    /// Width used for last graph render (invalidation key).
+    pub graph_rendered_width: usize,
+    /// Vertical scroll offset for the Graph tab.
+    pub graph_scroll: u16,
+    /// Horizontal scroll offset for the Graph tab.
+    pub graph_h_scroll: u16,
+    /// Viewport height of the Graph tab content area.
+    pub graph_viewport_height: u16,
 }
 
 /// Current time in seconds since Unix epoch.
@@ -323,22 +340,20 @@ const ACTIVITY_LOG_CAPACITY: usize = 512;
 
 /// Build the menu item tree for the menu bar.
 pub fn build_menu_items(
-    debug_mode: bool,
+    _debug_mode: bool,
     favorites: &[String],
     selected: Option<&str>,
 ) -> Vec<MenuItem<MenuAction>> {
-    let mut view_items = vec![
+    let view_items = vec![
         MenuItem::item("Messages  ^1", MenuAction::SwitchTab(ActiveTab::Messages)),
         MenuItem::item("Threads   ^2", MenuAction::SwitchTab(ActiveTab::Threads)),
-        MenuItem::item("YAML      ^3", MenuAction::SwitchTab(ActiveTab::Yaml)),
-        MenuItem::item("WASM      ^4", MenuAction::SwitchTab(ActiveTab::Wasm)),
+        MenuItem::item("Graph     ^3", MenuAction::SwitchTab(ActiveTab::Graph)),
+        MenuItem::item("Activity  ^5", MenuAction::SwitchTab(ActiveTab::Activity)),
     ];
-    if debug_mode {
-        view_items.push(MenuItem::item(
-            "Debug     ^5",
-            MenuAction::SwitchTab(ActiveTab::Debug),
-        ));
-    }
+
+    let modify_items = vec![
+        MenuItem::item("Organism  ^4", MenuAction::SwitchTab(ActiveTab::Yaml)),
+    ];
 
     // Build Agents menu items from favorites
     let mut agent_items: Vec<MenuItem<MenuAction>> = favorites
@@ -366,6 +381,7 @@ pub fn build_menu_items(
             ],
         ),
         MenuItem::group("View", view_items),
+        MenuItem::group("Modify", modify_items),
         MenuItem::group("Agents", agent_items),
         MenuItem::group(
             "Model",
@@ -443,6 +459,13 @@ impl TuiApp {
             pending_provider_completion: None,
             selected_agent: None,
             agents_config: AgentsConfig::default(),
+            pending_approval: None,
+            graph_d2_source: String::new(),
+            graph_rendered_lines: Vec::new(),
+            graph_rendered_width: 0,
+            graph_scroll: 0,
+            graph_h_scroll: 0,
+            graph_viewport_height: 20,
         }
     }
 
@@ -726,6 +749,22 @@ impl TuiApp {
                     .insert(thread_id.clone(), entries.clone());
                 self.conversation_auto_scroll = true;
             }
+            PipelineEvent::ToolApproval {
+                tool_name, verdict, ..
+            } => {
+                let status = match verdict.as_str() {
+                    "auto" => ActivityStatus::Done,
+                    "approved" => ActivityStatus::Done,
+                    "denied" | "denied_by_policy" => ActivityStatus::Error,
+                    _ => ActivityStatus::Done,
+                };
+                self.push_activity(ActivityEntry {
+                    timestamp: now_secs(),
+                    label: format!("perm:{tool_name}"),
+                    detail: verdict.clone(),
+                    status,
+                });
+            }
             _ => {}
         }
 
@@ -868,6 +907,34 @@ impl TuiApp {
     /// Whether the wizard is active.
     pub fn in_wizard(&self) -> bool {
         matches!(self.input_mode, InputMode::ProviderWizard { .. })
+    }
+
+    /// Generate D2 source from an organism and cache it for the Graph tab.
+    pub fn load_organism_graph(&mut self, org: &Organism) {
+        self.graph_d2_source = super::diagram::organism_to_d2(org);
+        // Invalidate rendered cache so next draw regenerates
+        self.graph_rendered_width = 0;
+        self.graph_rendered_lines.clear();
+    }
+
+    /// Scroll graph pane up.
+    pub fn scroll_graph_up(&mut self) {
+        self.graph_scroll = self.graph_scroll.saturating_sub(1);
+    }
+
+    /// Scroll graph pane down.
+    pub fn scroll_graph_down(&mut self) {
+        self.graph_scroll = self.graph_scroll.saturating_add(1);
+    }
+
+    /// Scroll graph pane left.
+    pub fn scroll_graph_left(&mut self) {
+        self.graph_h_scroll = self.graph_h_scroll.saturating_sub(4);
+    }
+
+    /// Scroll graph pane right.
+    pub fn scroll_graph_right(&mut self) {
+        self.graph_h_scroll = self.graph_h_scroll.saturating_add(4);
     }
 }
 
@@ -1066,8 +1133,8 @@ mod tests {
         app.active_tab = ActiveTab::Yaml;
         assert_eq!(app.active_tab, ActiveTab::Yaml);
 
-        app.active_tab = ActiveTab::Wasm;
-        assert_eq!(app.active_tab, ActiveTab::Wasm);
+        app.active_tab = ActiveTab::Graph;
+        assert_eq!(app.active_tab, ActiveTab::Graph);
     }
 
     #[test]
@@ -1258,12 +1325,11 @@ mod tests {
     #[test]
     fn home_end_dispatch_to_active_tab() {
         let mut app = TuiApp::new();
-        app.debug_mode = true;
-        app.active_tab = ActiveTab::Debug;
+        app.active_tab = ActiveTab::Activity;
         app.activity_scroll = 50;
         app.activity_auto_scroll = true;
 
-        // Home → scroll to top (Debug tab)
+        // Home → scroll to top (Activity tab)
         app.update(TuiMessage::Input(KeyEvent::new(
             KeyCode::Home,
             KeyModifiers::NONE,

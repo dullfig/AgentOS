@@ -8,6 +8,7 @@ pub mod profile;
 
 use std::collections::HashMap;
 
+use crate::agent::permissions::PermissionMap;
 use crate::llm::types::ToolDefinition;
 use crate::wasm::capabilities::WasmCapabilities;
 use profile::{DispatchTable, SecurityProfile};
@@ -32,6 +33,8 @@ pub struct AgentConfig {
     pub max_agentic_iterations: usize,
     /// Model override. None = pool default.
     pub model: Option<String>,
+    /// Per-tool permission tiers. Unlisted tools default to Prompt.
+    pub permissions: PermissionMap,
 }
 
 impl Default for AgentConfig {
@@ -42,6 +45,7 @@ impl Default for AgentConfig {
             max_routing_iterations: 5,
             max_agentic_iterations: 25,
             model: None,
+            permissions: PermissionMap::new(),
         }
     }
 }
@@ -597,6 +601,7 @@ mod tests {
             max_routing_iterations: 10,
             max_agentic_iterations: 30,
             model: Some("haiku".into()),
+            permissions: crate::agent::permissions::PermissionMap::new(),
         });
 
         let cfg = def.agent_config.as_ref().unwrap();

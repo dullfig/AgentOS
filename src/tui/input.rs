@@ -10,6 +10,7 @@ use tui_menu::MenuEvent;
 
 use crate::lsp::LanguageService;
 
+use crate::agent::permissions::ApprovalVerdict;
 use super::app::{ActiveTab, AgentStatus, ChatEntry, InputMode, MenuAction, ProviderCompletion, ThreadsFocus, TuiApp};
 
 /// Dispatch a selected menu action.
@@ -18,9 +19,6 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
     app.menu_active = false;
     match action {
         MenuAction::SwitchTab(tab) => {
-            if tab == ActiveTab::Debug && !app.debug_mode {
-                return; // guard: don't switch to Debug unless enabled
-            }
             app.active_tab = tab;
         }
         MenuAction::NewTask => {
@@ -46,16 +44,16 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
                 role: "system".into(),
                 text: concat!(
                     "Keyboard shortcuts:\n",
-                    "  F10           Open/close menu bar\n",
-                    "  Alt+F/V/A/M/H Open File/View/Agents/Model/Help menu\n",
-                    "  Ctrl+1..5     Switch tabs\n",
-                    "  Tab           Cycle focus (Threads) / autocomplete (/commands)\n",
-                    "  Enter         Submit task or confirm\n",
-                    "  Esc           Clear input\n",
-                    "  Up/Down       Scroll or navigate\n",
-                    "  PageUp/Dn     Page scroll\n",
-                    "  Home/End      Jump to top/bottom\n",
-                    "  Ctrl+C        Quit",
+                    "  F10             Open/close menu bar\n",
+                    "  Alt+F/V/O/A/M/H Open File/View/Modify/Agents/Model/Help menu\n",
+                    "  Ctrl+1..5       Switch tabs\n",
+                    "  Tab             Cycle focus (Threads) / autocomplete (/commands)\n",
+                    "  Enter           Submit task or confirm\n",
+                    "  Esc             Clear input\n",
+                    "  Up/Down         Scroll or navigate\n",
+                    "  PageUp/Dn       Page scroll\n",
+                    "  Home/End        Jump to top/bottom\n",
+                    "  Ctrl+C          Quit",
                 )
                 .into(),
             });
@@ -123,6 +121,29 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         return;
     }
 
+    // Tool approval mode: [1]/Enter approves, [2]/Esc denies
+    if app.pending_approval.is_some() {
+        match key.code {
+            KeyCode::Char('1') | KeyCode::Enter => {
+                if let Some(request) = app.pending_approval.take() {
+                    let tool = request.tool_name.clone();
+                    let _ = request.response_tx.send(ApprovalVerdict::Approved);
+                    push_feedback(app, &format!("Approved: {tool}"));
+                }
+                return;
+            }
+            KeyCode::Char('2') | KeyCode::Esc => {
+                if let Some(request) = app.pending_approval.take() {
+                    let tool = request.tool_name.clone();
+                    let _ = request.response_tx.send(ApprovalVerdict::Denied);
+                    push_feedback(app, &format!("Denied: {tool}"));
+                }
+                return;
+            }
+            _ => return, // Ignore all other keys while approval is pending
+        }
+    }
+
     // F10 toggles menu bar
     if key.code == KeyCode::F(10) {
         if app.menu_active {
@@ -140,9 +161,10 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         let menu_index = match key.code {
             KeyCode::Char('f') => Some(0), // File
             KeyCode::Char('v') => Some(1), // View
-            KeyCode::Char('a') => Some(2), // Agents
-            KeyCode::Char('m') => Some(3), // Model
-            KeyCode::Char('h') => Some(4), // Help
+            KeyCode::Char('o') => Some(2), // mOdify
+            KeyCode::Char('a') => Some(3), // Agents
+            KeyCode::Char('m') => Some(4), // Model
+            KeyCode::Char('h') => Some(5), // Help
             _ => None,
         };
         if let Some(index) = menu_index {
@@ -227,15 +249,15 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('3') => {
-                app.active_tab = ActiveTab::Yaml;
+                app.active_tab = ActiveTab::Graph;
                 return;
             }
             KeyCode::Char('4') => {
-                app.active_tab = ActiveTab::Wasm;
+                app.active_tab = ActiveTab::Yaml;
                 return;
             }
-            KeyCode::Char('5') if app.debug_mode => {
-                app.active_tab = ActiveTab::Debug;
+            KeyCode::Char('5') => {
+                app.active_tab = ActiveTab::Activity;
                 return;
             }
             _ => {}
@@ -459,16 +481,33 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 app.context_tree_state.key_down();
             }
         },
-        // Debug tab: arrow keys scroll activity trace
-        KeyCode::Up if app.active_tab == ActiveTab::Debug => {
+        // Activity tab: arrow keys scroll activity trace
+        KeyCode::Up if app.active_tab == ActiveTab::Activity => {
             for _ in 0..3 {
                 app.scroll_activity_up();
             }
         }
-        KeyCode::Down if app.active_tab == ActiveTab::Debug => {
+        KeyCode::Down if app.active_tab == ActiveTab::Activity => {
             for _ in 0..3 {
                 app.scroll_activity_down();
             }
+        }
+        // Graph tab: arrow keys scroll
+        KeyCode::Up if app.active_tab == ActiveTab::Graph => {
+            for _ in 0..3 {
+                app.scroll_graph_up();
+            }
+        }
+        KeyCode::Down if app.active_tab == ActiveTab::Graph => {
+            for _ in 0..3 {
+                app.scroll_graph_down();
+            }
+        }
+        KeyCode::Left if app.active_tab == ActiveTab::Graph => {
+            app.scroll_graph_left();
+        }
+        KeyCode::Right if app.active_tab == ActiveTab::Graph => {
+            app.scroll_graph_right();
         }
         // Left/Right on Messages tab: horizontal scroll
         KeyCode::Left if app.active_tab == ActiveTab::Messages => {
@@ -498,10 +537,16 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     app.scroll_conversation_up();
                 }
             }
-            ActiveTab::Debug => {
+            ActiveTab::Activity => {
                 let page = app.activity_viewport_height.saturating_sub(2).max(1);
                 for _ in 0..page {
                     app.scroll_activity_up();
+                }
+            }
+            ActiveTab::Graph => {
+                let page = app.graph_viewport_height.saturating_sub(2).max(1);
+                for _ in 0..page {
+                    app.scroll_graph_up();
                 }
             }
             _ => {
@@ -518,10 +563,16 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     app.scroll_conversation_down();
                 }
             }
-            ActiveTab::Debug => {
+            ActiveTab::Activity => {
                 let page = app.activity_viewport_height.saturating_sub(2).max(1);
                 for _ in 0..page {
                     app.scroll_activity_down();
+                }
+            }
+            ActiveTab::Graph => {
+                let page = app.graph_viewport_height.saturating_sub(2).max(1);
+                for _ in 0..page {
+                    app.scroll_graph_down();
                 }
             }
             _ => {
@@ -545,9 +596,13 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     app.context_tree_state.select_first();
                 }
             },
-            ActiveTab::Debug => {
+            ActiveTab::Activity => {
                 app.activity_scroll = 0;
                 app.activity_auto_scroll = false;
+            }
+            ActiveTab::Graph => {
+                app.graph_scroll = 0;
+                app.graph_h_scroll = 0;
             }
             _ => {
                 app.message_scroll = 0;
@@ -569,8 +624,12 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     app.context_tree_state.select_last();
                 }
             },
-            ActiveTab::Debug => {
+            ActiveTab::Activity => {
                 app.activity_auto_scroll = true;
+            }
+            ActiveTab::Graph => {
+                // Scroll to bottom
+                app.graph_scroll = u16::MAX;
             }
             _ => {
                 app.message_auto_scroll = true;
@@ -723,10 +782,9 @@ mod tests {
     }
 
     #[test]
-    fn up_down_on_debug_tab() {
+    fn up_down_on_activity_tab() {
         let mut app = TuiApp::new();
-        app.debug_mode = true;
-        app.active_tab = ActiveTab::Debug;
+        app.active_tab = ActiveTab::Activity;
         app.activity_scroll = 10;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
@@ -737,36 +795,31 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_5_switches_to_debug_when_enabled() {
+    fn ctrl_5_switches_to_activity() {
         let mut app = TuiApp::new();
-        app.debug_mode = true;
 
         handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL),
         );
-        assert_eq!(app.active_tab, ActiveTab::Debug);
+        assert_eq!(app.active_tab, ActiveTab::Activity);
     }
 
     #[test]
-    fn ctrl_5_ignored_when_not_debug() {
+    fn ctrl_3_switches_to_graph() {
         let mut app = TuiApp::new();
-        assert!(!app.debug_mode);
-        app.active_tab = ActiveTab::Messages;
 
         handle_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::CONTROL),
         );
-        // Should remain on Messages — Ctrl+5 is a no-op without debug_mode
-        assert_eq!(app.active_tab, ActiveTab::Messages);
+        assert_eq!(app.active_tab, ActiveTab::Graph);
     }
 
     #[test]
-    fn home_end_on_debug_tab() {
+    fn home_end_on_activity_tab() {
         let mut app = TuiApp::new();
-        app.debug_mode = true;
-        app.active_tab = ActiveTab::Debug;
+        app.active_tab = ActiveTab::Activity;
         app.activity_scroll = 50;
         app.activity_auto_scroll = false;
 

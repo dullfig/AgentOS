@@ -51,6 +51,14 @@ listeners:
       prompt: "no_paperclipper & coding_base"
       max_tokens: 4096
       max_agentic_iterations: 25
+      permissions:
+        file-read: auto
+        glob: auto
+        grep: auto
+        codebase-index: auto
+        file-write: prompt
+        file-edit: prompt
+        command-exec: prompt
     librarian: true
     peers: [file-read, file-write, file-edit, glob, grep, command-exec, codebase-index]
 
@@ -266,7 +274,7 @@ async fn main() -> Result<()> {
     pipeline.run();
 
     // Run TUI (blocks until quit)
-    run_tui(&pipeline, debug, &yaml, models_config, agents_config, has_pool).await?;
+    run_tui(&mut pipeline, debug, &yaml, models_config, agents_config, has_pool).await?;
 
     // Shutdown
     info!("Shutting down");

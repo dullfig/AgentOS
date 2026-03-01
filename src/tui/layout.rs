@@ -41,11 +41,11 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),            // menu bar
-            Constraint::Length(1),            // tab bar
-            Constraint::Min(5),              // content area
-            Constraint::Length(input_height), // input (textarea) — hidden on YAML tab
-            Constraint::Length(1),            // status bar
+            Constraint::Length(1),                // menu bar
+            Constraint::Length(1),                // tab bar
+            Constraint::Min(5),                  // content area
+            Constraint::Length(input_height),     // input (textarea) — hidden on YAML tab
+            Constraint::Length(1),                // status bar
         ])
         .split(f.area());
 
@@ -55,8 +55,8 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
         ActiveTab::Messages => draw_messages(f, app, outer[2]),
         ActiveTab::Threads => draw_threads(f, app, outer[2]),
         ActiveTab::Yaml => draw_yaml_editor(f, app, outer[2]),
-        ActiveTab::Wasm => draw_wasm_placeholder(f, outer[2]),
-        ActiveTab::Debug => draw_debug(f, app, outer[2]),
+        ActiveTab::Graph => draw_graph(f, app, outer[2]),
+        ActiveTab::Activity => draw_activity(f, app, outer[2]),
     }
 
     if input_height > 0 {
@@ -84,6 +84,11 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     }
     draw_status(f, app, outer[4]);
 
+    // Tool approval popup — centered overlay when awaiting user consent
+    if app.pending_approval.is_some() {
+        draw_approval_popup(f, app, outer[2]);
+    }
+
     // Fill the menu bar row with white background before rendering menu items.
     f.render_widget(
         Paragraph::new("").style(Style::default().bg(Color::White)),
@@ -109,19 +114,20 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
         .dropdown_style(Style::default().fg(Color::Black).bg(Color::White));
     f.render_stateful_widget(menu_widget, menu_area, &mut app.menu_state);
 
-    // Underline accelerator letters (F, V, M, H) by overwriting specific cells.
-    // tui-menu renders items as: " " + " File " + " View " + " Model " + " Help "
-    // so each accelerator letter is at: initial_space + leading_space + cumulative widths.
+    // Underline accelerator letters by overwriting specific cells.
+    // tui-menu renders items as: " " + " File " + " View " + " Modify " + ...
+    // The accelerator letter offset within each name: F(0), V(0), O(1 in mOdify), A(0), M(0), H(0).
     let accel_style = Style::default()
         .fg(Color::Black)
         .bg(Color::White)
         .add_modifier(Modifier::UNDERLINED);
-    let names = ["File", "View", "Agents", "Model", "Help"];
-    let accels = ['F', 'V', 'A', 'M', 'H'];
+    let names = ["File", "View", "Modify", "Agents", "Model", "Help"];
+    let accels = ['F', 'V', 'O', 'A', 'M', 'H'];
+    let accel_offsets: [u16; 6] = [0, 0, 1, 0, 0, 0]; // char offset within each name
     let mut x = outer[0].x + 1; // skip initial " "
     for (i, name) in names.iter().enumerate() {
         x += 1; // leading space of " name "
-        let cell = Rect::new(x, outer[0].y, 1, 1);
+        let cell = Rect::new(x + accel_offsets[i], outer[0].y, 1, 1);
         f.render_widget(
             Paragraph::new(Span::styled(accels[i].to_string(), accel_style)),
             cell,
@@ -131,15 +137,13 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
 }
 
 fn draw_tab_bar(f: &mut Frame, app: &TuiApp, area: Rect) {
-    let mut tabs: Vec<(&str, ActiveTab, &str)> = vec![
+    let tabs: Vec<(&str, ActiveTab, &str)> = vec![
         ("Messages", ActiveTab::Messages, "1"),
         ("Threads", ActiveTab::Threads, "2"),
-        ("YAML", ActiveTab::Yaml, "3"),
-        ("WASM", ActiveTab::Wasm, "4"),
+        ("Graph", ActiveTab::Graph, "3"),
+        ("YAML", ActiveTab::Yaml, "4"),
+        ("Activity", ActiveTab::Activity, "5"),
     ];
-    if app.debug_mode {
-        tabs.push(("Debug", ActiveTab::Debug, "5"));
-    }
 
     let spans: Vec<Span> = tabs
         .iter()
@@ -228,6 +232,59 @@ fn draw_command_popup(f: &mut Frame, app: &TuiApp, input_area: Rect) {
 
     let para = Paragraph::new(lines).block(block);
     f.render_widget(para, popup_area);
+}
+
+/// Render tool approval as a centered blue popup over the content area.
+fn draw_approval_popup(f: &mut Frame, app: &TuiApp, content_area: Rect) {
+    let request = match &app.pending_approval {
+        Some(r) => r,
+        None => return,
+    };
+
+    // Popup size: 5 lines tall, up to 50 cols wide (or content width - 4)
+    let popup_w = 50u16.min(content_area.width.saturating_sub(4));
+    let popup_h = 5u16;
+    if content_area.height < popup_h + 2 || popup_w < 20 {
+        return; // terminal too small
+    }
+    let x = content_area.x + (content_area.width.saturating_sub(popup_w)) / 2;
+    let y = content_area.y + (content_area.height.saturating_sub(popup_h)) / 2;
+    let popup = Rect::new(x, y, popup_w, popup_h);
+
+    // Blue background, no borders
+    let bg = Style::default().bg(Color::Blue).fg(Color::White);
+
+    // Build lines
+    let inner_w = popup_w as usize;
+    let tool_line = format!(" {}", request.tool_name);
+    let args_line = format!(" {}", request.args_summary);
+    // Truncate args if too wide
+    let args_display = if args_line.len() > inner_w {
+        format!("{}...", &args_line[..inner_w.saturating_sub(3)])
+    } else {
+        args_line
+    };
+    let keys_line = Line::from(vec![
+        Span::styled(" [1] ", Style::default().bg(Color::Blue).fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled("approve  ", bg),
+        Span::styled("[2] ", Style::default().bg(Color::Blue).fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled("deny", bg),
+    ]);
+
+    let text = vec![
+        Line::styled(tool_line, bg.add_modifier(Modifier::BOLD)),
+        Line::styled(args_display, bg),
+        Line::styled("", bg), // spacer
+        keys_line,
+        Line::styled("", bg), // bottom padding
+    ];
+
+    // Clear the popup area with blue background
+    f.render_widget(
+        Paragraph::new("").style(bg),
+        popup,
+    );
+    f.render_widget(Paragraph::new(text).style(bg), popup);
 }
 
 /// Render the wizard input bar (single-step: API key).
@@ -551,9 +608,9 @@ fn draw_conversation(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     }
 }
 
-fn draw_debug(f: &mut Frame, app: &mut TuiApp, area: Rect) {
+fn draw_activity(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     let block = Block::default()
-        .title(" Debug — Activity Trace ")
+        .title(" Activity Trace ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
@@ -989,17 +1046,52 @@ fn draw_yaml_hover_overlay(
     f.render_widget(para, popup_area);
 }
 
-fn draw_wasm_placeholder(f: &mut Frame, area: Rect) {
+fn draw_graph(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     let block = Block::default()
-        .title(" WASM ")
+        .title(" Graph — Organism Topology ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let para = Paragraph::new(Span::styled(
-        "Coming soon — WASM tool inventory",
-        Style::default().fg(Color::DarkGray),
-    ))
-    .block(block);
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as u32;
+
+    // Lazy render: regenerate only when width changes or cache is empty
+    if app.graph_rendered_width != inner_width || app.graph_rendered_lines.is_empty() {
+        if app.graph_d2_source.is_empty() {
+            app.graph_rendered_lines = vec![Line::from(Span::styled(
+                "No organism loaded.",
+                Style::default().fg(Color::DarkGray),
+            ))];
+        } else {
+            app.graph_rendered_lines = super::diagram::render_d2(&app.graph_d2_source, inner_width);
+        }
+        app.graph_rendered_width = inner_width;
+    }
+
+    // Scroll clamping
+    let total_lines = app.graph_rendered_lines.len() as u32;
+    let max_scroll = total_lines.saturating_sub(inner_height);
+    let max_scroll_u16 = max_scroll.min(u16::MAX as u32) as u16;
+    app.graph_scroll = app.graph_scroll.min(max_scroll_u16);
+    app.graph_viewport_height = inner_height.min(u16::MAX as u32) as u16;
+
+    let para = Paragraph::new(app.graph_rendered_lines.clone())
+        .block(block)
+        .scroll((app.graph_scroll, app.graph_h_scroll));
     f.render_widget(para, area);
+
+    // Scrollbar
+    if total_lines > inner_height {
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll_u16 as usize).position(app.graph_scroll as usize);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area,
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
@@ -1019,16 +1111,12 @@ fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
     let tab_name = match app.active_tab {
         ActiveTab::Messages => "Messages",
         ActiveTab::Threads => "Threads",
+        ActiveTab::Graph => "Graph",
         ActiveTab::Yaml => "YAML",
-        ActiveTab::Wasm => "WASM",
-        ActiveTab::Debug => "Debug",
+        ActiveTab::Activity => "Activity",
     };
 
-    let tab_hint = if app.debug_mode {
-        "^1/2/3/4/5:Tabs"
-    } else {
-        "^1/2/3/4:Tabs"
-    };
+    let tab_hint = "^1/2/3/4/5:Tabs";
 
     let agent_label = match &app.selected_agent {
         Some(name) => format!("[Agent: {name}]"),

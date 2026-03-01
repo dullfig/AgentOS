@@ -13,6 +13,7 @@
 //! - `ralph`: Ralph Method story decomposition
 
 pub mod handler;
+pub mod permissions;
 pub mod prompts;
 pub mod ralph;
 pub mod state;
