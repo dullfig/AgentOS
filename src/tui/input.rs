@@ -32,21 +32,21 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             set_input(app, "/model ");
         }
         MenuAction::ShowAbout => {
-            app.chat_log.push(ChatEntry {
-                role: "system".into(),
-                text: "AgentOS — an operating system for AI coding agents.\nNo compaction, ever."
-                    .into(),
-            });
+            app.chat_log.push(ChatEntry::new(
+                "system",
+                "AgentOS — an operating system for AI coding agents.\nNo compaction, ever.",
+            ));
             app.message_auto_scroll = true;
         }
         MenuAction::ShowShortcuts => {
-            app.chat_log.push(ChatEntry {
-                role: "system".into(),
-                text: concat!(
+            app.chat_log.push(ChatEntry::new(
+                "system",
+                concat!(
                     "Keyboard shortcuts:\n",
                     "  F10             Open/close menu bar\n",
                     "  Alt+F/V/O/A/M/H Open File/View/Modify/Agents/Model/Help menu\n",
                     "  Ctrl+1..5       Switch tabs\n",
+                    "  Shift+Enter     Insert newline\n",
                     "  Tab             Cycle focus (Threads) / autocomplete (/commands)\n",
                     "  Enter           Submit task or confirm\n",
                     "  Esc             Clear input\n",
@@ -54,9 +54,8 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
                     "  PageUp/Dn       Page scroll\n",
                     "  Home/End        Jump to top/bottom\n",
                     "  Ctrl+C          Quit",
-                )
-                .into(),
-            });
+                ),
+            ));
             app.message_auto_scroll = true;
         }
         MenuAction::SelectAgent(name) => {
@@ -74,10 +73,7 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
 
 /// Push a system message to the chat log.
 fn push_feedback(app: &mut TuiApp, text: &str) {
-    app.chat_log.push(ChatEntry {
-        role: "system".into(),
-        text: text.into(),
-    });
+    app.chat_log.push(ChatEntry::new("system", text));
     app.message_auto_scroll = true;
 }
 
@@ -208,10 +204,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             KeyCode::Esc => {
                 app.input_mode = InputMode::Normal;
                 app.clear_input();
-                app.chat_log.push(ChatEntry {
-                    role: "system".into(),
-                    text: "Provider wizard cancelled.".into(),
-                });
+                app.chat_log.push(ChatEntry::new("system", "Provider wizard cancelled."));
                 app.message_auto_scroll = true;
                 return;
             }
@@ -229,9 +222,8 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 return;
             }
             _ => {
-                // Forward to input editor
-                let area = app.input_area;
-                let _ = app.input_editor.input(key, &area);
+                // Forward to input line
+                app.input_line.handle_key(key);
                 return;
             }
         }
@@ -274,10 +266,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     match serde_yaml::from_str::<serde_yaml::Value>(&content) {
                         Ok(_) => {
                             app.yaml_status = None;
-                            app.chat_log.push(ChatEntry {
-                                role: "system".into(),
-                                text: "YAML validated successfully.".into(),
-                            });
+                            app.chat_log.push(ChatEntry::new("system", "YAML validated successfully."));
                             app.message_auto_scroll = true;
                         }
                         Err(e) => {
@@ -402,7 +391,11 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
     }
 
     match key.code {
-        // Submit task or slash command
+        // Shift+Enter: insert newline (multiline input)
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.input_line.insert_char('\n');
+        }
+        // Enter: submit task or slash command
         KeyCode::Enter => {
             // On Threads tab with ContextTree focus, toggle the selected node
             if app.active_tab == ActiveTab::Threads
@@ -413,20 +406,20 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             }
             if let Some(text) = app.take_input() {
                 if text.starts_with('/') {
-                    // Slash command — defer to async executor in runner
+                    // Slash command — always allowed, even while agent is busy
                     app.pending_command = Some(text);
-                } else {
-                    app.chat_log.push(ChatEntry {
-                        role: "user".into(),
-                        text: text.clone(),
-                    });
+                } else if app.agent_status == AgentStatus::Idle {
+                    app.chat_log.push(ChatEntry::new("user", text.clone()));
                     app.agent_status = AgentStatus::Thinking;
                     app.message_auto_scroll = true;
                     app.pending_task = Some(text);
+                } else {
+                    // Agent is busy — put text back, don't submit
+                    app.set_input_text(&text);
                 }
             }
         }
-        // Tab: focus cycling on Threads tab, otherwise forward to textarea
+        // Tab: focus cycling on Threads tab, otherwise forward to input
         KeyCode::Tab => {
             if app.active_tab == ActiveTab::Threads {
                 app.threads_focus = match app.threads_focus {
@@ -435,9 +428,8 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                     ThreadsFocus::ContextTree => ThreadsFocus::ThreadList,
                 };
             } else {
-                // Normal Tab → forward to input editor
-                let area = app.input_area;
-                let _ = app.input_editor.input(key, &area);
+                // Normal Tab → insert tab character (or ignore)
+                app.input_line.handle_key(key);
             }
         }
         // Clear input
@@ -635,10 +627,9 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 app.message_auto_scroll = true;
             }
         },
-        // Everything else → input editor
+        // Everything else → input line
         _ => {
-            let area = app.input_area;
-            let _ = app.input_editor.input(key, &area);
+            app.input_line.handle_key(key);
         }
     }
 }

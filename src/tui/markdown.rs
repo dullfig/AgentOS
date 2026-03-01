@@ -132,6 +132,16 @@ fn is_table_line(line: &str) -> bool {
     line.trim_start().starts_with('|')
 }
 
+/// Strip variation selector VS16 (U+FE0F) from text.
+///
+/// Terminals render `⚠\uFE0F` as a 2-column emoji, but `unicode-width` and
+/// ratatui measure `⚠` as 1 column (text presentation). Stripping VS16 forces
+/// text presentation so measurement and rendering agree. Without this, table
+/// columns misalign whenever cells contain `⚠️`, `☁️`, `❤️`, etc.
+fn strip_vs16(s: &str) -> String {
+    s.chars().filter(|&c| c != '\u{FE0F}').collect()
+}
+
 /// Parse and render a markdown pipe-delimited table as box-drawing art.
 fn render_table_block(lines: &[&str]) -> Vec<Line<'static>> {
     if lines.is_empty() {
@@ -167,6 +177,14 @@ fn render_table_block(lines: &[&str]) -> Vec<Line<'static>> {
 
     if rows.is_empty() {
         return Vec::new();
+    }
+
+    // Normalize cell content: strip VS16 to prevent width mismatch between
+    // unicode-width measurement and terminal rendering.
+    for row in &mut rows {
+        for cell in row.iter_mut() {
+            *cell = strip_vs16(cell);
+        }
     }
 
     // Compute column widths using Unicode display width (handles emojis, CJK, etc.)
@@ -389,6 +407,32 @@ mod tests {
         let text = lines_to_text(&lines);
         assert!(text.contains("Arch"));
         assert!(text.contains("⭐"));
+    }
+
+    #[test]
+    fn vs16_stripped_in_tables() {
+        // ⚠️ = U+26A0 + U+FE0F — VS16 must be stripped for correct alignment
+        let md = "| Status | Note |\n|---|---|\n| ⚠️ Partial | ok |\n| ✅ Full | ok |";
+        let lines = render_markdown(md);
+        let text = lines_to_text(&lines);
+        // VS16 stripped: shows ⚠ not ⚠️, but "Partial" must be intact (not truncated)
+        assert!(text.contains("Partial"), "text should not be truncated: {text}");
+        // All rows must have the same display width
+        let widths: Vec<usize> = lines
+            .iter()
+            .map(|t| t.line.spans.iter().map(|s| s.content.width()).sum::<usize>())
+            .collect();
+        let first = widths[0];
+        for (i, w) in widths.iter().enumerate() {
+            assert_eq!(*w, first, "line {i} has width {w}, expected {first}");
+        }
+    }
+
+    #[test]
+    fn strip_vs16_helper() {
+        assert_eq!(strip_vs16("⚠\u{FE0F} Partial"), "⚠ Partial");
+        assert_eq!(strip_vs16("✅ Full"), "✅ Full"); // no VS16, unchanged
+        assert_eq!(strip_vs16("plain text"), "plain text");
     }
 
     #[test]

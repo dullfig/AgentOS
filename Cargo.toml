@@ -48,6 +48,9 @@ lsp-types = "0.97"
 # Constrained decoding — local LLM inference for form filling
 code-llm = { path = "../code-llm" }
 
+# Clipboard access (input bar Ctrl+V paste)
+arboard = "3"
+
 # Core tool dependencies
 glob = "0.3"
 regex = "1"

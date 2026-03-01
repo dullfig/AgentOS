@@ -18,6 +18,7 @@ pub mod dashboard;
 pub mod diagram;
 pub mod event;
 pub mod input;
+pub mod input_line;
 pub mod layout;
 pub mod markdown;
 pub mod render;

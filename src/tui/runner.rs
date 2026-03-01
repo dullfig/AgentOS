@@ -102,6 +102,7 @@ pub async fn run_tui(
     // Setup terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -172,8 +173,22 @@ pub async fn run_tui(
             }
             Some(crossterm_event) = key_rx.recv() => {
                 // Input thread already filters to Press-only key events.
-                if let Event::Key(key) = crossterm_event {
-                    app.update(TuiMessage::Input(key));
+                match crossterm_event {
+                    Event::Key(key) => {
+                        app.update(TuiMessage::Input(key));
+                    }
+                    Event::Paste(text) => {
+                        // Bracketed paste — normalize \r\n → \n, preserve newlines.
+                        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                        if looks_like_block(&normalized) {
+                            // Structured content (table, code) — auto-fence.
+                            let fenced = format!("```\n{}\n```", normalized.trim());
+                            app.input_line.insert_str(&fenced);
+                        } else {
+                            app.input_line.insert_str(&normalized);
+                        }
+                    }
+                    _ => {}
                 }
             }
             Some(request) = async { match approval_rx.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
@@ -279,9 +294,47 @@ pub async fn run_tui(
     // Restore terminal — always runs, even if agent task is mid-flight.
     // Pipeline tasks are detached (tokio-spawned), so they'll be dropped
     // when the runtime shuts down.
+    io::stdout().execute(crossterm::event::DisableBracketedPaste)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
+}
+
+/// Detect if pasted text looks like a markdown block (table or code).
+///
+/// Tables: multiple lines where most start/end with `|`.
+/// Code: multiple lines with consistent indentation or code-like syntax.
+fn looks_like_block(text: &str) -> bool {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < 2 {
+        return false;
+    }
+
+    // Table: majority of lines start and end with `|`
+    let pipe_lines = lines
+        .iter()
+        .filter(|l| {
+            let t = l.trim();
+            t.starts_with('|') && t.ends_with('|')
+        })
+        .count();
+    if pipe_lines * 2 >= lines.len() {
+        return true;
+    }
+
+    // Code: majority of non-empty lines start with whitespace (indented)
+    let non_empty: Vec<&&str> = lines.iter().filter(|l| !l.trim().is_empty()).collect();
+    if non_empty.len() >= 2 {
+        let indented = non_empty
+            .iter()
+            .filter(|l| l.starts_with(' ') || l.starts_with('\t'))
+            .count();
+        if indented * 2 >= non_empty.len() {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Generate a short alias from a full model ID.
@@ -710,5 +763,36 @@ profiles:
             KeyModifiers::NONE,
         )));
         assert_eq!(app.message_scroll, 5); // unchanged
+    }
+
+    // ── looks_like_block tests ──
+
+    #[test]
+    fn table_detected_as_block() {
+        let table = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |";
+        assert!(looks_like_block(table));
+    }
+
+    #[test]
+    fn indented_code_detected_as_block() {
+        let code = "fn main() {\n    println!(\"hello\");\n    let x = 42;\n}";
+        assert!(looks_like_block(code));
+    }
+
+    #[test]
+    fn plain_text_not_block() {
+        assert!(!looks_like_block("hello world"));
+        assert!(!looks_like_block("just a sentence"));
+    }
+
+    #[test]
+    fn single_line_not_block() {
+        assert!(!looks_like_block("| one line |"));
+    }
+
+    #[test]
+    fn multiline_prose_not_block() {
+        let prose = "This is a paragraph.\nIt has multiple sentences.\nBut no structure.";
+        assert!(!looks_like_block(prose));
     }
 }

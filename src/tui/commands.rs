@@ -383,10 +383,7 @@ pub async fn execute(
 
 /// Push command feedback into the chat log as a system message.
 pub fn push_feedback(app: &mut TuiApp, text: &str) {
-    app.chat_log.push(ChatEntry {
-        role: "system".into(),
-        text: text.into(),
-    });
+    app.chat_log.push(ChatEntry::new("system", text));
     app.message_auto_scroll = true;
 }
 
@@ -748,10 +745,7 @@ mod tests {
     #[tokio::test]
     async fn execute_clear() {
         let mut app = TuiApp::new();
-        app.chat_log.push(ChatEntry {
-            role: "user".into(),
-            text: "hello".into(),
-        });
+        app.chat_log.push(ChatEntry::new("user", "hello"));
         assert_eq!(app.chat_log.len(), 1);
 
         let result = execute(&mut app, "/clear", None).await;

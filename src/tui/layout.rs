@@ -31,12 +31,12 @@ const BLOCK_BG: Color = Color::Rgb(30, 30, 36);
 
 /// Draw the full TUI layout.
 pub fn draw(f: &mut Frame, app: &mut TuiApp) {
-    // YAML tab: hide input bar, give all space to editor
-    // Wizard mode: expand input bar to show completed fields
-    let input_height = if app.active_tab == ActiveTab::Yaml {
-        0
-    } else {
-        3
+    // Messages tab: input is embedded inside draw_messages (single outline).
+    // YAML tab: input is hidden (editor takes full area).
+    // Other tabs: external input bar below content.
+    let input_height = match app.active_tab {
+        ActiveTab::Messages | ActiveTab::Yaml => 0,
+        _ => 3,
     };
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -44,7 +44,7 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
             Constraint::Length(1),                // menu bar
             Constraint::Length(1),                // tab bar
             Constraint::Min(5),                  // content area
-            Constraint::Length(input_height),     // input (textarea) — hidden on YAML tab
+            Constraint::Length(input_height),     // input (textarea) — hidden on Messages/YAML
             Constraint::Length(1),                // status bar
         ])
         .split(f.area());
@@ -66,18 +66,21 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
         if app.in_wizard() {
             draw_wizard_input(f, app, outer[3]);
         } else {
-            // Render the input editor with a border overlay
+            // Render the input line with a border overlay
             let input_block = Block::default()
                 .title(" Task ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan));
             let input_inner = input_block.inner(outer[3]);
             f.render_widget(input_block, outer[3]);
-            f.render_widget(&app.input_editor, input_inner);
-            // Position cursor within the input editor
-            if let Some((x, y)) = app.input_editor.get_visible_cursor(&input_inner) {
-                f.set_cursor_position(Position::new(x, y));
-            }
+            let content = app.input_line.content().to_string();
+            f.render_widget(Paragraph::new(content.clone()), input_inner);
+            // Position cursor
+            let (cx, cy) = plain_cursor_xy(&content, app.input_line.cursor());
+            f.set_cursor_position(Position::new(
+                input_inner.x + cx,
+                input_inner.y + cy,
+            ));
             draw_ghost_text(f, app, outer[3]);
             draw_command_popup(f, app, outer[3]);
         }
@@ -312,15 +315,15 @@ fn draw_wizard_input(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         Paragraph::new(Span::styled(prompt, Style::default().fg(Color::Yellow))),
         Rect::new(inner.x, inner.y, prompt_width.min(inner.width), 1),
     );
-    // Editor gets remaining width
+    // Input gets remaining width
     let edit_x = inner.x + prompt_width;
     let edit_width = inner.width.saturating_sub(prompt_width);
     if edit_width > 0 {
         let edit_area = Rect::new(edit_x, inner.y, edit_width, 1);
-        f.render_widget(&app.input_editor, edit_area);
-        if let Some((x, y)) = app.input_editor.get_visible_cursor(&edit_area) {
-            f.set_cursor_position(Position::new(x, y));
-        }
+        let content = app.input_line.content().to_string();
+        f.render_widget(Paragraph::new(content.clone()), edit_area);
+        let (cx, _) = plain_cursor_xy(&content, app.input_line.cursor());
+        f.set_cursor_position(Position::new(edit_area.x + cx, edit_area.y));
     }
 }
 
@@ -329,11 +332,8 @@ fn draw_ghost_text(f: &mut Frame, app: &TuiApp, area: Rect) {
     let input = app.input_text();
     if let Some(suffix) = crate::lsp::command_line::ghost_suffix(&input) {
         let inner = Block::default().borders(Borders::ALL).inner(area);
-        let cursor_pos = app.input_editor.get_visible_cursor(&inner);
-        let (x, y) = match cursor_pos {
-            Some((cx, cy)) => (cx, cy),
-            None => return,
-        };
+        let (cx, cy) = plain_cursor_xy(&input, app.input_line.cursor());
+        let (x, y) = (inner.x + cx, inner.y + cy);
         let max_width = area.right().saturating_sub(x);
         if max_width > 0 {
             let ghost = Paragraph::new(Span::styled(
@@ -702,16 +702,56 @@ fn format_timestamp(secs: u64) -> String {
 }
 
 fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
+    // ── Single-outline layout: messages + embedded input ──
+    //
+    // ┌─ Messages ────────────────────────┐
+    // │  chat content                     │
+    // │                                   │
+    // │                                   │  ← 1-line gap
+    // │░░> input text_                   ░│  ← shaded, grows up
+    // └───────────────────────────────────┘
     let block = Block::default()
         .title(" Messages ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    // Inner width for word-wrapping (subtract 2 for block borders)
-    let wrap_width = area.width.saturating_sub(2).max(1) as usize;
+    let wrap_width = inner.width.max(1) as usize;
 
+    // Calculate how many visual lines the input content wraps to.
+    // Uses the same wrap_line logic for consistent rendering.
+    // Cap at 1/3 of inner height so messages always have room.
+    let input_content = app.input_line.content().to_string();
+    let input_wrap_width = inner.width.saturating_sub(2).max(1) as usize; // minus "> " prompt
+    let wrapped_input: Vec<Line<'static>> = if input_content.is_empty() {
+        vec![Line::from("")]
+    } else {
+        // Split on newlines (from multiline paste), then wrap each line
+        input_content
+            .split('\n')
+            .flat_map(|l| wrap_line(Line::from(l.to_string()), input_wrap_width))
+            .collect()
+    };
+    let input_line_count = wrapped_input.len().max(1);
+    let max_input_h = (inner.height / 3).max(1);
+    let input_h = (input_line_count as u16).min(max_input_h);
+    let gap_h = 1_u16; // separator line between messages and input
+    let input_total = input_h + gap_h;
+
+    // Split inner area: messages on top, gap + input on bottom
+    let msg_height = inner.height.saturating_sub(input_total);
+    let msg_area = Rect::new(inner.x, inner.y, inner.width, msg_height);
+    let gap_area = Rect::new(inner.x, inner.y + msg_height, inner.width, gap_h);
+    let input_area = Rect::new(
+        inner.x,
+        inner.y + msg_height + gap_h,
+        inner.width,
+        input_h,
+    );
+
+    // ── Render messages ──
     let mut lines: Vec<Line> = Vec::new();
-    // Track which lines are nowrap (tables/box-drawing) for anchored h-scroll
     let mut nowrap: Vec<bool> = Vec::new();
     let mut last_entry_start: u32 = 0;
 
@@ -746,12 +786,13 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
                 nowrap.push(false);
                 for tagged in super::markdown::render_markdown(&entry.text) {
                     if tagged.nowrap {
-                        // Gray background — pad with spaces to fill full pane width
                         let mut line = tagged.line;
                         let content_w: usize = line.spans.iter()
                             .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
                             .sum();
-                        let fill_width = wrap_width + app.message_h_scroll as usize;
+                        // Pad well past the viewport so background extends through any h-scroll.
+                        // The Paragraph's scroll clips the visible portion.
+                        let fill_width = wrap_width + 200;
                         let pad = fill_width.saturating_sub(content_w);
                         if pad > 0 {
                             line.spans.push(Span::styled(
@@ -788,7 +829,6 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         }
     }
 
-    // Show thinking indicator when waiting
     if app.agent_status == AgentStatus::Thinking {
         lines.push(Line::from(""));
         nowrap.push(false);
@@ -815,8 +855,7 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         nowrap.push(false);
     }
 
-    // Anchored horizontal scroll: pad wrapped lines so they stay in place,
-    // while nowrap lines (tables) shift left to reveal hidden content.
+    // Anchored horizontal scroll
     let h = app.message_h_scroll as usize;
     if h > 0 {
         let pad = " ".repeat(h);
@@ -827,15 +866,11 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         }
     }
 
-    // Clamp scroll so we never scroll past content.
-    // No wrapping — wide lines (tables, code) clip at the right edge.
-    // Left/Right keys pan horizontally.
-    let inner_height = area.height.saturating_sub(2) as u32;
+    let inner_height = msg_area.height as u32;
     let total_lines = lines.len() as u32;
     let max_scroll = total_lines.saturating_sub(inner_height);
     let max_scroll_u16 = max_scroll.min(u16::MAX as u32) as u16;
     let scroll = if app.scroll_to_last_entry {
-        // Scroll so the start of the last entry is at the top of the viewport
         app.scroll_to_last_entry = false;
         let target = last_entry_start.min(max_scroll);
         target.min(u16::MAX as u32) as u16
@@ -844,15 +879,12 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     } else {
         app.message_scroll.min(max_scroll_u16)
     };
-    // Write clamped value back so up/down keys work immediately
     app.message_scroll = scroll;
-    // Tell the app how tall the viewport is (for PageUp/PageDown)
     app.viewport_height = inner_height.min(u16::MAX as u32) as u16;
 
     let para = Paragraph::new(lines)
-        .block(block)
         .scroll((scroll, app.message_h_scroll));
-    f.render_widget(para, area);
+    f.render_widget(para, msg_area);
 
     // Scrollbar
     if total_lines > inner_height {
@@ -866,6 +898,95 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
             &mut scrollbar_state,
         );
     }
+
+    // ── Gap line (thin horizontal rule) ──
+    let rule = "─".repeat(gap_area.width as usize);
+    f.render_widget(
+        Paragraph::new(Span::styled(rule, Style::default().fg(Color::Rgb(50, 50, 56)))),
+        gap_area,
+    );
+
+    // ── Shaded input area ──
+    let input_bg = Color::Rgb(35, 35, 42);
+
+    // Fill the input zone with the shaded background
+    for row in 0..input_area.height {
+        let fill_area = Rect::new(input_area.x, input_area.y + row, input_area.width, 1);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " ".repeat(input_area.width as usize),
+                Style::default().bg(input_bg),
+            )),
+            fill_area,
+        );
+    }
+
+    // Render "> " prompt on each wrapped line
+    for row in 0..input_area.height {
+        let prompt_area = Rect::new(input_area.x, input_area.y + row, 2, 1);
+        let prompt_text = if row == 0 { "> " } else { "  " };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                prompt_text,
+                Style::default().fg(Color::Cyan).bg(input_bg).add_modifier(Modifier::BOLD),
+            )),
+            prompt_area,
+        );
+    }
+
+    // Render wrapped input text (after "> ")
+    let editor_area = Rect::new(
+        input_area.x + 2,
+        input_area.y,
+        input_area.width.saturating_sub(2),
+        input_area.height,
+    );
+    app.input_area = editor_area;
+
+    // Render the wrapped lines as a Paragraph
+    let display_lines: Vec<Line> = wrapped_input
+        .iter()
+        .take(input_area.height as usize)
+        .map(|l| {
+            let mut styled = l.clone();
+            for span in &mut styled.spans {
+                span.style = span.style.bg(input_bg);
+            }
+            styled
+        })
+        .collect();
+    f.render_widget(Paragraph::new(display_lines), editor_area);
+
+    // Position cursor within wrapped text.
+    // Cursor is a char offset into the full content (including \n chars).
+    // Map it to visual position in the wrapped output.
+    let (cx, cy) = multiline_cursor_xy(&input_content, app.input_line.cursor(), input_wrap_width);
+    let cursor_x = editor_area.x + cx;
+    let cursor_y = editor_area.y + cy;
+    if cursor_y < editor_area.y + editor_area.height {
+        f.set_cursor_position(Position::new(cursor_x, cursor_y));
+    }
+
+    // Ghost text (inline completion hint)
+    {
+        let input = app.input_text();
+        if let Some(suffix) = crate::lsp::command_line::ghost_suffix(&input) {
+            let max_w = area.right().saturating_sub(cursor_x + 1); // stay inside border
+            if max_w > 0 {
+                let ghost_rect = Rect::new(cursor_x, cursor_y, max_w.min(suffix.len() as u16), 1);
+                f.render_widget(
+                    Paragraph::new(Span::styled(
+                        &suffix[..suffix.len().min(max_w as usize)],
+                        Style::default().fg(Color::DarkGray).bg(input_bg),
+                    )),
+                    ghost_rect,
+                );
+            }
+        }
+    }
+
+    // Command popup (anchored above the input area)
+    draw_command_popup(f, app, input_area);
 }
 
 fn draw_yaml_editor(f: &mut Frame, app: &mut TuiApp, area: Rect) {
@@ -1184,6 +1305,64 @@ fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
 
 /// Word-wrap a single `Line` at `max_width` display columns, preserving span styles.
 /// Returns the line unchanged if it already fits.
+/// Compute cursor (col, row) for plain unwrapped text.
+/// Used for the external input bar (single-line, no wrapping).
+fn plain_cursor_xy(content: &str, cursor_char: usize) -> (u16, u16) {
+    use unicode_width::UnicodeWidthChar;
+    let col: usize = content
+        .chars()
+        .take(cursor_char)
+        .map(|c| c.width().unwrap_or(1))
+        .sum();
+    (col as u16, 0)
+}
+
+/// Compute cursor (col, row) within text that was wrapped by `wrap_line`.
+/// Walks through wrapped lines to find which one contains the cursor.
+fn wrapped_cursor_xy(wrapped: &[Line], cursor_char: usize) -> (u16, u16) {
+    use unicode_width::UnicodeWidthStr;
+    let mut chars_so_far: usize = 0;
+    for (row, wline) in wrapped.iter().enumerate() {
+        let line_text: String = wline.spans.iter().map(|s| s.content.as_ref()).collect();
+        let line_char_count = line_text.chars().count();
+        if chars_so_far + line_char_count > cursor_char || row == wrapped.len() - 1 {
+            let offset = cursor_char.saturating_sub(chars_so_far);
+            let prefix: String = line_text.chars().take(offset).collect();
+            return (prefix.width() as u16, row as u16);
+        }
+        chars_so_far += line_char_count;
+    }
+    (0, 0)
+}
+
+/// Compute cursor (col, row) for content that may contain newlines.
+/// Splits on `\n`, wraps each line, and maps cursor char offset to visual position.
+fn multiline_cursor_xy(content: &str, cursor_char: usize, wrap_width: usize) -> (u16, u16) {
+    let mut chars_consumed: usize = 0;
+    let mut visual_row: u16 = 0;
+
+    for (line_idx, raw_line) in content.split('\n').enumerate() {
+        let line_chars = raw_line.chars().count();
+
+        if chars_consumed + line_chars >= cursor_char {
+            // Cursor is within this raw line
+            let offset_in_line = cursor_char - chars_consumed;
+            let wrapped = wrap_line(Line::from(raw_line.to_string()), wrap_width);
+            let (cx, cy) = wrapped_cursor_xy(&wrapped, offset_in_line);
+            return (cx, visual_row + cy);
+        }
+
+        // This line's visual height
+        let wrapped = wrap_line(Line::from(raw_line.to_string()), wrap_width);
+        visual_row += wrapped.len() as u16;
+
+        // +1 for the \n character
+        chars_consumed += line_chars + 1;
+        let _ = line_idx;
+    }
+    (0, visual_row)
+}
+
 fn wrap_line(line: Line<'static>, max_width: usize) -> Vec<Line<'static>> {
     use unicode_width::UnicodeWidthChar;
     use unicode_width::UnicodeWidthStr;

@@ -191,12 +191,24 @@ pub struct ActivityEntry {
 }
 
 /// A chat message in the conversation log.
+///
+/// Normalizes line endings on construction — `\r\n` and bare `\r` become `\n`.
 #[derive(Debug, Clone)]
 pub struct ChatEntry {
     /// "user" or "agent"
     pub role: String,
-    /// The message text.
+    /// The message text (always \n line endings).
     pub text: String,
+}
+
+impl ChatEntry {
+    pub fn new(role: impl Into<String>, text: impl Into<String>) -> Self {
+        let text = text.into().replace("\r\n", "\n").replace('\r', "\n");
+        Self {
+            role: role.into(),
+            text,
+        }
+    }
 }
 
 /// The main TUI application state (TEA model).
@@ -227,9 +239,9 @@ pub struct TuiApp {
     pub total_input_tokens: u64,
     /// Total output tokens across all API calls.
     pub total_output_tokens: u64,
-    /// Text input widget (ratatui-code-editor, plain text mode).
-    pub input_editor: ratatui_code_editor::editor::Editor,
-    /// Cached input bar area from last render (needed for editor.input()).
+    /// Text input (lightweight single-line with cursor + soft-wrap).
+    pub input_line: super::input_line::InputLine,
+    /// Cached input bar area from last render (needed for cursor positioning).
     pub input_area: Rect,
     /// Current agent processing status.
     pub agent_status: AgentStatus,
@@ -400,11 +412,6 @@ pub fn build_menu_items(
 impl TuiApp {
     /// Create a new TuiApp with default state.
     pub fn new() -> Self {
-        // Plain text editor for input bar (no syntax highlighting)
-        let mut input_editor = ratatui_code_editor::editor::Editor::new("text", "", vec![])
-            .expect("plain text editor creation should never fail");
-        input_editor.set_show_line_numbers(false);
-
         Self {
             active_tab: ActiveTab::Messages,
             should_quit: false,
@@ -419,7 +426,7 @@ impl TuiApp {
             context: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
-            input_editor,
+            input_line: super::input_line::InputLine::new(),
             input_area: Rect::new(0, 0, 80, 3), // sensible default, updated by renderer
             agent_status: AgentStatus::Idle,
             pending_task: None,
@@ -704,10 +711,8 @@ impl TuiApp {
                     self.agent_status = AgentStatus::Idle;
                 }
                 self.last_response = Some(text.clone());
-                self.chat_log.push(ChatEntry {
-                    role: "agent".into(),
-                    text: text.clone(),
-                });
+                // ChatEntry::new normalizes \r\n → \n
+                self.chat_log.push(ChatEntry::new("agent", text));
                 // Scroll to the start of this response, not the bottom
                 self.message_auto_scroll = false;
                 self.scroll_to_last_entry = true;
@@ -875,33 +880,24 @@ impl TuiApp {
         self.activity_scroll = self.activity_scroll.saturating_sub(1);
     }
 
-    /// Extract text from the input editor and clear it. Returns None if empty.
+    /// Extract text from the input and clear it. Returns None if empty.
     pub fn take_input(&mut self) -> Option<String> {
-        let text = self.input_editor.get_content();
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return None;
-        }
-        self.input_editor.set_content("");
-        Some(text)
+        self.input_line.take()
     }
 
-    /// Get the current input text (first line).
+    /// Get the current input text.
     pub fn input_text(&self) -> String {
-        let content = self.input_editor.get_content();
-        content.lines().next().unwrap_or("").to_string()
+        self.input_line.content().to_string()
     }
 
-    /// Clear the input editor.
+    /// Clear the input.
     pub fn clear_input(&mut self) {
-        self.input_editor.set_content("");
+        self.input_line.clear();
     }
 
-    /// Set the input editor content and move cursor to end.
+    /// Set the input content and move cursor to end.
     pub fn set_input_text(&mut self, text: &str) {
-        self.input_editor.set_content(text);
-        let len = self.input_editor.get_content().chars().count();
-        self.input_editor.set_cursor(len);
+        self.input_line.set_content(text);
     }
 
     /// Whether the wizard is active.
