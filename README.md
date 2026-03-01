@@ -10,7 +10,7 @@ Built on [rust-pipeline](https://github.com/dullfig/rust-pipeline), a zero-trust
 async message pipeline where handler responses re-enter as untrusted bytes —
 because the most dangerous input is the output you just produced.
 
-**691 tests. ~27,000 lines of Rust. Zero unsafe blocks. No compaction, ever.**
+**819 tests. ~27,000 lines of Rust. Zero unsafe blocks. No compaction, ever.**
 
 ## Architecture
 
@@ -128,18 +128,38 @@ The command-exec tool enforces an allowlist at the token level — the first wor
 of every command is checked before execution. WASM user tools run in
 capability-based sandboxes — they can only access what their WIT interface declares.
 
-## The Coding Agent
+## Ships With a Coding Agent
 
-A stateful agentic loop on Anthropic's tool-use protocol. The agent maintains
-per-thread state machines: task arrives, model reasons, tool calls dispatch
-through the pipeline as first-class messages, results return as untrusted bytes,
-model continues. The full OODA loop with structural security at every transition.
+AgentOS ships with a working coding agent — not a toy demo, but a real tool that
+exercises every layer of the stack: pipeline, kernel, security profiles, tool
+peers, buffer nodes, prompt resolution, and the TUI. Point it at a codebase and
+start working.
+
+The default organism (`organisms/default.yaml`) defines three agents:
+
+- **Planner** — read-only access (file-read, glob, grep, codebase-index). Explores
+  the codebase, designs an implementation plan, then calls the coder.
+- **Coder** — a buffer node that spawns an isolated child pipeline with write tools.
+  Executes the plan in its own kernel, its own context store, its own thread table.
+  `fork()+exec()` for agents.
+- **Coding-agent** — the all-in-one option. Full read/write access in a single agent.
+
+```
+User task → Planner (read-only tools)
+                ↓ calls coder as a tool
+            [buffer] ← isolation boundary
+                ↓
+            Coder (child pipeline, write tools)
+                ↓
+            Result flows back through planner to user
+```
 
 Agent identity is data, not code. Prompts, model selection, token limits, and
-iteration caps are all declared in the organism YAML. New agent types require
-a YAML block and a prompt file — zero Rust.
+iteration caps are all declared in organism YAML. One agent per file. New agent
+types require a YAML file and a prompt — zero Rust.
 
 ```yaml
+# organisms/default.yaml
 prompts:
   coding_base: |
     You are a coding agent running inside AgentOS...
@@ -153,6 +173,17 @@ listeners:
     agent:
       prompt: "no_paperclipper & coding_base"  # composition with &
       max_tokens: 4096
+    peers: [file-read, file-write, file-edit, glob, grep, command-exec]
+
+  - name: coder
+    handler: buffer
+    buffer:                                    # buffer IS the tool
+      description: "Execute an implementation plan"
+      parameters:
+        plan: { type: string, description: "The plan to execute" }
+      required: [plan]
+      organism: organisms/coder.yaml           # child pipeline
+      max_concurrency: 1
 ```
 
 **Semantic routing** discovers tools by embedding similarity — the agent
@@ -221,7 +252,8 @@ Menu bar (F10) with dropdown navigation and Alt+letter accelerators.
 | `kernel/` | WAL, thread table, context store, message journal — durable state |
 | `agent/` | Coding agent: agentic loop, tool-use state machine, JSON/XML translation, prompts |
 | `pipeline/` | Builder pattern, event bus, organism-to-pipeline wiring |
-| `organism/` | YAML config: listeners, profiles, prompts, agent config, WASM config |
+| `organism/` | YAML config: listeners, profiles, prompts, agent config, buffer config |
+| `buffer/` | Buffer nodes: fork()+exec() for callable organisms, ephemeral child pipelines |
 | `security/` | Dispatch table enforcement, profile resolution |
 | `llm/` | Anthropic API client, LlmPool, model aliasing, list models API |
 | `config/` | Multi-provider model config (`~/.agentos/models.yaml`) |
@@ -239,7 +271,7 @@ Menu bar (F10) with dropdown navigation and Alt+letter accelerators.
 
 ```bash
 cargo build                # debug build
-cargo test --lib           # 691 tests, no API key needed, ~7s
+cargo test --lib           # 819 tests, no API key needed, ~7s
 cargo test                 # full suite including live API integration tests
 cargo clippy               # zero warnings from project code
 ```
