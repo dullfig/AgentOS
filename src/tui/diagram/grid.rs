@@ -6,7 +6,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 use super::layout::{PositionedGraph, PositionedNode, PositionedEdge, PositionedContainer};
 use super::parser::{Shape, EdgeDir};
 
@@ -173,7 +173,7 @@ fn draw_node(grid: &mut CharGrid, node: &PositionedNode) {
     }
 
     // Label centered in the box (all shapes use middle row)
-    let label_x = x + (w.saturating_sub(node.label.width())) / 2;
+    let label_x = x + (w.saturating_sub(crate::tui::box_drawing::display_width(&node.label))) / 2;
     let label_y = y + node.height / 2;
     grid.put_str(label_x, label_y, &node.label, CellCategory::NodeLabel);
 }
@@ -337,7 +337,7 @@ fn draw_container(grid: &mut CharGrid, container: &PositionedContainer) {
     grid.set(x + w - 1, y, '╗', CellCategory::ContainerBorder);
 
     // Label in top border
-    if container.label.width() + 2 < w {
+    if crate::tui::box_drawing::display_width(&container.label) + 2 < w {
         let lx = x + 2;
         grid.put_str(lx, y, &container.label, CellCategory::ContainerLabel);
     }
@@ -424,7 +424,7 @@ mod tests {
         let lines = render_to_lines(&pg, 40);
         for line in &lines {
             // Count display width (emoji/CJK = 2 cells, not 1)
-            let len: usize = line.spans.iter().map(|s| s.content.width()).sum();
+            let len: usize = line.spans.iter().map(|s| crate::tui::box_drawing::display_width(&s.content)).sum();
             assert!(len <= 40, "line exceeds max width: {len}");
         }
     }
@@ -439,8 +439,8 @@ mod tests {
         // top border width == bottom border width
         let box_lines: Vec<&str> = text.lines().filter(|l| l.contains('┌') || l.contains('└')).collect();
         if box_lines.len() == 2 {
-            let top_w: usize = box_lines[0].width();
-            let bot_w: usize = box_lines[1].width();
+            let top_w: usize = crate::tui::box_drawing::display_width(box_lines[0]);
+            let bot_w: usize = crate::tui::box_drawing::display_width(box_lines[1]);
             assert_eq!(top_w, bot_w, "top and bottom border widths must match");
         }
     }

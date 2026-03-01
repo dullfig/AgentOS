@@ -8,7 +8,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
+
+use super::box_drawing::{build_border, display_width, strip_vs16};
 
 /// A rendered line with a flag indicating whether it should be exempt from word-wrapping
 /// (tables, diagrams, code blocks — anything that must preserve exact column layout).
@@ -177,15 +178,6 @@ fn is_table_line(line: &str) -> bool {
     line.trim_start().starts_with('|')
 }
 
-/// Strip variation selector VS16 (U+FE0F) from text.
-///
-/// Terminals render `⚠\uFE0F` as a 2-column emoji, but `unicode-width` and
-/// ratatui measure `⚠` as 1 column (text presentation). Stripping VS16 forces
-/// text presentation so measurement and rendering agree. Without this, table
-/// columns misalign whenever cells contain `⚠️`, `☁️`, `❤️`, etc.
-fn strip_vs16(s: &str) -> String {
-    s.chars().filter(|&c| c != '\u{FE0F}').collect()
-}
 
 /// Parse and render a markdown pipe-delimited table as box-drawing art.
 fn render_table_block(lines: &[&str]) -> Vec<Line<'static>> {
@@ -238,7 +230,7 @@ fn render_table_block(lines: &[&str]) -> Vec<Line<'static>> {
     for row in &rows {
         for (j, cell) in row.iter().enumerate() {
             if j < col_count {
-                col_widths[j] = col_widths[j].max(cell.width());
+                col_widths[j] = col_widths[j].max(display_width(cell));
             }
         }
     }
@@ -262,7 +254,7 @@ fn render_table_block(lines: &[&str]) -> Vec<Line<'static>> {
         for (j, width) in col_widths.iter().enumerate() {
             let cell = row.get(j).map(|s| s.as_str()).unwrap_or("");
             // Pad using display width so emojis/CJK align correctly
-            let display_w = cell.width();
+            let display_w = display_width(cell);
             let pad = width.saturating_sub(display_w);
             let padded = format!(" {}{} ", cell, " ".repeat(pad));
             let style = if i == 0 {
@@ -296,22 +288,6 @@ fn render_table_block(lines: &[&str]) -> Vec<Line<'static>> {
     result
 }
 
-/// Build a horizontal border line: left + (─×width + 2 padding)... + right
-fn build_border(col_widths: &[usize], left: char, mid: char, right: char) -> String {
-    let mut s = String::new();
-    s.push(left);
-    for (i, w) in col_widths.iter().enumerate() {
-        // +2 for the padding spaces around the cell content
-        for _ in 0..(w + 2) {
-            s.push('─');
-        }
-        if i + 1 < col_widths.len() {
-            s.push(mid);
-        }
-    }
-    s.push(right);
-    s
-}
 
 /// Render plain markdown via tui-markdown (no D2 or table interception).
 fn render_markdown_raw(text: &str) -> Vec<Line<'static>> {
@@ -466,7 +442,7 @@ mod tests {
         let widths: Vec<usize> = lines
             .iter()
             .filter(|t| t.copy_block.is_none())
-            .map(|t| t.line.spans.iter().map(|s| s.content.width()).sum::<usize>())
+            .map(|t| t.line.spans.iter().map(|s| display_width(&s.content)).sum::<usize>())
             .collect();
         let first = widths[0];
         for (i, w) in widths.iter().enumerate() {
@@ -489,7 +465,7 @@ mod tests {
             .iter()
             .filter(|t| t.copy_block.is_none())
             .map(|t| {
-                t.line.spans.iter().map(|s| s.content.width()).sum::<usize>()
+                t.line.spans.iter().map(|s| display_width(&s.content)).sum::<usize>()
             })
             .collect();
         let first = widths[0];
@@ -529,7 +505,7 @@ mod tests {
         let widths: Vec<usize> = lines
             .iter()
             .filter(|t| t.copy_block.is_none())
-            .map(|t| t.line.spans.iter().map(|s| s.content.width()).sum::<usize>())
+            .map(|t| t.line.spans.iter().map(|s| display_width(&s.content)).sum::<usize>())
             .collect();
         let first = widths[0];
         for (i, w) in widths.iter().enumerate() {
@@ -544,7 +520,7 @@ mod tests {
         let widths: Vec<usize> = lines
             .iter()
             .filter(|t| t.copy_block.is_none())
-            .map(|t| t.line.spans.iter().map(|s| s.content.width()).sum::<usize>())
+            .map(|t| t.line.spans.iter().map(|s| display_width(&s.content)).sum::<usize>())
             .collect();
         let first = widths[0];
         for (i, w) in widths.iter().enumerate() {

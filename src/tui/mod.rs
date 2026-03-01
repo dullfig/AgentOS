@@ -12,6 +12,7 @@
 //! held across frames.
 
 pub mod app;
+pub mod box_drawing;
 pub mod commands;
 pub mod context_tree;
 pub mod dashboard;

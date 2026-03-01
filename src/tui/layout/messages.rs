@@ -127,7 +127,7 @@ pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
                     if tagged.nowrap {
                         let mut line = tagged.line;
                         let content_w: usize = line.spans.iter()
-                            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                            .map(|s| crate::tui::box_drawing::display_width(s.content.as_ref()))
                             .sum();
                         // Pad well past the viewport so background extends through any h-scroll.
                         // The Paragraph's scroll clips the visible portion.
