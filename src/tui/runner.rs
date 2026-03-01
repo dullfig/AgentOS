@@ -103,6 +103,7 @@ pub async fn run_tui(
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
     io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
+    io::stdout().execute(crossterm::event::EnableMouseCapture)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -187,6 +188,9 @@ pub async fn run_tui(
                         } else {
                             app.input_line.insert_str(&normalized);
                         }
+                    }
+                    Event::Mouse(mouse) => {
+                        super::mouse::handle_mouse(&mut app, mouse);
                     }
                     _ => {}
                 }
@@ -294,6 +298,7 @@ pub async fn run_tui(
     // Restore terminal — always runs, even if agent task is mid-flight.
     // Pipeline tasks are detached (tokio-spawned), so they'll be dropped
     // when the runtime shuts down.
+    io::stdout().execute(crossterm::event::DisableMouseCapture)?;
     io::stdout().execute(crossterm::event::DisableBracketedPaste)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;

@@ -56,17 +56,23 @@ impl InputLine {
     }
 
     /// Insert a character at the cursor position.
+    /// Bare `\r` is silently dropped — only physical Enter submits.
     pub fn insert_char(&mut self, ch: char) {
+        if ch == '\r' {
+            return;
+        }
         let byte_offset = self.byte_offset();
         self.content.insert(byte_offset, ch);
         self.cursor += 1;
     }
 
     /// Insert a string at the cursor position.
+    /// Normalizes `\r\n` → `\n` and strips bare `\r`.
     pub fn insert_str(&mut self, s: &str) {
+        let clean = s.replace("\r\n", "\n").replace('\r', "");
         let byte_offset = self.byte_offset();
-        self.content.insert_str(byte_offset, s);
-        self.cursor += s.chars().count();
+        self.content.insert_str(byte_offset, &clean);
+        self.cursor += clean.chars().count();
     }
 
     /// Delete the character before the cursor (Backspace).
@@ -111,6 +117,12 @@ impl InputLine {
     /// Move cursor to end.
     pub fn move_end(&mut self) {
         self.cursor = self.content.chars().count();
+    }
+
+    /// Set cursor to an absolute character position (clamped to content length).
+    pub fn set_cursor(&mut self, pos: usize) {
+        let max = self.content.chars().count();
+        self.cursor = pos.min(max);
     }
 
     /// Delete the word before the cursor (Ctrl+Backspace / Ctrl+W).
@@ -386,6 +398,18 @@ mod tests {
         let consumed = il.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         assert!(consumed);
         assert_eq!(il.content(), "a");
+    }
+
+    #[test]
+    fn set_cursor_clamps() {
+        let mut il = InputLine::new();
+        il.set_content("abc");
+        il.set_cursor(1);
+        assert_eq!(il.cursor(), 1);
+        il.set_cursor(100);
+        assert_eq!(il.cursor(), 3); // clamped to length
+        il.set_cursor(0);
+        assert_eq!(il.cursor(), 0);
     }
 
     #[test]

@@ -15,6 +15,8 @@ use unicode_width::UnicodeWidthStr;
 pub struct TaggedLine {
     pub line: Line<'static>,
     pub nowrap: bool,
+    /// If set, this line is a code block header — clicking it copies this raw fenced text.
+    pub copy_block: Option<String>,
 }
 
 /// Parse markdown text and return tagged styled lines suitable for a `Paragraph`.
@@ -51,17 +53,39 @@ pub fn render_markdown(text: &str) -> Vec<TaggedLine> {
         };
 
         let code_source = &remaining[code_start..code_end];
+        let raw_fenced = format!("```{lang}\n{code_source}```");
+
+        // Header line: ─── lang ── 📋 ───
+        let lang_label = if lang.is_empty() { "code" } else { lang };
+        let header_line = Line::from(vec![
+            Span::styled(
+                format!("─── {lang_label} "),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                "\u{1F4CB}",  // 📋 clipboard
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                " ───",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+        result.push(TaggedLine {
+            line: header_line,
+            nowrap: true,
+            copy_block: Some(raw_fenced.clone()),
+        });
 
         if lang == "d2" {
             // D2 diagrams: render as box-drawing art
             for line in super::diagram::render_d2(code_source, 80) {
-                result.push(TaggedLine { line, nowrap: true });
+                result.push(TaggedLine { line, nowrap: true, copy_block: None });
             }
         } else {
             // Other code blocks: render via tui-markdown, tag as nowrap
-            let fenced = format!("```{lang}\n{code_source}```");
-            for line in render_markdown_raw(&fenced) {
-                result.push(TaggedLine { line, nowrap: true });
+            for line in render_markdown_raw(&raw_fenced) {
+                result.push(TaggedLine { line, nowrap: true, copy_block: None });
             }
         }
 
@@ -95,7 +119,7 @@ fn render_with_tables(text: &str) -> Vec<TaggedLine> {
             // Flush any accumulated non-table text
             if !non_table.trim().is_empty() {
                 for line in render_markdown_raw(&non_table) {
-                    result.push(TaggedLine { line, nowrap: false });
+                    result.push(TaggedLine { line, nowrap: false, copy_block: None });
                 }
             }
             non_table.clear();
@@ -106,9 +130,30 @@ fn render_with_tables(text: &str) -> Vec<TaggedLine> {
                 table_lines.push(lines[i]);
                 i += 1;
             }
+            // Header line with click-to-copy for raw table markdown
+            let raw_table = table_lines.join("\n");
+            let header_line = Line::from(vec![
+                Span::styled(
+                    "─── table ",
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    "\u{1F4CB}",  // 📋
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    " ───",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+            result.push(TaggedLine {
+                line: header_line,
+                nowrap: true,
+                copy_block: Some(raw_table),
+            });
             // All table lines are nowrap
             for line in render_table_block(&table_lines) {
-                result.push(TaggedLine { line, nowrap: true });
+                result.push(TaggedLine { line, nowrap: true, copy_block: None });
             }
         } else {
             non_table.push_str(lines[i]);
@@ -120,7 +165,7 @@ fn render_with_tables(text: &str) -> Vec<TaggedLine> {
     // Flush remaining non-table text
     if !non_table.trim().is_empty() {
         for line in render_markdown_raw(&non_table) {
-            result.push(TaggedLine { line, nowrap: false });
+            result.push(TaggedLine { line, nowrap: false, copy_block: None });
         }
     }
 
@@ -417,9 +462,10 @@ mod tests {
         let text = lines_to_text(&lines);
         // VS16 stripped: shows ⚠ not ⚠️, but "Partial" must be intact (not truncated)
         assert!(text.contains("Partial"), "text should not be truncated: {text}");
-        // All rows must have the same display width
+        // All table rows must have the same display width (skip copy header)
         let widths: Vec<usize> = lines
             .iter()
+            .filter(|t| t.copy_block.is_none())
             .map(|t| t.line.spans.iter().map(|s| s.content.width()).sum::<usize>())
             .collect();
         let first = widths[0];
@@ -441,6 +487,7 @@ mod tests {
         let lines = render_markdown(md);
         let widths: Vec<usize> = lines
             .iter()
+            .filter(|t| t.copy_block.is_none())
             .map(|t| {
                 t.line.spans.iter().map(|s| s.content.width()).sum::<usize>()
             })
@@ -481,6 +528,7 @@ mod tests {
         let lines = render_markdown(md);
         let widths: Vec<usize> = lines
             .iter()
+            .filter(|t| t.copy_block.is_none())
             .map(|t| t.line.spans.iter().map(|s| s.content.width()).sum::<usize>())
             .collect();
         let first = widths[0];
@@ -495,6 +543,7 @@ mod tests {
         let lines = render_markdown(md);
         let widths: Vec<usize> = lines
             .iter()
+            .filter(|t| t.copy_block.is_none())
             .map(|t| t.line.spans.iter().map(|s| s.content.width()).sum::<usize>())
             .collect();
         let first = widths[0];

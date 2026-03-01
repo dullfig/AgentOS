@@ -40,6 +40,13 @@ pub enum ThreadsFocus {
     ContextTree,
 }
 
+/// Which sub-pane has focus within the Messages tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessagesFocus {
+    Messages,
+    Input,
+}
+
 /// Actions that can be triggered from the menu bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
@@ -275,6 +282,8 @@ pub struct TuiApp {
     pub pending_command: Option<String>,
     /// Which sub-pane has focus within the Threads tab.
     pub threads_focus: ThreadsFocus,
+    /// Which sub-pane has focus within the Messages tab.
+    pub messages_focus: MessagesFocus,
     /// Tree widget state for the context tree (Threads tab, context pane).
     pub context_tree_state: tui_tree_widget::TreeState<String>,
     /// Whether debug mode is enabled (--debug flag). Controls Debug tab visibility.
@@ -322,6 +331,22 @@ pub struct TuiApp {
     /// Pending tool approval request from the agent handler.
     /// When Some, the TUI shows an inline approval bar and waits for user input.
     pub pending_approval: Option<ToolApprovalRequest>,
+    /// Cached layout regions for mouse hit-testing (updated each render frame).
+    pub layout_areas: super::mouse::LayoutAreas,
+    /// Current text selection state (Messages tab).
+    pub text_selection: super::mouse::TextSelection,
+    /// Plain-text cache of rendered message lines (for clipboard copy).
+    pub rendered_messages_text: Vec<String>,
+    /// Maps each visual line to its chat_log entry index (None = separator/status).
+    pub rendered_messages_entry_map: Vec<Option<usize>>,
+    /// Code block copy targets: (visual_line_index, raw fenced text).
+    pub code_block_copies: Vec<(usize, String)>,
+    /// Scroll offset used when rendered_messages_text was last cached.
+    pub rendered_messages_scroll: u16,
+    /// Vertical scroll offset for the embedded input area (line-based).
+    pub input_scroll: usize,
+    /// Last known cursor position — auto-scroll only when cursor moves.
+    pub input_cursor_last: usize,
     /// Cached D2 source for the Graph tab (generated from organism).
     pub graph_d2_source: String,
     /// Cached rendered lines for the Graph tab.
@@ -444,6 +469,7 @@ impl TuiApp {
             llm_pool: None,
             pending_command: None,
             threads_focus: ThreadsFocus::ThreadList,
+            messages_focus: MessagesFocus::Input,
             context_tree_state: tui_tree_widget::TreeState::default(),
             debug_mode: false,
             menu_state: MenuState::new(build_menu_items(false, &[], None)),
@@ -467,6 +493,14 @@ impl TuiApp {
             selected_agent: None,
             agents_config: AgentsConfig::default(),
             pending_approval: None,
+            layout_areas: super::mouse::LayoutAreas::default(),
+            text_selection: super::mouse::TextSelection::default(),
+            rendered_messages_text: Vec::new(),
+            rendered_messages_entry_map: Vec::new(),
+            code_block_copies: Vec::new(),
+            rendered_messages_scroll: 0,
+            input_scroll: 0,
+            input_cursor_last: 0,
             graph_d2_source: String::new(),
             graph_rendered_lines: Vec::new(),
             graph_rendered_width: 0,

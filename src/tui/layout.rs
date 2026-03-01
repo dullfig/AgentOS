@@ -49,6 +49,13 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
         ])
         .split(f.area());
 
+    // Cache layout areas for mouse hit-testing
+    app.layout_areas.menu_bar = outer[0];
+    app.layout_areas.tab_bar = outer[1];
+    app.layout_areas.content = outer[2];
+    app.layout_areas.input_bar = outer[3];
+    app.layout_areas.status_bar = outer[4];
+
     draw_tab_bar(f, app, outer[1]);
 
     match app.active_tab {
@@ -139,7 +146,7 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     }
 }
 
-fn draw_tab_bar(f: &mut Frame, app: &TuiApp, area: Rect) {
+fn draw_tab_bar(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     let tabs: Vec<(&str, ActiveTab, &str)> = vec![
         ("Messages", ActiveTab::Messages, "1"),
         ("Threads", ActiveTab::Threads, "2"),
@@ -147,6 +154,10 @@ fn draw_tab_bar(f: &mut Frame, app: &TuiApp, area: Rect) {
         ("YAML", ActiveTab::Yaml, "4"),
         ("Activity", ActiveTab::Activity, "5"),
     ];
+
+    // Build tab_regions for mouse hit-testing
+    let mut tab_regions = Vec::new();
+    let mut x = area.x;
 
     let spans: Vec<Span> = tabs
         .iter()
@@ -159,12 +170,21 @@ fn draw_tab_bar(f: &mut Frame, app: &TuiApp, area: Rect) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
+            let label = format!("[^{num} {name}]");
+            let label_len = label.len() as u16;
+            // " " prefix (1 col) + label
+            let x_start = x + 1; // after the space
+            let x_end = x_start + label_len;
+            tab_regions.push((x_start, x_end, *tab));
+            x = x_end;
             vec![
                 Span::raw(" "),
-                Span::styled(format!("[^{num} {name}]"), style),
+                Span::styled(label, style),
             ]
         })
         .collect();
+
+    app.layout_areas.tab_regions = tab_regions;
 
     let line = Line::from(spans);
     let para = Paragraph::new(line);
@@ -753,14 +773,17 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     // ── Render messages ──
     let mut lines: Vec<Line> = Vec::new();
     let mut nowrap: Vec<bool> = Vec::new();
+    let mut entry_map: Vec<Option<usize>> = Vec::new(); // visual line → chat_log index
+    let mut code_block_copies: Vec<(usize, String)> = Vec::new(); // (visual_line, raw fenced text)
     let mut last_entry_start: u32 = 0;
 
-    for entry in &app.chat_log {
+    for (entry_idx, entry) in app.chat_log.iter().enumerate() {
         last_entry_start = lines.len() as u32;
         match entry.role.as_str() {
             "user" => {
                 lines.push(Line::from(""));
                 nowrap.push(false);
+                entry_map.push(None); // separator
                 let user_line = Line::from(vec![
                     Span::styled(
                         "[You] ",
@@ -771,12 +794,15 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
                     Span::raw(entry.text.clone()),
                 ]);
                 let wrapped = wrap_line(user_line, wrap_width);
-                nowrap.extend(std::iter::repeat(false).take(wrapped.len()));
+                let n = wrapped.len();
+                nowrap.extend(std::iter::repeat(false).take(n));
+                entry_map.extend(std::iter::repeat(Some(entry_idx)).take(n));
                 lines.extend(wrapped);
             }
             "agent" => {
                 lines.push(Line::from(""));
                 nowrap.push(false);
+                entry_map.push(None); // separator
                 lines.push(Line::from(vec![Span::styled(
                     "[Agent]",
                     Style::default()
@@ -784,7 +810,12 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )]));
                 nowrap.push(false);
+                entry_map.push(Some(entry_idx)); // header belongs to this entry
                 for tagged in super::markdown::render_markdown(&entry.text) {
+                    // Track code block header lines for click-to-copy
+                    if let Some(raw_fenced) = tagged.copy_block {
+                        code_block_copies.push((lines.len(), raw_fenced));
+                    }
                     if tagged.nowrap {
                         let mut line = tagged.line;
                         let content_w: usize = line.spans.iter()
@@ -805,9 +836,12 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
                         }
                         lines.push(line);
                         nowrap.push(true);
+                        entry_map.push(Some(entry_idx));
                     } else {
                         let wrapped = wrap_line(tagged.line, wrap_width);
-                        nowrap.extend(std::iter::repeat(false).take(wrapped.len()));
+                        let n = wrapped.len();
+                        nowrap.extend(std::iter::repeat(false).take(n));
+                        entry_map.extend(std::iter::repeat(Some(entry_idx)).take(n));
                         lines.extend(wrapped);
                     }
                 }
@@ -815,13 +849,16 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
             "system" => {
                 lines.push(Line::from(""));
                 nowrap.push(false);
+                entry_map.push(None); // separator
                 for text_line in entry.text.lines() {
                     let sys_line = Line::from(vec![Span::styled(
                         text_line.to_string(),
                         Style::default().fg(Color::DarkGray),
                     )]);
                     let wrapped = wrap_line(sys_line, wrap_width);
-                    nowrap.extend(std::iter::repeat(false).take(wrapped.len()));
+                    let n = wrapped.len();
+                    nowrap.extend(std::iter::repeat(false).take(n));
+                    entry_map.extend(std::iter::repeat(Some(entry_idx)).take(n));
                     lines.extend(wrapped);
                 }
             }
@@ -882,6 +919,27 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     app.message_scroll = scroll;
     app.viewport_height = inner_height.min(u16::MAX as u32) as u16;
 
+    // Cache rendered text and entry map for mouse selection
+    app.rendered_messages_text = lines.iter()
+        .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect();
+    app.rendered_messages_entry_map = entry_map;
+    app.code_block_copies = code_block_copies;
+    app.rendered_messages_scroll = scroll;
+    app.layout_areas.messages_content = msg_area;
+
+    // Apply selection highlight to selected lines (bg color on each span)
+    if app.text_selection.active {
+        let sel = &app.text_selection;
+        for abs_line in sel.start_line..=sel.end_line {
+            if abs_line < lines.len() {
+                for span in &mut lines[abs_line].spans {
+                    span.style = span.style.bg(super::mouse::SELECTION_BG);
+                }
+            }
+        }
+    }
+
     let para = Paragraph::new(lines)
         .scroll((scroll, app.message_h_scroll));
     f.render_widget(para, msg_area);
@@ -921,10 +979,10 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         );
     }
 
-    // Render "> " prompt on each wrapped line
+    // Render "> " prompt on each visible line (only first logical line gets "> ")
     for row in 0..input_area.height {
         let prompt_area = Rect::new(input_area.x, input_area.y + row, 2, 1);
-        let prompt_text = if row == 0 { "> " } else { "  " };
+        let prompt_text = if row == 0 && app.input_scroll == 0 { "> " } else { "  " };
         f.render_widget(
             Paragraph::new(Span::styled(
                 prompt_text,
@@ -943,10 +1001,34 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     );
     app.input_area = editor_area;
 
-    // Render the wrapped lines as a Paragraph
+    // Compute cursor position in wrapped lines for auto-scroll
+    let (cx, cy) = multiline_cursor_xy(&input_content, app.input_line.cursor(), input_wrap_width);
+    let cursor_row = cy as usize;
+    let input_h = input_area.height as usize;
+    let total_wrapped = wrapped_input.len();
+    let current_cursor = app.input_line.cursor();
+
+    // Auto-scroll only when cursor moved (typing/pasting) — not on every frame,
+    // so mouse-wheel scroll doesn't get fought by auto-scroll.
+    if current_cursor != app.input_cursor_last {
+        app.input_cursor_last = current_cursor;
+        if cursor_row < app.input_scroll {
+            app.input_scroll = cursor_row;
+        } else if cursor_row >= app.input_scroll + input_h {
+            app.input_scroll = cursor_row + 1 - input_h;
+        }
+    }
+    // Clamp scroll to valid range (always, in case content/window changed)
+    let max_input_scroll = total_wrapped.saturating_sub(input_h);
+    app.input_scroll = app.input_scroll.min(max_input_scroll);
+
+    let v_scroll = app.input_scroll;
+
+    // Render the visible slice of wrapped lines
     let display_lines: Vec<Line> = wrapped_input
         .iter()
-        .take(input_area.height as usize)
+        .skip(v_scroll)
+        .take(input_h)
         .map(|l| {
             let mut styled = l.clone();
             for span in &mut styled.spans {
@@ -957,13 +1039,10 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         .collect();
     f.render_widget(Paragraph::new(display_lines), editor_area);
 
-    // Position cursor within wrapped text.
-    // Cursor is a char offset into the full content (including \n chars).
-    // Map it to visual position in the wrapped output.
-    let (cx, cy) = multiline_cursor_xy(&input_content, app.input_line.cursor(), input_wrap_width);
+    // Position cursor (adjusted for scroll offset)
     let cursor_x = editor_area.x + cx;
-    let cursor_y = editor_area.y + cy;
-    if cursor_y < editor_area.y + editor_area.height {
+    let cursor_y = editor_area.y + (cursor_row - v_scroll) as u16;
+    if cursor_y >= editor_area.y && cursor_y < editor_area.y + editor_area.height {
         f.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
 
@@ -972,7 +1051,7 @@ fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         let input = app.input_text();
         if let Some(suffix) = crate::lsp::command_line::ghost_suffix(&input) {
             let max_w = area.right().saturating_sub(cursor_x + 1); // stay inside border
-            if max_w > 0 {
+            if max_w > 0 && cursor_y >= editor_area.y && cursor_y < editor_area.y + editor_area.height {
                 let ghost_rect = Rect::new(cursor_x, cursor_y, max_w.min(suffix.len() as u16), 1);
                 f.render_widget(
                     Paragraph::new(Span::styled(

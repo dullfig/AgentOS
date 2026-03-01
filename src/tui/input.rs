@@ -11,7 +11,7 @@ use tui_menu::MenuEvent;
 use crate::lsp::LanguageService;
 
 use crate::agent::permissions::ApprovalVerdict;
-use super::app::{ActiveTab, AgentStatus, ChatEntry, InputMode, MenuAction, ProviderCompletion, ThreadsFocus, TuiApp};
+use super::app::{ActiveTab, AgentStatus, ChatEntry, InputMode, MenuAction, MessagesFocus, ProviderCompletion, ThreadsFocus, TuiApp};
 
 /// Dispatch a selected menu action.
 fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
@@ -111,11 +111,19 @@ fn set_input(app: &mut TuiApp, text: &str) {
 
 /// Handle a key event, mutating app state.
 pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
-    // Ctrl+C always quits
+    // Ctrl+C: copy if selection active, quit otherwise
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if app.text_selection.active {
+            // Selection was already copied on mouse-up, just clear it
+            app.text_selection.active = false;
+            return;
+        }
         app.should_quit = true;
         return;
     }
+
+    // Any other keystroke clears text selection
+    app.text_selection.active = false;
 
     // Tool approval mode: [1]/Enter approves, [2]/Esc denies
     if app.pending_approval.is_some() {
@@ -501,12 +509,18 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         KeyCode::Right if app.active_tab == ActiveTab::Graph => {
             app.scroll_graph_right();
         }
-        // Left/Right on Messages tab: horizontal scroll
+        // Left/Right on Messages tab: depends on focus
         KeyCode::Left if app.active_tab == ActiveTab::Messages => {
-            app.scroll_messages_left();
+            match app.messages_focus {
+                MessagesFocus::Input => app.input_line.move_left(),
+                MessagesFocus::Messages => app.scroll_messages_left(),
+            }
         }
         KeyCode::Right if app.active_tab == ActiveTab::Messages => {
-            app.scroll_messages_right();
+            match app.messages_focus {
+                MessagesFocus::Input => app.input_line.move_right(),
+                MessagesFocus::Messages => app.scroll_messages_right(),
+            }
         }
         // Left/Right on ContextTree focus: collapse/expand
         KeyCode::Left
@@ -627,8 +641,11 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 app.message_auto_scroll = true;
             }
         },
-        // Everything else → input line
+        // Everything else → input line (typing implicitly focuses input)
         _ => {
+            if app.active_tab == ActiveTab::Messages {
+                app.messages_focus = MessagesFocus::Input;
+            }
             app.input_line.handle_key(key);
         }
     }
