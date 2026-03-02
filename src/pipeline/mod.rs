@@ -846,9 +846,8 @@ impl AgentPipelineBuilder {
                 handler = handler.with_router_attached(router);
             }
 
-            // Wire the event sender and approval channel
+            // Wire the event sender
             handler.set_event_sender(self.event_tx.clone());
-            handler.set_approval_sender(self.approval_tx.clone());
 
             self = self.register(&def.name, handler)?;
 
@@ -896,8 +895,44 @@ impl AgentPipelineBuilder {
 
         let security = SecurityResolver::from_organism(&self.organism)?;
 
+        // ── Build middleware from organism config ──────────────────────
+
+        // Collect per-agent loop limits and permission policies
+        let mut loop_limits = std::collections::HashMap::new();
+        let mut permission_policies = std::collections::HashMap::new();
+
+        for def in self.organism.agent_listeners() {
+            let config = def
+                .agent_config
+                .as_ref()
+                .cloned()
+                .unwrap_or_default();
+
+            loop_limits.insert(def.name.clone(), config.max_agentic_iterations);
+
+            if !config.permissions.is_empty() {
+                permission_policies.insert(def.name.clone(), config.permissions.clone());
+            }
+        }
+
         let threads = ThreadRegistry::new();
-        let pipeline = Pipeline::new(self.registry, threads);
+        let mut pipeline = Pipeline::new(self.registry, threads);
+
+        // Register middleware (LoopGuard first = outermost layer)
+        if !loop_limits.is_empty() {
+            pipeline.add_middleware(
+                crate::agent::middleware::loop_guard::LoopGuard::new(loop_limits),
+            );
+        }
+
+        // PermissionGate gets the approval channel and event sender
+        pipeline.add_middleware(
+            crate::agent::middleware::permission_gate::PermissionGate::new(
+                permission_policies,
+                Some(self.approval_tx.clone()),
+                Some(self.event_tx.clone()),
+            ),
+        );
 
         Ok(AgentPipeline {
             pipeline,

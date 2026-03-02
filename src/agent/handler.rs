@@ -35,9 +35,6 @@ use async_trait::async_trait;
 use rust_pipeline::prelude::*;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::agent::permissions::{
-    resolve_tier, ApprovalVerdict, PermissionMap, PermissionTier, ToolApprovalRequest,
-};
 use crate::librarian::Librarian;
 use crate::llm::types::{ContentBlock, ToolDefinition, ToolResultBlock};
 use crate::llm::LlmPool;
@@ -70,18 +67,12 @@ pub struct CodingAgentHandler {
     semantic_router: Option<SemanticRouter>,
     /// Maximum routing iterations per turn (prevents infinite loops).
     max_routing_iterations: usize,
-    /// Maximum global agentic loop iterations (Opus→tool→Opus cycles).
-    max_agentic_iterations: usize,
     /// Optional event sender for emitting AgentResponse events to the TUI.
     event_tx: Option<broadcast::Sender<PipelineEvent>>,
     /// Max tokens for LLM completion (from AgentConfig).
     max_tokens: u32,
     /// Model override. None = pool default.
     model: Option<String>,
-    /// Per-tool permission tiers (from AgentConfig).
-    permissions: PermissionMap,
-    /// Channel for sending tool approval requests to the TUI.
-    approval_tx: Option<tokio::sync::mpsc::Sender<ToolApprovalRequest>>,
 }
 
 /// Type alias — generic agent handler (same implementation, data-driven identity).
@@ -89,9 +80,6 @@ pub type AgentHandler = CodingAgentHandler;
 
 /// Default max routing iterations per turn.
 const DEFAULT_MAX_ROUTING_ITERATIONS: usize = 5;
-
-/// Default max agentic loop iterations (Opus→tool→Opus cycles).
-const DEFAULT_MAX_AGENTIC_ITERATIONS: usize = 25;
 
 impl CodingAgentHandler {
     /// Create a new coding agent handler.
@@ -110,12 +98,9 @@ impl CodingAgentHandler {
             system_prompt,
             semantic_router: None,
             max_routing_iterations: DEFAULT_MAX_ROUTING_ITERATIONS,
-            max_agentic_iterations: DEFAULT_MAX_AGENTIC_ITERATIONS,
             event_tx: None,
             max_tokens: 4096,
             model: None,
-            permissions: PermissionMap::new(),
-            approval_tx: None,
         }
     }
 
@@ -136,12 +121,9 @@ impl CodingAgentHandler {
             system_prompt,
             semantic_router: None,
             max_routing_iterations: config.max_routing_iterations,
-            max_agentic_iterations: config.max_agentic_iterations,
             event_tx: None,
             max_tokens: config.max_tokens,
             model: config.model.clone(),
-            permissions: config.permissions.clone(),
-            approval_tx: None,
         }
     }
 
@@ -162,12 +144,9 @@ impl CodingAgentHandler {
             system_prompt,
             semantic_router: None,
             max_routing_iterations: DEFAULT_MAX_ROUTING_ITERATIONS,
-            max_agentic_iterations: DEFAULT_MAX_AGENTIC_ITERATIONS,
             event_tx: None,
             max_tokens: 4096,
             model: None,
-            permissions: PermissionMap::new(),
-            approval_tx: None,
         }
     }
 
@@ -188,12 +167,9 @@ impl CodingAgentHandler {
             system_prompt,
             semantic_router: Some(router),
             max_routing_iterations: DEFAULT_MAX_ROUTING_ITERATIONS,
-            max_agentic_iterations: DEFAULT_MAX_AGENTIC_ITERATIONS,
             event_tx: None,
             max_tokens: 4096,
             model: None,
-            permissions: PermissionMap::new(),
-            approval_tx: None,
         }
     }
 
@@ -219,83 +195,6 @@ impl CodingAgentHandler {
         self.event_tx = Some(tx);
     }
 
-    /// Set the approval channel sender (for tool permission prompts to the TUI).
-    pub fn set_approval_sender(&mut self, tx: tokio::sync::mpsc::Sender<ToolApprovalRequest>) {
-        self.approval_tx = Some(tx);
-    }
-
-    /// Check permission for a tool call. Returns Ok(()) to proceed, Err(denial_msg) if denied.
-    async fn check_tool_permission(
-        &self,
-        tool_name: &str,
-        input: &serde_json::Value,
-        thread_id: &str,
-    ) -> Result<(), String> {
-        let tier = resolve_tier(&self.permissions, tool_name);
-        match tier {
-            PermissionTier::Auto => {
-                self.maybe_emit(PipelineEvent::ToolApproval {
-                    thread_id: thread_id.to_string(),
-                    agent_name: self.name.clone(),
-                    tool_name: tool_name.to_string(),
-                    verdict: "auto".into(),
-                });
-                Ok(())
-            }
-            PermissionTier::Deny => {
-                self.maybe_emit(PipelineEvent::ToolApproval {
-                    thread_id: thread_id.to_string(),
-                    agent_name: self.name.clone(),
-                    tool_name: tool_name.to_string(),
-                    verdict: "denied_by_policy".into(),
-                });
-                Err(format!(
-                    "Permission denied: {tool_name} is blocked by policy"
-                ))
-            }
-            PermissionTier::Prompt => {
-                if let Some(ref tx) = self.approval_tx {
-                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                    let summary = summarize_tool_input(tool_name, input);
-                    let request = ToolApprovalRequest {
-                        tool_name: tool_name.to_string(),
-                        args_summary: summary,
-                        thread_id: thread_id.to_string(),
-                        response_tx: resp_tx,
-                    };
-                    if tx.send(request).await.is_err() {
-                        // TUI disconnected — default to auto (headless mode)
-                        return Ok(());
-                    }
-                    match resp_rx.await {
-                        Ok(ApprovalVerdict::Approved) => {
-                            self.maybe_emit(PipelineEvent::ToolApproval {
-                                thread_id: thread_id.to_string(),
-                                agent_name: self.name.clone(),
-                                tool_name: tool_name.to_string(),
-                                verdict: "approved".into(),
-                            });
-                            Ok(())
-                        }
-                        Ok(ApprovalVerdict::Denied) | Err(_) => {
-                            self.maybe_emit(PipelineEvent::ToolApproval {
-                                thread_id: thread_id.to_string(),
-                                agent_name: self.name.clone(),
-                                tool_name: tool_name.to_string(),
-                                verdict: "denied".into(),
-                            });
-                            Err(format!(
-                                "User denied permission to use {tool_name}"
-                            ))
-                        }
-                    }
-                } else {
-                    // No TUI connected — default to auto (headless mode)
-                    Ok(())
-                }
-            }
-        }
-    }
 
     /// Emit an AgentResponse event if an event sender is attached.
     fn maybe_emit_response(&self, thread_id: &str, result: &HandlerResult) {
@@ -343,26 +242,6 @@ impl CodingAgentHandler {
         }
     }
 
-    /// Increment agentic iteration counter and check limit.
-    /// Returns a reply if the limit is exceeded.
-    fn check_agentic_limit(&self, thread: &mut AgentThread) -> Option<HandlerResult> {
-        thread.agentic_iterations += 1;
-        if thread.agentic_iterations > self.max_agentic_iterations {
-            let msg = format!(
-                "Agentic iteration limit reached ({} iterations). Stopping to prevent runaway loop.",
-                self.max_agentic_iterations
-            );
-            let reply_xml = format!(
-                "<AgentResponse><result>{}</result></AgentResponse>",
-                translate::xml_escape_text(&msg)
-            );
-            Some(Ok(HandlerResponse::Reply {
-                payload_xml: reply_xml.into_bytes(),
-            }))
-        } else {
-            None
-        }
-    }
 
     /// Check if a semantic router is attached.
     pub fn has_semantic_router(&self) -> bool {
@@ -527,142 +406,6 @@ impl CodingAgentHandler {
         }
     }
 
-    /// Dispatch with permission gating.
-    ///
-    /// Wraps `dispatch_or_route` with permission checks on Send results.
-    /// If a tool is denied: synthesizes error results, calls Opus again, loops.
-    async fn dispatch_or_route_with_gate(
-        &self,
-        thread: &mut AgentThread,
-        mut action: ResponseAction,
-        allowed_tools: &[String],
-        thread_id: &str,
-    ) -> HandlerResult {
-        loop {
-            let result = self.dispatch_or_route(thread, action, allowed_tools).await?;
-
-            match result {
-                HandlerResponse::Send { ref to, .. } => {
-                    // Get tool input from pending state for permission check
-                    let tool_input = match &thread.state {
-                        AgentState::AwaitingTools {
-                            pending,
-                            current_index,
-                            ..
-                        } => pending
-                            .get(*current_index)
-                            .map(|p| p.input.clone())
-                            .unwrap_or(serde_json::Value::Null),
-                        _ => serde_json::Value::Null,
-                    };
-
-                    match self.check_tool_permission(to, &tool_input, thread_id).await {
-                        Ok(()) => return Ok(result), // Approved — dispatch
-                        Err(denial) => {
-                            // Denied — synthesize error, try remaining tools or re-invoke Opus
-                            let old_state =
-                                std::mem::replace(&mut thread.state, AgentState::Ready);
-                            if let AgentState::AwaitingTools {
-                                assistant_blocks,
-                                pending,
-                                mut collected,
-                                current_index,
-                            } = old_state
-                            {
-                                // Deny current tool
-                                let tool_use_id = pending
-                                    .get(current_index)
-                                    .map(|p| p.tool_use_id.clone())
-                                    .unwrap_or_default();
-                                collected.push(ToolResultBlock {
-                                    tool_use_id,
-                                    content: denial,
-                                    is_error: true,
-                                });
-
-                                // Try remaining tools in batch
-                                let mut idx = current_index + 1;
-                                while idx < pending.len() {
-                                    let next = &pending[idx];
-                                    match self
-                                        .check_tool_permission(
-                                            &next.tool_name,
-                                            &next.input,
-                                            thread_id,
-                                        )
-                                        .await
-                                    {
-                                        Ok(()) => {
-                                            // Approved — dispatch this one
-                                            let xml = translate::tool_call_to_xml(
-                                                &next.tool_name,
-                                                &next.input,
-                                            );
-                                            let name = next.tool_name.clone();
-                                            self.maybe_emit(PipelineEvent::ToolDispatched {
-                                                thread_id: thread_id.to_string(),
-                                                agent_name: self.name.clone(),
-                                                tool_name: next.tool_name.clone(),
-                                                detail: summarize_tool_input(
-                                                    &next.tool_name,
-                                                    &next.input,
-                                                ),
-                                            });
-                                            thread.state = AgentState::AwaitingTools {
-                                                assistant_blocks,
-                                                pending,
-                                                collected,
-                                                current_index: idx,
-                                            };
-                                            return Ok(HandlerResponse::Send {
-                                                to: name,
-                                                payload_xml: xml.into_bytes(),
-                                            });
-                                        }
-                                        Err(denial) => {
-                                            collected.push(ToolResultBlock {
-                                                tool_use_id: next.tool_use_id.clone(),
-                                                content: denial,
-                                                is_error: true,
-                                            });
-                                            idx += 1;
-                                        }
-                                    }
-                                }
-
-                                // All tools denied — push results and re-invoke Opus
-                                thread.push_assistant_blocks(assistant_blocks);
-                                thread.push_tool_results(collected);
-                                thread.state = AgentState::Ready;
-
-                                self.maybe_emit(PipelineEvent::AgentThinking {
-                                    thread_id: thread_id.to_string(),
-                                    agent_name: self.name.clone(),
-                                });
-
-                                if let Some(limit_result) = self.check_agentic_limit(thread) {
-                                    return limit_result;
-                                }
-
-                                let response = self
-                                    .call_opus(thread)
-                                    .await
-                                    .map_err(|e| PipelineError::Handler(e))?;
-                                action = self.process_response(&response);
-                                continue; // Loop: dispatch the new action
-                            }
-
-                            // Shouldn't reach here (state wasn't AwaitingTools)
-                            return Ok(HandlerResponse::Reply {
-                                payload_xml: b"<AgentResponse><error>unexpected state during permission check</error></AgentResponse>".to_vec(),
-                            });
-                        }
-                    }
-                }
-                _ => return Ok(result), // Reply, None, etc. — pass through
-            }
-        }
-    }
 
     /// Try semantic routing on a final text response.
     ///
@@ -723,11 +466,6 @@ impl CodingAgentHandler {
                     "<{tool_name}_result>{result_xml}</{tool_name}_result>"
                 ));
 
-                // Check agentic iteration limit before calling Opus
-                if let Some(result) = self.check_agentic_limit(thread) {
-                    return result;
-                }
-
                 // Call Opus again — it sees the result in context
                 let response = self
                     .call_opus(thread)
@@ -757,11 +495,6 @@ impl CodingAgentHandler {
                 // Record assistant's text + failure note
                 thread.push_assistant_blocks(blocks);
                 thread.push_user_message(&format!("<system_note>{note}</system_note>"));
-
-                // Check agentic iteration limit before calling Opus
-                if let Some(result) = self.check_agentic_limit(thread) {
-                    return result;
-                }
 
                 // Call Opus again with the failure note
                 let response = self
@@ -854,57 +587,36 @@ impl Handler for CodingAgentHandler {
                         is_error,
                     });
 
-                    // Try dispatching remaining tools (skip denied ones)
-                    let mut next_index = current_index + 1;
-                    while next_index < pending.len() {
+                    // Try dispatching next pending tool (middleware handles permissions)
+                    let next_index = current_index + 1;
+                    if next_index < pending.len() {
                         let next = &pending[next_index];
-                        match self
-                            .check_tool_permission(
+                        let xml = translate::tool_call_to_xml(
+                            &next.tool_name,
+                            &next.input,
+                        );
+                        let next_name = next.tool_name.clone();
+
+                        self.maybe_emit(PipelineEvent::ToolDispatched {
+                            thread_id: thread_id.clone(),
+                            agent_name: self.name.clone(),
+                            tool_name: next.tool_name.clone(),
+                            detail: summarize_tool_input(
                                 &next.tool_name,
                                 &next.input,
-                                &thread_id,
-                            )
-                            .await
-                        {
-                            Ok(()) => {
-                                // Approved — dispatch this tool
-                                let xml = translate::tool_call_to_xml(
-                                    &next.tool_name,
-                                    &next.input,
-                                );
-                                let next_name = next.tool_name.clone();
+                            ),
+                        });
 
-                                self.maybe_emit(PipelineEvent::ToolDispatched {
-                                    thread_id: thread_id.clone(),
-                                    agent_name: self.name.clone(),
-                                    tool_name: next.tool_name.clone(),
-                                    detail: summarize_tool_input(
-                                        &next.tool_name,
-                                        &next.input,
-                                    ),
-                                });
-
-                                thread.state = AgentState::AwaitingTools {
-                                    assistant_blocks,
-                                    pending,
-                                    collected,
-                                    current_index: next_index,
-                                };
-                                return Ok(HandlerResponse::Send {
-                                    to: next_name,
-                                    payload_xml: xml.into_bytes(),
-                                });
-                            }
-                            Err(denial) => {
-                                // Denied — push error result, try next
-                                collected.push(ToolResultBlock {
-                                    tool_use_id: next.tool_use_id.clone(),
-                                    content: denial,
-                                    is_error: true,
-                                });
-                                next_index += 1;
-                            }
-                        }
+                        thread.state = AgentState::AwaitingTools {
+                            assistant_blocks,
+                            pending,
+                            collected,
+                            current_index: next_index,
+                        };
+                        return Ok(HandlerResponse::Send {
+                            to: next_name,
+                            payload_xml: xml.into_bytes(),
+                        });
                     }
 
                     // All collected — record in conversation history and call Opus again
@@ -917,13 +629,6 @@ impl Handler for CodingAgentHandler {
                         thread_id: thread_id.clone(),
                         agent_name: self.name.clone(),
                     });
-
-                    // Check agentic iteration limit before calling Opus
-                    if let Some(result) = self.check_agentic_limit(thread) {
-                        self.maybe_emit_response(&thread_id, &result);
-                        self.maybe_emit_conversation(&thread_id, thread);
-                        return result;
-                    }
 
                     let response = match self.call_opus(thread).await {
                         Ok(r) => r,
@@ -947,7 +652,7 @@ impl Handler for CodingAgentHandler {
                     }
 
                     let result = self
-                        .dispatch_or_route_with_gate(thread, action, &[], &thread_id)
+                        .dispatch_or_route(thread, action, &[])
                         .await;
                     self.maybe_emit_response(&thread_id, &result);
                     self.maybe_emit_conversation(&thread_id, thread);
@@ -977,13 +682,6 @@ impl Handler for CodingAgentHandler {
                 agent_name: self.name.clone(),
             });
 
-            // Check agentic iteration limit before calling Opus
-            if let Some(result) = self.check_agentic_limit(thread) {
-                self.maybe_emit_response(&thread_id, &result);
-                self.maybe_emit_conversation(&thread_id, thread);
-                return result;
-            }
-
             let response = match self.call_opus(thread).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -1006,7 +704,7 @@ impl Handler for CodingAgentHandler {
             }
 
             let result = self
-                .dispatch_or_route_with_gate(thread, action, &[], &thread_id)
+                .dispatch_or_route(thread, action, &[])
                 .await;
             self.maybe_emit_response(&thread_id, &result);
             self.maybe_emit_conversation(&thread_id, thread);
@@ -1633,7 +1331,6 @@ mod tests {
         assert_eq!(handler.max_tokens, 4096);
         assert_eq!(handler.model, None);
         assert_eq!(handler.max_routing_iterations, 5);
-        assert_eq!(handler.max_agentic_iterations, 25);
         assert_eq!(handler.system_prompt, "test prompt");
     }
 
@@ -1694,70 +1391,6 @@ mod tests {
         assert!(handler.has_semantic_router());
     }
 
-    // ── Agentic iteration limit tests ──
-
-    #[test]
-    fn from_config_reads_max_agentic_iterations() {
-        let pool = mock_pool();
-        let config = AgentConfig {
-            max_agentic_iterations: 50,
-            ..AgentConfig::default()
-        };
-        let handler = CodingAgentHandler::from_config(
-            "test-agent".into(),
-            pool,
-            sample_tool_defs(),
-            "test".into(),
-            &config,
-        );
-        assert_eq!(handler.max_agentic_iterations, 50);
-    }
-
-    #[test]
-    fn check_agentic_limit_increments_counter() {
-        let pool = mock_pool();
-        let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
-        let mut thread = AgentThread::new();
-        assert_eq!(thread.agentic_iterations, 0);
-
-        let result = handler.check_agentic_limit(&mut thread);
-        assert!(result.is_none());
-        assert_eq!(thread.agentic_iterations, 1);
-    }
-
-    #[test]
-    fn check_agentic_limit_returns_reply_at_limit() {
-        let pool = mock_pool();
-        let config = AgentConfig {
-            max_agentic_iterations: 2,
-            ..AgentConfig::default()
-        };
-        let handler = CodingAgentHandler::from_config(
-            "test-agent".into(),
-            pool,
-            sample_tool_defs(),
-            "test".into(),
-            &config,
-        );
-        let mut thread = AgentThread::new();
-
-        // Iteration 1: ok
-        assert!(handler.check_agentic_limit(&mut thread).is_none());
-        // Iteration 2: ok (at limit, not over)
-        assert!(handler.check_agentic_limit(&mut thread).is_none());
-        // Iteration 3: over limit — should return reply
-        let result = handler.check_agentic_limit(&mut thread);
-        assert!(result.is_some());
-        let reply = result.unwrap().unwrap();
-        match reply {
-            HandlerResponse::Reply { payload_xml } => {
-                let xml = String::from_utf8(payload_xml).unwrap();
-                assert!(xml.contains("iteration limit reached"));
-                assert!(xml.contains("AgentResponse"));
-            }
-            _ => panic!("expected Reply"),
-        }
-    }
 
     // ── ConversationEntry conversion tests ──
 
