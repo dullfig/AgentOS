@@ -263,6 +263,8 @@ pub struct AgentPipelineBuilder {
     approval_tx: tokio::sync::mpsc::Sender<crate::agent::permissions::ToolApprovalRequest>,
     /// Receiver end of approval channel (consumed by TUI runner).
     approval_rx: Option<tokio::sync::mpsc::Receiver<crate::agent::permissions::ToolApprovalRequest>>,
+    /// Debug mode: enables DebugGate middleware and PermissionGate override.
+    debug: bool,
 }
 
 impl AgentPipelineBuilder {
@@ -287,7 +289,14 @@ impl AgentPipelineBuilder {
             buffer_tool_definitions: Vec::new(),
             approval_tx,
             approval_rx: Some(approval_rx),
+            debug: false,
         }
+    }
+
+    /// Enable debug mode: registers DebugGate middleware and overrides PermissionGate.
+    pub fn with_debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
     }
 
     /// Register a tool-peer handler for a listener defined in the organism.
@@ -918,19 +927,41 @@ impl AgentPipelineBuilder {
         let threads = ThreadRegistry::new();
         let mut pipeline = Pipeline::new(self.registry, threads);
 
-        // Register middleware (LoopGuard first = outermost layer)
+        // Collect agent names for DebugGate
+        let agent_names: std::collections::HashSet<String> = self
+            .organism
+            .agent_listeners()
+            .iter()
+            .map(|def| def.name.clone())
+            .collect();
+
+        // Register middleware: DebugGate → LoopGuard → PermissionGate
+        // DebugGate (pre_dispatch): gates agent→tool calls before handler
+        if self.debug {
+            pipeline.add_middleware(
+                crate::agent::middleware::debug_gate::DebugGate::new(
+                    true,
+                    agent_names,
+                    Some(self.approval_tx.clone()),
+                    Some(self.event_tx.clone()),
+                ),
+            );
+        }
+
+        // LoopGuard (pre_dispatch): counts iterations, short-circuits at limit
         if !loop_limits.is_empty() {
             pipeline.add_middleware(
                 crate::agent::middleware::loop_guard::LoopGuard::new(loop_limits),
             );
         }
 
-        // PermissionGate gets the approval channel and event sender
+        // PermissionGate (post_dispatch): auto-approves in debug mode, normal policy otherwise
         pipeline.add_middleware(
             crate::agent::middleware::permission_gate::PermissionGate::new(
                 permission_policies,
                 Some(self.approval_tx.clone()),
                 Some(self.event_tx.clone()),
+                self.debug,
             ),
         );
 

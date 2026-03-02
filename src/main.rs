@@ -230,7 +230,7 @@ async fn main() -> Result<()> {
 
     // Build pipeline — LLM pool is optional (user may configure via TUI)
     let has_pool = pool.is_some();
-    let mut builder = AgentPipelineBuilder::new(org, &data_dir);
+    let mut builder = AgentPipelineBuilder::new(org, &data_dir).with_debug(debug);
     if let Some(p) = pool {
         builder = builder
             .with_llm_pool(p)

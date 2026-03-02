@@ -29,6 +29,8 @@ pub struct PermissionGate {
     approval_tx: Option<mpsc::Sender<ToolApprovalRequest>>,
     /// Event broadcast
     event_tx: Option<broadcast::Sender<PipelineEvent>>,
+    /// When true, auto-approve all tiers (debug mode — DebugGate handles gating).
+    debug_override: bool,
 }
 
 impl PermissionGate {
@@ -41,11 +43,13 @@ impl PermissionGate {
         policies: HashMap<String, PermissionMap>,
         approval_tx: Option<mpsc::Sender<ToolApprovalRequest>>,
         event_tx: Option<broadcast::Sender<PipelineEvent>>,
+        debug_override: bool,
     ) -> Self {
         Self {
             policies,
             approval_tx,
             event_tx,
+            debug_override,
         }
     }
 
@@ -73,6 +77,19 @@ impl Middleware for PermissionGate {
         _payload: &ValidatedPayload,
         response: HandlerResponse,
     ) -> Result<PostDispatchVerdict, PipelineError> {
+        // Debug override: DebugGate handles all gating, skip permission checks
+        if self.debug_override {
+            if let HandlerResponse::Send { ref to, .. } = response {
+                self.emit(PipelineEvent::ToolApproval {
+                    thread_id: meta.thread_id.clone(),
+                    agent_name: meta.to.clone(),
+                    tool_name: to.clone(),
+                    verdict: "auto_debug".into(),
+                });
+            }
+            return Ok(PostDispatchVerdict::PassThrough(response));
+        }
+
         // Only intercept Send responses from agents with policies
         let to = match response {
             HandlerResponse::Send { ref to, .. } => to.clone(),
@@ -192,7 +209,7 @@ mod tests {
         let mut policies = HashMap::new();
         policies.insert("coding-agent".into(), perms);
 
-        let gate = PermissionGate::new(policies, None, None);
+        let gate = PermissionGate::new(policies, None, None, false);
         let result = gate
             .post_dispatch(
                 &meta_for("coding-agent"),
@@ -217,7 +234,7 @@ mod tests {
         let mut policies = HashMap::new();
         policies.insert("coding-agent".into(), perms);
 
-        let gate = PermissionGate::new(policies, None, None);
+        let gate = PermissionGate::new(policies, None, None, false);
         let result = gate
             .post_dispatch(
                 &meta_for("coding-agent"),
@@ -245,7 +262,7 @@ mod tests {
         let mut policies = HashMap::new();
         policies.insert("coding-agent".into(), perms);
 
-        let gate = PermissionGate::new(policies, None, None);
+        let gate = PermissionGate::new(policies, None, None, false);
 
         // Reply response — should pass through regardless of permissions
         let result = gate
@@ -288,7 +305,7 @@ mod tests {
         policies.insert("coding-agent".into(), perms);
 
         let (approval_tx, mut approval_rx) = mpsc::channel(1);
-        let gate = PermissionGate::new(policies, Some(approval_tx), None);
+        let gate = PermissionGate::new(policies, Some(approval_tx), None, false);
 
         // Spawn a task to approve the request
         tokio::spawn(async move {
@@ -322,7 +339,7 @@ mod tests {
         policies.insert("coding-agent".into(), perms);
 
         let (approval_tx, mut approval_rx) = mpsc::channel(1);
-        let gate = PermissionGate::new(policies, Some(approval_tx), None);
+        let gate = PermissionGate::new(policies, Some(approval_tx), None, false);
 
         // Spawn a task to deny the request
         tokio::spawn(async move {
@@ -353,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_agent_passes_through() {
         let policies = HashMap::new(); // empty — no agents registered
-        let gate = PermissionGate::new(policies, None, None);
+        let gate = PermissionGate::new(policies, None, None, false);
 
         let result = gate
             .post_dispatch(
@@ -368,5 +385,85 @@ mod tests {
             result,
             PostDispatchVerdict::PassThrough(HandlerResponse::Send { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn debug_override_passes_prompt_tier() {
+        let mut perms = PermissionMap::new();
+        perms.insert("file-reader".into(), PermissionTier::Prompt);
+        let mut policies = HashMap::new();
+        policies.insert("coding-agent".into(), perms);
+
+        // debug_override=true — should pass through without prompting
+        let gate = PermissionGate::new(policies, None, None, true);
+        let result = gate
+            .post_dispatch(
+                &meta_for("coding-agent"),
+                &dummy_payload(),
+                send_response("file-reader"),
+            )
+            .await
+            .unwrap();
+
+        match result {
+            PostDispatchVerdict::PassThrough(HandlerResponse::Send { to, .. }) => {
+                assert_eq!(to, "file-reader");
+            }
+            _ => panic!("expected PassThrough for debug_override on Prompt tier"),
+        }
+    }
+
+    #[tokio::test]
+    async fn debug_override_passes_deny_tier() {
+        let mut perms = PermissionMap::new();
+        perms.insert("command-exec".into(), PermissionTier::Deny);
+        let mut policies = HashMap::new();
+        policies.insert("coding-agent".into(), perms);
+
+        // debug_override=true — even Deny tier should pass through
+        let gate = PermissionGate::new(policies, None, None, true);
+        let result = gate
+            .post_dispatch(
+                &meta_for("coding-agent"),
+                &dummy_payload(),
+                send_response("command-exec"),
+            )
+            .await
+            .unwrap();
+
+        match result {
+            PostDispatchVerdict::PassThrough(HandlerResponse::Send { to, .. }) => {
+                assert_eq!(to, "command-exec");
+            }
+            _ => panic!("expected PassThrough for debug_override on Deny tier"),
+        }
+    }
+
+    #[tokio::test]
+    async fn debug_override_false_preserves_behavior() {
+        let mut perms = PermissionMap::new();
+        perms.insert("command-exec".into(), PermissionTier::Deny);
+        let mut policies = HashMap::new();
+        policies.insert("coding-agent".into(), perms);
+
+        // debug_override=false — Deny tier should still deny
+        let gate = PermissionGate::new(policies, None, None, false);
+        let result = gate
+            .post_dispatch(
+                &meta_for("coding-agent"),
+                &dummy_payload(),
+                send_response("command-exec"),
+            )
+            .await
+            .unwrap();
+
+        match result {
+            PostDispatchVerdict::Replace(HandlerResponse::Send { to, payload_xml }) => {
+                assert_eq!(to, "coding-agent");
+                let text = String::from_utf8_lossy(&payload_xml);
+                assert!(text.contains("Permission denied"));
+            }
+            _ => panic!("expected Replace for Deny tier with debug_override=false"),
+        }
     }
 }
