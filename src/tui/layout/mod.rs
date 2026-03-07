@@ -50,7 +50,7 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
             Constraint::Length(1),                // tab bar
             Constraint::Min(5),                  // content area
             Constraint::Length(input_height),     // input (textarea) — hidden on Messages/YAML
-            Constraint::Length(1),                // status bar
+            Constraint::Length(2),                // status bar (2 lines)
         ])
         .split(f.area());
 

@@ -207,36 +207,40 @@ pub(super) fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
 
     let tab_name = app.active_tab.label();
 
-    let tab_hint = "^1..9:Tabs";
-
-    let agent_label = if let TabId::Agent(ref name) = app.active_tab {
-        format!("[Agent: {name}]")
-    } else {
-        String::new()
-    };
-
-    let mut spans = Vec::new();
+    // ── Line 1: context info ──
+    let mut line1 = Vec::new();
     if app.debug_mode {
-        spans.push(Span::styled(
+        line1.push(Span::styled(
             " [DEBUG]",
             Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
         ));
     }
-    spans.extend([
+    line1.extend([
         Span::styled(" [", Style::default().fg(Color::DarkGray)),
         status_text,
         Span::styled("]", Style::default().fg(Color::DarkGray)),
     ]);
 
-    if !agent_label.is_empty() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            &agent_label,
+    if let TabId::Agent(ref name) = app.active_tab {
+        line1.push(Span::raw("  "));
+        line1.push(Span::styled(
+            format!("[Agent: {name}]"),
             Style::default().fg(Color::Magenta),
         ));
     }
 
-    spans.extend([
+    // Workspace name from drive slot
+    if let Ok(guard) = app.drive_slot.try_read() {
+        if let Some(ref drive) = *guard {
+            line1.push(Span::raw("  "));
+            line1.push(Span::styled(
+                format!("[{}]", drive.name()),
+                Style::default().fg(Color::White),
+            ));
+        }
+    }
+
+    line1.extend([
         Span::raw("  "),
         Span::styled(
             format!(
@@ -258,23 +262,22 @@ pub(super) fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
         ),
     ]);
 
-    // YAML tab: show diagnostics + extra shortcuts
+    // YAML tab: show diagnostics
     if app.active_tab == TabId::Yaml && !app.diag_summary.is_empty() {
         let diag_color = if app.diag_summary.contains("error") { Color::Red } else { Color::Yellow };
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(format!("[{}]", app.diag_summary), Style::default().fg(diag_color)));
+        line1.push(Span::raw("  "));
+        line1.push(Span::styled(format!("[{}]", app.diag_summary), Style::default().fg(diag_color)));
     }
 
+    // ── Line 2: keyboard shortcuts ──
+    let tab_hint = "^1..9:Tabs";
     let shortcuts = if app.active_tab == TabId::Yaml {
-        format!("^S:Validate  ^Space:Complete  ^H:Hover  {tab_hint}  ^C:Quit")
+        format!(" ^S:Validate  ^Space:Complete  ^H:Hover  {tab_hint}  ^C:Quit")
     } else {
-        format!("Enter:Send  {tab_hint}  Tab:Focus  \u{2191}\u{2193}:Scroll  Esc:Clear  ^C:Quit")
+        format!(" Enter:Send  {tab_hint}  Tab:Focus  \u{2191}\u{2193}:Scroll  \u{2190}\u{2192}:H-Scroll  Esc:Clear  ^C:Quit")
     };
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(shortcuts, Style::default().fg(Color::DarkGray)));
+    let line2 = vec![Span::styled(shortcuts, Style::default().fg(Color::DarkGray))];
 
-    let status = Line::from(spans);
-
-    let para = Paragraph::new(status);
+    let para = Paragraph::new(vec![Line::from(line1), Line::from(line2)]);
     f.render_widget(para, area);
 }
