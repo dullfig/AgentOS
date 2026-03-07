@@ -133,11 +133,11 @@ pub fn grep_definition() -> ToolDefinition {
     }
 }
 
-/// Build a ToolDefinition for the command-exec tool.
-pub fn command_exec_definition() -> ToolDefinition {
+/// Build a ToolDefinition for the bash tool.
+pub fn bash_definition() -> ToolDefinition {
     ToolDefinition {
-        name: "command-exec".into(),
-        description: "Execute a shell command. Only allowed commands can be run (cargo, git, npm, etc). Captures stdout, stderr, and exit code.".into(),
+        name: "bash".into(),
+        description: "Execute a shell command in the workspace. Only allowed commands can be run (cargo, git, npm, etc). Captures stdout, stderr, and exit code.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -212,7 +212,7 @@ pub fn definition_for_peer(name: &str) -> Option<ToolDefinition> {
         "file-edit" => Some(file_edit_definition()),
         "glob" => Some(glob_definition()),
         "grep" => Some(grep_definition()),
-        "command-exec" => Some(command_exec_definition()),
+        "bash" => Some(bash_definition()),
         "codebase-index" => Some(codebase_index_definition()),
         _ => None,
     }
@@ -295,9 +295,9 @@ mod tests {
     }
 
     #[test]
-    fn command_exec_def_is_valid() {
-        let def = command_exec_definition();
-        assert_eq!(def.name, "command-exec");
+    fn bash_def_is_valid() {
+        let def = bash_definition();
+        assert_eq!(def.name, "bash");
         let props = &def.input_schema["properties"];
         assert!(props.get("command").is_some());
         assert!(props.get("timeout").is_some());
@@ -321,7 +321,7 @@ mod tests {
             "file-edit",
             "glob",
             "grep",
-            "command-exec",
+            "bash",
             "codebase-index",
         ]);
         assert_eq!(defs.len(), 7);
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(defs[2].name, "file-edit");
         assert_eq!(defs[3].name, "glob");
         assert_eq!(defs[4].name, "grep");
-        assert_eq!(defs[5].name, "command-exec");
+        assert_eq!(defs[5].name, "bash");
         assert_eq!(defs[6].name, "codebase-index");
     }
 

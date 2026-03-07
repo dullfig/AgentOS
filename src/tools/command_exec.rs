@@ -153,13 +153,13 @@ impl Handler for CommandExecTool {
 #[async_trait]
 impl ToolPeer for CommandExecTool {
     fn name(&self) -> &str {
-        "command-exec"
+        "bash"
     }
 
     fn wit(&self) -> &str {
         r#"
 /// Execute a shell command. Only allowed commands can be run (cargo, git, npm, etc). Captures stdout, stderr, and exit code.
-interface command-exec {
+interface bash {
     record request {
         /// The command to execute
         command: string,
@@ -334,10 +334,10 @@ mod tests {
     #[test]
     fn command_exec_metadata() {
         let tool = CommandExecTool::new();
-        assert_eq!(tool.name(), "command-exec");
+        assert_eq!(tool.name(), "bash");
         let iface = crate::wit::parser::parse_wit(tool.wit()).unwrap();
-        assert_eq!(iface.name, "command-exec");
-        assert_eq!(iface.request_tag(), "CommandExecRequest");
+        assert_eq!(iface.name, "bash");
+        assert_eq!(iface.request_tag(), "BashRequest");
         assert!(iface.request.fields.iter().any(|f| f.name == "command"));
     }
 }

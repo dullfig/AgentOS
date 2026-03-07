@@ -200,7 +200,7 @@ fn register_required_tools(
             "file-edit" => builder.register_tool(name, crate::tools::file_edit::FileEditTool)?,
             "glob" => builder.register_tool(name, crate::tools::glob_tool::GlobTool)?,
             "grep" => builder.register_tool(name, crate::tools::grep::GrepTool)?,
-            "command-exec" => {
+            "bash" => {
                 builder.register_tool(name, crate::tools::command_exec::CommandExecTool::new())?
             }
             _ => return Err(format!("unknown required tool: '{name}'")),
@@ -245,9 +245,9 @@ listeners:
     handler: tools.file_read.handle
     description: "Read files"
 
-  - name: command-exec
-    payload_class: tools.CommandExecRequest
-    handler: tools.command_exec.handle
+  - name: bash
+    payload_class: tools.BashRequest
+    handler: tools.bash.handle
     description: "Command execution"
 
 profiles:
@@ -260,7 +260,7 @@ profiles:
         let dir = tempfile::TempDir::new().unwrap();
         let builder = AgentPipelineBuilder::new(org, dir.path());
 
-        let requires = vec!["file-read".to_string(), "command-exec".to_string()];
+        let requires = vec!["file-read".to_string(), "bash".to_string()];
         let result = register_required_tools(builder, &requires);
         assert!(result.is_ok());
     }

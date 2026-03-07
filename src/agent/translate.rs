@@ -46,7 +46,7 @@ pub fn xml_tag_for_tool(tool_name: &str) -> String {
         "file-edit" => "FileEditRequest".to_string(),
         "glob" => "GlobRequest".to_string(),
         "grep" => "GrepRequest".to_string(),
-        "command-exec" => "CommandExecRequest".to_string(),
+        "bash" => "BashRequest".to_string(),
         "codebase-index" => "CodeIndexRequest".to_string(),
         _ => to_pascal_case_request(tool_name),
     }
@@ -60,7 +60,7 @@ pub fn payload_tag_for_tool(tool_name: &str) -> String {
         "file-edit" => "FileEditRequest".to_string(),
         "glob" => "GlobRequest".to_string(),
         "grep" => "GrepRequest".to_string(),
-        "command-exec" => "CommandExecRequest".to_string(),
+        "bash" => "BashRequest".to_string(),
         "codebase-index" => "CodeIndexRequest".to_string(),
         _ => to_pascal_case_request(tool_name),
     }

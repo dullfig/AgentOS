@@ -162,7 +162,7 @@ mod tests {
     fn test_tools() -> Vec<(String, String)> {
         vec![
             ("file-read".into(), "Read files".into()),
-            ("command-exec".into(), "Run commands".into()),
+            ("bash".into(), "Run commands".into()),
         ]
     }
 
@@ -200,7 +200,7 @@ mod tests {
         let tools = test_tools();
         let result = resolve_prompt(Some("base"), &reg, &tools).unwrap();
         assert!(result.contains("file-read"));
-        assert!(result.contains("command-exec"));
+        assert!(result.contains("bash"));
         assert!(result.contains("Available tools"));
         assert!(!result.contains("{tool_definitions}"));
     }

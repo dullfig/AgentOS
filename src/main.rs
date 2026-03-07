@@ -59,9 +59,9 @@ listeners:
         codebase-index: auto
         file-write: prompt
         file-edit: prompt
-        command-exec: prompt
+        bash: prompt
     librarian: true
-    peers: [file-read, file-write, file-edit, glob, grep, list-dir, command-exec, codebase-index]
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, bash, codebase-index]
 
   - name: llm-pool
     payload_class: llm.LlmRequest
@@ -115,15 +115,15 @@ listeners:
     handler: tools.list_dir.handle
     description: "List directory contents"
 
-  - name: command-exec
-    payload_class: tools.CommandExecRequest
+  - name: bash
+    payload_class: tools.BashRequest
     handler: tools.command_exec.handle
     description: "Command execution"
 
 profiles:
   coding:
     linux_user: agentos
-    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, list-dir, command-exec, codebase-index, llm-pool, librarian]
+    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, list-dir, bash, codebase-index, llm-pool, librarian]
     network: [llm-pool]
     journal: retain_forever
 "#;
@@ -266,7 +266,7 @@ async fn main() -> Result<()> {
         .to_anyhow()?
         .register_tool("list-dir", VDriveListDir::new(slot.clone()))
         .to_anyhow()?
-        .register_tool("command-exec", VDriveCommandExec::new(slot))
+        .register_tool("bash", VDriveCommandExec::new(slot))
         .to_anyhow()?
         .with_buffer_nodes(&PathBuf::from(&work_dir))
         .to_anyhow()?;

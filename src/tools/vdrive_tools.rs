@@ -623,13 +623,13 @@ impl Handler for VDriveCommandExec {
 #[async_trait]
 impl ToolPeer for VDriveCommandExec {
     fn name(&self) -> &str {
-        "command-exec"
+        "bash"
     }
 
     fn wit(&self) -> &str {
         r#"
 /// Execute a shell command in the workspace. Only allowed commands can be run (cargo, git, npm, etc). Captures stdout, stderr, and exit code.
-interface command-exec {
+interface bash {
     record request {
         /// The command to execute
         command: string,

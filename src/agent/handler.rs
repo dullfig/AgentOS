@@ -790,7 +790,7 @@ pub(crate) fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        "command-exec" => input
+        "bash" => input
             .get("command")
             .and_then(|v| v.as_str())
             .map(|s| {
@@ -857,7 +857,7 @@ mod tests {
     }
 
     fn sample_tool_defs() -> Vec<ToolDefinition> {
-        crate::agent::tools::build_tool_definitions(&["file-read", "command-exec"])
+        crate::agent::tools::build_tool_definitions(&["file-read", "bash"])
     }
 
     #[test]
@@ -1273,7 +1273,7 @@ mod tests {
     fn summarize_command_exec() {
         let input = serde_json::json!({"command": "cargo test --lib"});
         assert_eq!(
-            summarize_tool_input("command-exec", &input),
+            summarize_tool_input("bash", &input),
             "cargo test --lib"
         );
     }
@@ -1282,7 +1282,7 @@ mod tests {
     fn summarize_command_exec_truncates() {
         let long_cmd = "a".repeat(100);
         let input = serde_json::json!({"command": long_cmd});
-        let result = summarize_tool_input("command-exec", &input);
+        let result = summarize_tool_input("bash", &input);
         assert!(result.len() <= 63); // 57 + "..."
         assert!(result.ends_with("..."));
     }

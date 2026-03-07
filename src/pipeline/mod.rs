@@ -480,7 +480,7 @@ impl AgentPipelineBuilder {
                 "file-edit",
                 "glob",
                 "grep",
-                "command-exec",
+                "bash",
             ];
             for req in &buf.requires {
                 if !known_tools.contains(&req.as_str()) {
@@ -1242,15 +1242,15 @@ listeners:
     handler: tools.grep.handle
     description: "Grep search"
 
-  - name: command-exec
-    payload_class: tools.CommandExecRequest
+  - name: bash
+    payload_class: tools.BashRequest
     handler: tools.command_exec.handle
     description: "Command execution"
 
 profiles:
   admin:
     linux_user: agentos-admin
-    listeners: [file-read, file-write, file-edit, glob, grep, command-exec, llm-pool]
+    listeners: [file-read, file-write, file-edit, glob, grep, bash, llm-pool]
     network: [llm-pool]
     journal:
       retain_days: 90
@@ -1271,7 +1271,7 @@ profiles:
             .register_tool("file-edit", crate::tools::file_edit::FileEditTool)?
             .register_tool("glob", crate::tools::glob_tool::GlobTool)?
             .register_tool("grep", crate::tools::grep::GrepTool)?
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
     }
 
     #[tokio::test]
@@ -1297,7 +1297,7 @@ profiles:
 
         assert!(pipeline.organism().get_listener("llm-pool").is_some());
         assert!(pipeline.organism().get_listener("file-read").is_some());
-        assert!(pipeline.organism().get_listener("command-exec").is_some());
+        assert!(pipeline.organism().get_listener("bash").is_some());
     }
 
     #[tokio::test]
@@ -1324,7 +1324,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_port_manager()
             .unwrap()
@@ -1350,14 +1350,14 @@ profiles:
         // Inject a CommandExec request under admin profile
         let envelope2 = build_envelope(
             "test",
-            "command-exec",
+            "bash",
             "thread-2",
-            b"<CommandExecRequest><command>echo hello</command></CommandExecRequest>",
+            b"<BashRequest><command>echo hello</command></BashRequest>",
         )
         .unwrap();
 
         let result = pipeline
-            .inject_checked(envelope2, "thread-2", "admin", "command-exec")
+            .inject_checked(envelope2, "thread-2", "admin", "bash")
             .await;
         assert!(result.is_ok());
 
@@ -1388,7 +1388,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_port_manager()
             .unwrap()
@@ -1426,17 +1426,17 @@ profiles:
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("cannot reach"));
 
-        // Restricted profile also CANNOT reach command-exec
+        // Restricted profile also CANNOT reach bash
         let cmd_envelope = build_envelope(
             "test",
-            "command-exec",
+            "bash",
             "thread-3",
-            b"<CommandExecRequest><command>whoami</command></CommandExecRequest>",
+            b"<BashRequest><command>whoami</command></BashRequest>",
         )
         .unwrap();
 
         let err = pipeline
-            .inject_checked(cmd_envelope, "thread-3", "restricted", "command-exec")
+            .inject_checked(cmd_envelope, "thread-3", "restricted", "bash")
             .await;
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("cannot reach"));
@@ -1526,7 +1526,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_port_manager()
             .unwrap();
@@ -1594,15 +1594,15 @@ listeners:
     handler: tools.grep.handle
     description: "Grep search"
 
-  - name: command-exec
-    payload_class: tools.CommandExecRequest
+  - name: bash
+    payload_class: tools.BashRequest
     handler: tools.command_exec.handle
     description: "Command execution"
 
 profiles:
   admin:
     linux_user: agentos-admin
-    listeners: [file-read, file-write, file-edit, glob, grep, command-exec, llm-pool, librarian, codebase-index]
+    listeners: [file-read, file-write, file-edit, glob, grep, bash, llm-pool, librarian, codebase-index]
     network: [llm-pool]
     journal:
       retain_days: 90
@@ -1674,7 +1674,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap();
 
         // Librarian should be attached
@@ -1713,7 +1713,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_port_manager()
             .unwrap()
@@ -1767,7 +1767,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap()
             .build()
             .unwrap();
@@ -1834,7 +1834,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap();
 
         assert!(builder.code_index.is_some());
@@ -1898,8 +1898,8 @@ listeners:
     handler: tools.grep.handle
     description: "Grep search"
 
-  - name: command-exec
-    payload_class: tools.CommandExecRequest
+  - name: bash
+    payload_class: tools.BashRequest
     handler: tools.command_exec.handle
     description: "Command execution"
 
@@ -1909,12 +1909,12 @@ listeners:
     description: "Opus coding agent"
     is_agent: true
     librarian: true
-    peers: [file-read, file-write, file-edit, glob, grep, command-exec, codebase-index]
+    peers: [file-read, file-write, file-edit, glob, grep, bash, codebase-index]
 
 profiles:
   coding:
     linux_user: agentos-coding
-    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, command-exec, codebase-index, llm-pool, librarian]
+    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, bash, codebase-index, llm-pool, librarian]
     network: [llm-pool]
     journal: retain_forever
   restricted:
@@ -1952,7 +1952,7 @@ profiles:
 
         assert!(pipeline.organism().get_listener("coding-agent").is_some());
         assert!(pipeline.organism().get_listener("file-read").is_some());
-        assert!(pipeline.organism().get_listener("command-exec").is_some());
+        assert!(pipeline.organism().get_listener("bash").is_some());
     }
 
     #[tokio::test]
@@ -1983,7 +1983,7 @@ profiles:
         // Coding profile can reach everything it needs
         assert!(pipeline.security().can_reach("coding", "coding-agent"));
         assert!(pipeline.security().can_reach("coding", "file-read"));
-        assert!(pipeline.security().can_reach("coding", "command-exec"));
+        assert!(pipeline.security().can_reach("coding", "bash"));
         assert!(pipeline.security().can_reach("coding", "codebase-index"));
         assert!(pipeline.security().can_reach("coding", "llm-pool"));
         assert!(pipeline.security().can_reach("coding", "librarian"));
@@ -2016,8 +2016,8 @@ profiles:
 
         // Restricted profile CANNOT reach coding agent — structural impossibility
         assert!(!pipeline.security().can_reach("restricted", "coding-agent"));
-        // Restricted CANNOT reach command-exec
-        assert!(!pipeline.security().can_reach("restricted", "command-exec"));
+        // Restricted CANNOT reach bash
+        assert!(!pipeline.security().can_reach("restricted", "bash"));
         // Restricted CANNOT reach llm-pool
         assert!(!pipeline.security().can_reach("restricted", "llm-pool"));
         // Restricted CAN reach file-read and codebase-index
@@ -2209,7 +2209,7 @@ profiles:
         assert!(names.contains(&"file-edit"));
         assert!(names.contains(&"glob"));
         assert!(names.contains(&"grep"));
-        assert!(names.contains(&"command-exec"));
+        assert!(names.contains(&"bash"));
         assert!(names.contains(&"codebase-index"));
 
         // Also verify the pipeline builds cleanly
@@ -2775,8 +2775,8 @@ listeners:
       This tool searches file contents using regular expressions.
       Use it when you need to find code patterns, string occurrences, or text across files.
 
-  - name: command-exec
-    payload_class: tools.CommandExecRequest
+  - name: bash
+    payload_class: tools.BashRequest
     handler: tools.command_exec.handle
     description: "Command execution"
     semantic_description: |
@@ -2789,12 +2789,12 @@ listeners:
     handler: agent.handle
     description: "Opus coding agent"
     agent: true
-    peers: [file-read, file-write, file-edit, glob, grep, command-exec]
+    peers: [file-read, file-write, file-edit, glob, grep, bash]
 
 profiles:
   coding:
     linux_user: agentos-coding
-    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, command-exec, llm-pool]
+    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, bash, llm-pool]
     network: [llm-pool]
     journal: retain_forever
 "#;
@@ -2905,8 +2905,8 @@ listeners:
     handler: tools.file_edit.handle
     description: "File edit"
 
-  - name: command-exec
-    payload_class: tools.CommandExecRequest
+  - name: bash
+    payload_class: tools.BashRequest
     handler: tools.command_exec.handle
     description: "Command execution"
 
@@ -2917,7 +2917,7 @@ listeners:
     agent:
       prompt: "safety & coding_base"
       max_tokens: 4096
-    peers: [file-read, file-write, file-edit, glob, grep, command-exec]
+    peers: [file-read, file-write, file-edit, glob, grep, bash]
 
   - name: diagnostics
     payload_class: agent.DiagnosticsTask
@@ -2931,7 +2931,7 @@ listeners:
 profiles:
   coding:
     linux_user: agentos-coding
-    listeners: [coding-agent, diagnostics, file-read, file-write, file-edit, glob, grep, command-exec, llm-pool]
+    listeners: [coding-agent, diagnostics, file-read, file-write, file-edit, glob, grep, bash, llm-pool]
     network: [llm-pool]
     journal: retain_forever
 "#;
@@ -2962,7 +2962,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_agents()
             .unwrap()
@@ -3066,7 +3066,7 @@ profiles:
             .unwrap()
             .register_tool("grep", crate::tools::grep::GrepTool)
             .unwrap()
-            .register_tool("command-exec", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_coding_agent()
             .unwrap()
