@@ -3,7 +3,7 @@
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use super::super::app::{TabId, AgentStatus, TuiApp};
@@ -34,7 +34,8 @@ pub(super) fn draw_command_popup(f: &mut Frame, app: &TuiApp, input_area: Rect) 
 
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
-    // Clear background
+    // Clear background — Clear blanks every cell in the rect before we draw
+    f.render_widget(Clear, popup_area);
     f.render_widget(
         Paragraph::new("").style(Style::default().bg(Color::Black)),
         popup_area,

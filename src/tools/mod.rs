@@ -9,6 +9,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod glob_tool;
 pub mod grep;
+pub mod vdrive_tools;
 
 use std::collections::HashMap;
 

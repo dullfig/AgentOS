@@ -4,14 +4,33 @@
 //! Single call site for width measurement — if we need to add VS16
 //! stripping or other normalization later, one place to change.
 
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 /// Display width of a string in terminal columns.
 ///
-/// Thin wrapper around `UnicodeWidthStr::width()`. Emoji = 2, CJK = 2,
-/// ASCII = 1. Single call site for width measurement.
+/// Iterates by grapheme cluster so that multi-codepoint emoji (ZWJ sequences,
+/// flags, skin-tone variants) are measured as the terminal renders them —
+/// typically 2 columns — rather than summing individual codepoint widths.
 pub fn display_width(s: &str) -> usize {
-    UnicodeWidthStr::width(s)
+    s.graphemes(true)
+        .map(|g| grapheme_width(g))
+        .sum()
+}
+
+/// Display width of a single grapheme cluster.
+///
+/// Multi-codepoint clusters (ZWJ emoji, flags, etc.) are 2 columns wide in
+/// terminals regardless of how many codepoints compose them.
+pub fn grapheme_width(g: &str) -> usize {
+    let cp_count = g.chars().count();
+    if cp_count > 1 {
+        // Multi-codepoint cluster: ZWJ sequence, flag, skin-tone variant → 2 columns
+        2
+    } else {
+        // Single codepoint: defer to unicode-width
+        UnicodeWidthStr::width(g)
+    }
 }
 
 /// Strip Variation Selector VS16 (U+FE0F) from text.

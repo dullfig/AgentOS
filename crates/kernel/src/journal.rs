@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::error::KernelResult;
-use super::wal::{EntryType, WalEntry};
+use crate::error::KernelResult;
+use crate::wal::{EntryType, WalEntry};
 
 /// Retention policy for journal entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

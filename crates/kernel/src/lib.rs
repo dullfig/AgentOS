@@ -314,8 +314,6 @@ mod tests {
 
     #[test]
     fn dispatch_verifies_all_three_stores() {
-        // After dispatch, thread table, context store, AND journal
-        // must all reflect the operation.
         let dir = TempDir::new().unwrap();
         let mut kernel = Kernel::open(&dir.path().join("data")).unwrap();
 
@@ -344,19 +342,13 @@ mod tests {
 
     #[test]
     fn crash_mid_dispatch_recovery() {
-        // Simulate: WAL batch written for dispatch, but state not updated
-        // (process killed between WAL write and state mutation).
-        // On restart, WAL replay should reconstruct the state.
         let dir = TempDir::new().unwrap();
         let data_dir = dir.path().join("data");
 
-        // First session: write WAL entries manually (simulating crash
-        // after WAL write but before state update)
         {
             let mut kernel = Kernel::open(&data_dir).unwrap();
             let root = kernel.initialize_root("org", "admin").unwrap();
 
-            // Manually write a dispatch batch to WAL without updating state
             let mut dispatch_payload = Vec::new();
             dispatch_payload.extend_from_slice(root.as_bytes());
             dispatch_payload.push(0);
@@ -377,31 +369,22 @@ mod tests {
                 wal::WalEntry::new(wal::EntryType::JournalDispatched, journal_payload),
             ];
 
-            // Write to WAL — then "crash" (drop without applying to state)
             kernel.wal.append_batch(&batch).unwrap();
-            // NOT calling threads.extend_chain, contexts.create, journal.log_dispatch
         }
 
-        // Second session: WAL replay should recover the dispatch
         let kernel = Kernel::open(&data_dir).unwrap();
-
-        // Root should exist (from first WAL entry)
         assert!(kernel.threads().root_uuid().is_some());
 
-        // Journal should have the crash-msg entry (recovered from WAL)
         let entry = kernel.journal().get("crash-msg");
         assert!(entry.is_some());
         assert_eq!(entry.unwrap().status, journal::MessageStatus::Dispatched);
 
-        // Context should be allocated (recovered from WAL)
         let root_uuid = kernel.threads().root_uuid().unwrap().to_string();
         assert!(kernel.contexts().exists(&root_uuid));
     }
 
     #[test]
     fn crash_mid_prune_recovery() {
-        // Simulate: WAL batch written for prune, but state not updated.
-        // On restart, WAL replay should apply the prune.
         let dir = TempDir::new().unwrap();
         let data_dir = dir.path().join("data");
 
@@ -410,12 +393,10 @@ mod tests {
             let mut kernel = Kernel::open(&data_dir).unwrap();
             let root = kernel.initialize_root("org", "admin").unwrap();
 
-            // Do a real dispatch so we have something to prune
             child_uuid = kernel
                 .dispatch_message("console", "handler", &root, "msg-prune")
                 .unwrap();
 
-            // Now manually write the prune WAL batch without applying
             let batch = vec![
                 wal::WalEntry::new(wal::EntryType::ThreadPrune, child_uuid.as_bytes().to_vec()),
                 wal::WalEntry::new(
@@ -428,21 +409,14 @@ mod tests {
                 ),
             ];
             kernel.wal.append_batch(&batch).unwrap();
-            // "crash" — drop without applying prune to state
         }
 
-        // Second session: WAL replay should apply the prune
         let kernel = Kernel::open(&data_dir).unwrap();
-
-        // The child thread should have been pruned (removed by cleanup
-        // or chain shortened). The context should be released.
         assert!(!kernel.contexts().exists(&child_uuid));
     }
 
     #[test]
     fn undelivered_messages_found_after_crash() {
-        // Dispatch messages, "crash" before delivery, reopen,
-        // find_undelivered returns the in-flight messages for re-dispatch.
         let dir = TempDir::new().unwrap();
         let data_dir = dir.path().join("data");
 
@@ -450,7 +424,6 @@ mod tests {
             let mut kernel = Kernel::open(&data_dir).unwrap();
             let root = kernel.initialize_root("org", "admin").unwrap();
 
-            // Dispatch 3 messages — none delivered
             kernel
                 .dispatch_message("console", "handler-a", &root, "msg-a")
                 .unwrap();
@@ -460,16 +433,13 @@ mod tests {
             kernel
                 .dispatch_message("console", "handler-c", &root, "msg-c")
                 .unwrap();
-            // "crash" — drop without marking any delivered
         }
 
-        // Second session: recover and find undelivered
         let kernel = Kernel::open(&data_dir).unwrap();
 
         let undelivered = kernel.journal().find_undelivered();
         assert_eq!(undelivered.len(), 3);
 
-        // All three messages should be recoverable
         let ids: Vec<&str> = undelivered.iter().map(|e| e.message_id.as_str()).collect();
         assert!(ids.contains(&"msg-a"));
         assert!(ids.contains(&"msg-b"));
@@ -478,17 +448,13 @@ mod tests {
 
     #[test]
     fn full_lifecycle_all_stores_consistent() {
-        // Full lifecycle: init → dispatch → deliver → prune
-        // Verify all three stores are consistent at every step.
         let dir = TempDir::new().unwrap();
         let mut kernel = Kernel::open(&dir.path().join("data")).unwrap();
 
-        // 1. Initialize
         let root = kernel.initialize_root("org", "admin").unwrap();
         assert!(kernel.threads().lookup(&root).is_some());
         assert_eq!(kernel.journal().count(), 0);
 
-        // 2. Dispatch
         let child = kernel
             .dispatch_message("console", "worker", &root, "msg-lifecycle")
             .unwrap();
@@ -500,21 +466,13 @@ mod tests {
             journal::MessageStatus::Dispatched
         );
 
-        // 3. Prune (worker responds)
         let prune = kernel.prune_thread(&child).unwrap();
         assert!(prune.is_some());
         let prune = prune.unwrap();
-        assert_eq!(prune.target, "org"); // pruned back to root segment
+        assert_eq!(prune.target, "org");
 
-        // Context for the child thread released
         assert!(!kernel.contexts().exists(&child));
-
-        // Journal: message marked delivered (by thread)
-        // Note: mark_delivered_by_thread matches on thread_id, which is the root UUID
-        // The message was dispatched on root's thread
     }
-
-    // ── Folding Context tests (Milestone 2) ──
 
     #[test]
     fn fold_thread_basic() {
@@ -522,12 +480,10 @@ mod tests {
         let mut kernel = Kernel::open(&dir.path().join("data")).unwrap();
         let root = kernel.initialize_root("org", "admin").unwrap();
 
-        // Dispatch to create a child thread
         let child = kernel
             .dispatch_message("console", "handler", &root, "msg-fold")
             .unwrap();
 
-        // Add some content to the child's context
         kernel.contexts_mut().add_segment(
             &root,
             context_store::ContextSegment {
@@ -541,11 +497,8 @@ mod tests {
             },
         ).unwrap();
 
-        // Fold the child thread
         let result = kernel.fold_thread(&child, b"[handler completed work]").unwrap();
         assert!(result.is_some());
-
-        // Child context should be released
         assert!(!kernel.contexts().exists(&child));
     }
 
@@ -555,7 +508,6 @@ mod tests {
         let mut kernel = Kernel::open(&dir.path().join("data")).unwrap();
         let root = kernel.initialize_root("org", "admin").unwrap();
 
-        // Add content to root context
         kernel.contexts_mut().create(&root).unwrap();
         kernel.contexts_mut().add_segment(
             &root,
@@ -576,7 +528,6 @@ mod tests {
 
         kernel.fold_thread(&child, b"[summary]").unwrap();
 
-        // Parent's original segment still there
         let parent_seg = kernel.contexts().get_segment(&root, "parent-data").unwrap();
         assert_eq!(parent_seg.content, b"parent context data");
     }
@@ -591,8 +542,6 @@ mod tests {
             .unwrap();
 
         kernel.fold_thread(&child, b"[folded]").unwrap();
-
-        // WAL should have entries (verify by checking WAL size > 0)
         assert!(kernel.wal().size().unwrap() > 0);
     }
 
@@ -611,7 +560,6 @@ mod tests {
             kernel.fold_thread(&child_uuid, b"[recovered fold]").unwrap();
         }
 
-        // Reopen — WAL replay should recover state
         let kernel = Kernel::open(&data_dir).unwrap();
         assert!(!kernel.contexts().exists(&child_uuid));
     }
@@ -628,7 +576,6 @@ mod tests {
 
     #[test]
     fn prune_thread_still_works() {
-        // Verify the existing release-based prune is unaffected
         let dir = TempDir::new().unwrap();
         let mut kernel = Kernel::open(&dir.path().join("data")).unwrap();
         let root = kernel.initialize_root("org", "admin").unwrap();
@@ -650,28 +597,9 @@ mod tests {
             .dispatch_message("console", "handler", &root, "msg-ccr")
             .unwrap();
 
-        // Verify child context exists before fold
         assert!(kernel.contexts().exists(&root));
 
         kernel.fold_thread(&child, b"[done]").unwrap();
-
-        // Child context released
         assert!(!kernel.contexts().exists(&child));
-    }
-
-    #[test]
-    fn kernel_op_context_folded_variant() {
-        // Verify the KernelOpType::ContextFolded variant constructs
-        use crate::pipeline::events::{KernelOpType, PipelineEvent};
-        let event = PipelineEvent::KernelOp {
-            op: KernelOpType::ContextFolded,
-            thread_id: "t1".into(),
-        };
-        if let PipelineEvent::KernelOp { op, thread_id } = event {
-            assert!(matches!(op, KernelOpType::ContextFolded));
-            assert_eq!(thread_id, "t1");
-        } else {
-            panic!("wrong variant");
-        }
     }
 }

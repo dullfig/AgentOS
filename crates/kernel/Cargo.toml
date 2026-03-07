@@ -1,0 +1,16 @@
+[package]
+name = "agentos-kernel"
+version = "0.1.0"
+edition = "2021"
+description = "Durable kernel state for AgentOS — WAL, thread table, context store, journal."
+
+[dependencies]
+thiserror = "2"
+crc32fast = "1"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+memmap2 = "0.9"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

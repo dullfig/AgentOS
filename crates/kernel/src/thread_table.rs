@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use super::wal::{EntryType, WalEntry};
+use crate::wal::{EntryType, WalEntry};
 
 /// Result of pruning a thread chain for a response.
 #[derive(Debug, PartialEq)]
@@ -51,7 +51,7 @@ pub struct ThreadTable {
 
 impl ThreadTable {
     /// Open or create the thread table.
-    pub fn open(path: &Path) -> super::error::KernelResult<Self> {
+    pub fn open(path: &Path) -> crate::error::KernelResult<Self> {
         Ok(Self {
             chain_to_uuid: HashMap::new(),
             records: HashMap::new(),

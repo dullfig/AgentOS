@@ -98,6 +98,8 @@ pub async fn run_tui(
     models_config: crate::config::ModelsConfig,
     agents_config: crate::config::AgentsConfig,
     has_pool: bool,
+    drive_slot: crate::tools::vdrive_tools::DriveSlot,
+    auto_mount_msg: Option<String>,
 ) -> anyhow::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -109,6 +111,7 @@ pub async fn run_tui(
 
     let mut app = TuiApp::new();
     app.debug_mode = debug;
+    app.drive_slot = drive_slot;
     app.llm_pool = pipeline.llm_pool();
     app.models_config = std::sync::Arc::new(tokio::sync::Mutex::new(models_config));
     app.agents_config = agents_config;
@@ -124,7 +127,15 @@ pub async fn run_tui(
     app.open_agent_tab(&first_agent);
     app.rebuild_menu();
 
-    // If no LLM pool at boot, show a helpful welcome message
+    // Show auto-mount status or no-key message
+    if let Some(msg) = auto_mount_msg {
+        super::commands::push_feedback(&mut app, &msg);
+    } else {
+        super::commands::push_feedback(
+            &mut app,
+            "No workspace mounted. Use /vdrive mount <path> or /vdrive create <name>.",
+        );
+    }
     if !has_pool {
         super::commands::push_feedback(
             &mut app,

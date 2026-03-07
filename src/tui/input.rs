@@ -76,6 +76,18 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             let tab = app.active_tab.clone();
             app.close_tab(&tab);
         }
+        MenuAction::VDriveMount => {
+            set_input(app, "/vdrive mount ");
+        }
+        MenuAction::VDriveUnmount => {
+            app.pending_command = Some("/vdrive unmount".to_string());
+        }
+        MenuAction::VDriveCreate => {
+            set_input(app, "/vdrive create ");
+        }
+        MenuAction::VDriveInfo => {
+            app.pending_command = Some("/vdrive info".to_string());
+        }
     }
 }
 

@@ -118,6 +118,10 @@ pub enum MenuAction {
     SetModel,
     ShowAbout,
     ShowShortcuts,
+    VDriveMount,
+    VDriveUnmount,
+    VDriveCreate,
+    VDriveInfo,
 }
 
 /// Agent processing status.
@@ -413,6 +417,9 @@ pub struct TuiApp {
     pub input_scroll: usize,
     /// Last known cursor position — auto-scroll only when cursor moves.
     pub input_cursor_last: usize,
+    /// Shared drive slot — the agent's sandboxed workspace.
+    /// Shared with all VDrive tools so mount/unmount is instantly visible.
+    pub drive_slot: crate::tools::vdrive_tools::DriveSlot,
     /// Cached D2 source for the Graph tab (generated from organism).
     pub graph_d2_source: String,
     /// Cached rendered lines for the Graph tab.
@@ -471,6 +478,15 @@ pub fn build_menu_items(
             "File",
             vec![
                 MenuItem::item("New Task", MenuAction::NewTask),
+                MenuItem::group(
+                    "Virtual Drives",
+                    vec![
+                        MenuItem::item("Mount Folder", MenuAction::VDriveMount),
+                        MenuItem::item("Unmount", MenuAction::VDriveUnmount),
+                        MenuItem::item("Create Workspace", MenuAction::VDriveCreate),
+                        MenuItem::item("Info", MenuAction::VDriveInfo),
+                    ],
+                ),
                 MenuItem::item("Close Tab ^W", MenuAction::CloseTab),
                 MenuItem::item("Quit      ^C", MenuAction::Quit),
             ],
@@ -574,6 +590,7 @@ impl TuiApp {
             rendered_messages_scroll: 0,
             input_scroll: 0,
             input_cursor_last: 0,
+            drive_slot: crate::tools::vdrive_tools::empty_slot(),
             graph_d2_source: String::new(),
             graph_rendered_lines: Vec::new(),
             graph_rendered_width: 0,

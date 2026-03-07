@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher;
 
-use super::error::{KernelError, KernelResult};
+use crate::error::{KernelError, KernelResult};
 
 /// Discriminant byte for WAL entry types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

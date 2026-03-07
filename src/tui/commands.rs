@@ -128,6 +128,41 @@ pub static COMMANDS: &[SlashCommand] = &[
         ],
     },
     SlashCommand {
+        name: "/vdrive",
+        aliases: &[],
+        description: "Manage virtual drive workspaces (mount/unmount/create/info)",
+        has_arg: true,
+        args: &[],
+        subcommands: &[
+            SubcommandSpec {
+                name: "mount",
+                description: "Mount a folder as the agent's sandboxed workspace",
+                args: &[ArgSpec {
+                    name: "path",
+                    kind: ArgKind::Free("folder path"),
+                }],
+            },
+            SubcommandSpec {
+                name: "unmount",
+                description: "Unmount the current workspace",
+                args: &[],
+            },
+            SubcommandSpec {
+                name: "create",
+                description: "Create a new named workspace and mount it",
+                args: &[ArgSpec {
+                    name: "name",
+                    kind: ArgKind::Free("workspace name"),
+                }],
+            },
+            SubcommandSpec {
+                name: "info",
+                description: "Show info about the mounted workspace",
+                args: &[],
+            },
+        ],
+    },
+    SlashCommand {
         name: "/agents",
         aliases: &[],
         description: "Manage favorite agents",
@@ -343,6 +378,9 @@ pub async fn execute(
                 }
             }
         }
+        "/vdrive" => {
+            execute_vdrive(app, arg, arg2).await
+        }
         "/agents" => {
             if !arg2.is_empty() {
                 execute_agents_with_arg(app, arg, arg2)
@@ -392,6 +430,194 @@ pub async fn execute(
 pub fn push_feedback(app: &mut TuiApp, text: &str) {
     app.chat_log.push(ChatEntry::new("system", text));
     app.message_auto_scroll = true;
+}
+
+/// Handle `/vdrive` subcommands.
+async fn execute_vdrive(app: &mut TuiApp, subcommand: &str, arg: &str) -> CommandResult {
+    use crate::vdrive;
+    use std::path::Path;
+
+    match subcommand {
+        "mount" => {
+            let path_str = arg.trim();
+            if path_str.is_empty() {
+                return CommandResult {
+                    feedback: Some("Usage: /vdrive mount <folder-path>".into()),
+                    handled: true,
+                };
+            }
+
+            {
+                let guard = app.drive_slot.read().await;
+                if guard.is_some() {
+                    return CommandResult {
+                        feedback: Some("A drive is already mounted. Use /vdrive unmount first.".into()),
+                        handled: true,
+                    };
+                }
+            }
+
+            let path = Path::new(path_str);
+
+            // Warn about dangerously broad mounts
+            let warning = if let Ok(canonical) = path.canonicalize() {
+                let s = canonical.to_string_lossy();
+                if is_sensitive_path(&s) {
+                    Some(format!(
+                        "\u{26a0} Warning: mounting '{}' gives the agent read/write access to everything inside it.\n",
+                        canonical.display()
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            match vdrive::mount(path) {
+                Ok(drive) => {
+                    let name = drive.name().to_string();
+                    let root = drive.root().display().to_string();
+                    *app.drive_slot.write().await = Some(drive);
+                    let mut msg = String::new();
+                    if let Some(w) = warning {
+                        msg.push_str(&w);
+                    }
+                    msg.push_str(&format!("Mounted: {name} ({root})\nAgent tools are now sandboxed to this folder."));
+                    CommandResult {
+                        feedback: Some(msg),
+                        handled: true,
+                    }
+                }
+                Err(e) => CommandResult {
+                    feedback: Some(format!("Mount failed: {e}")),
+                    handled: true,
+                },
+            }
+        }
+        "unmount" => {
+            let was_mounted = app.drive_slot.write().await.take().is_some();
+            if was_mounted {
+                CommandResult {
+                    feedback: Some("Drive unmounted.".into()),
+                    handled: true,
+                }
+            } else {
+                CommandResult {
+                    feedback: Some("No drive is currently mounted.".into()),
+                    handled: true,
+                }
+            }
+        }
+        "create" => {
+            let name = arg.trim();
+            if name.is_empty() {
+                return CommandResult {
+                    feedback: Some("Usage: /vdrive create <name>".into()),
+                    handled: true,
+                };
+            }
+
+            {
+                let guard = app.drive_slot.read().await;
+                if guard.is_some() {
+                    return CommandResult {
+                        feedback: Some("A drive is already mounted. Use /vdrive unmount first.".into()),
+                        handled: true,
+                    };
+                }
+            }
+
+            match vdrive::create_and_mount(name) {
+                Ok((_path, drive)) => {
+                    let dname = drive.name().to_string();
+                    let root = drive.root().display().to_string();
+                    *app.drive_slot.write().await = Some(drive);
+                    CommandResult {
+                        feedback: Some(format!("Created and mounted: {dname} ({root})")),
+                        handled: true,
+                    }
+                }
+                Err(e) => CommandResult {
+                    feedback: Some(format!("Failed to create workspace: {e}")),
+                    handled: true,
+                },
+            }
+        }
+        "info" => {
+            let guard = app.drive_slot.read().await;
+            if let Some(ref drive) = *guard {
+                let name = drive.name();
+                let root = drive.root().display().to_string();
+                CommandResult {
+                    feedback: Some(format!("Mounted drive: {name} ({root})")),
+                    handled: true,
+                }
+            } else {
+                // Show available workspaces
+                match vdrive::list_workspaces() {
+                    Ok(ws) if ws.is_empty() => CommandResult {
+                        feedback: Some("No drive mounted. No workspaces found.\nUse /vdrive mount <path> or /vdrive create <name>.".into()),
+                        handled: true,
+                    },
+                    Ok(ws) => {
+                        let mut lines = vec!["No drive mounted. Available workspaces:".to_string()];
+                        for w in &ws {
+                            lines.push(format!("  {} — {}", w.name, w.path.display()));
+                        }
+                        lines.push("\nUse /vdrive mount <path> to mount one.".into());
+                        CommandResult {
+                            feedback: Some(lines.join("\n")),
+                            handled: true,
+                        }
+                    }
+                    Err(e) => CommandResult {
+                        feedback: Some(format!("Failed to list workspaces: {e}")),
+                        handled: true,
+                    },
+                }
+            }
+        }
+        "" => CommandResult {
+            feedback: Some(
+                "Usage:\n  /vdrive mount <path>    Mount a folder as sandboxed workspace\n  /vdrive unmount         Unmount current workspace\n  /vdrive create <name>   Create a new workspace and mount it\n  /vdrive info            Show mounted drive or list workspaces"
+                    .into(),
+            ),
+            handled: true,
+        },
+        other => CommandResult {
+            feedback: Some(format!(
+                "Unknown /vdrive subcommand: {other}\nUsage: /vdrive mount|unmount|create|info"
+            )),
+            handled: true,
+        },
+    }
+}
+
+/// Check if a canonicalized path looks like a filesystem root, home dir, or system directory.
+fn is_sensitive_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_lowercase();
+
+    // Filesystem roots: "/", "C:/", "D:/" etc.
+    if lower == "/" || (lower.len() == 3 && lower.ends_with(":/")) {
+        return true;
+    }
+
+    // Windows system directories
+    if lower.starts_with("c:/windows") || lower.starts_with("c:/program files") {
+        return true;
+    }
+
+    // Home directory (exact match, not subdirectories)
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        let home_normalized = home.replace('\\', "/");
+        if normalized.trim_end_matches('/') == home_normalized.trim_end_matches('/') {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Handle `/agents` subcommands.

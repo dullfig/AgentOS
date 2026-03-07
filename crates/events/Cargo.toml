@@ -1,0 +1,5 @@
+[package]
+name = "agentos-events"
+version = "0.1.0"
+edition = "2021"
+description = "Shared event types for AgentOS pipeline — PipelineEvent, ConversationEntry, KernelOpType."

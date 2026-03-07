@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/kernel", "crates/events", "crates/vdrive"]
+
 [package]
 name = "agentos"
 version = "0.1.0"
@@ -7,6 +10,11 @@ authors = ["Daniel Ullfig <dullfig@github.com>"]
 
 [dependencies]
 rust-pipeline = { path = "../rust-pipeline" }
+
+# Workspace crates
+agentos-kernel = { path = "crates/kernel" }
+agentos-events = { path = "crates/events" }
+agentos-vdrive = { path = "crates/vdrive" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
@@ -25,6 +33,9 @@ thiserror = "2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 async-trait = "0.1"
 
+# D2 diagram rendering engine
+d2-ascii = { path = "../d2" }
+
 # TUI presentation layer
 ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
@@ -33,6 +44,7 @@ tui-menu = "0.3"
 ratatui-code-editor = { git = "https://github.com/dullfig/ratatui-code-editor", branch = "ratatui-0.30" }
 tui-markdown = "0.3"
 unicode-width = "0.2"
+unicode-segmentation = "1"
 
 # WASM component runtime
 wasmtime = { version = "41", features = ["component-model"] }
@@ -51,6 +63,9 @@ code-llm = { path = "../code-llm" }
 
 # Clipboard access (input bar Ctrl+V paste)
 arboard = "3"
+
+# Virtual drive workspaces (QCOW2)
+imago = "0.2"
 
 # Core tool dependencies
 glob = "0.3"

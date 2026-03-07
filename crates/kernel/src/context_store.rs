@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::error::{KernelError, KernelResult};
-use super::wal::{EntryType, WalEntry};
+use crate::error::{KernelError, KernelResult};
+use crate::wal::{EntryType, WalEntry};
 
 /// Status of a context segment — Active (working set) or Shelved (backing store).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

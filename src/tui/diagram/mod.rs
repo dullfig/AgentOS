@@ -1,12 +1,8 @@
-//! D2 diagram renderer — parses D2 syntax and renders box-drawing art.
+//! D2 diagram renderer — delegates to `d2-ascii` for Sugiyama layout,
+//! A* edge routing, bitmask box-drawing, SQL tables, and sequence diagrams.
 //!
 //! LLMs emit D2 in fenced code blocks (`\`\`\`d2`). This module intercepts
-//! those blocks and replaces them with deterministic box-drawing renderings.
-//! No external dependencies — pure Rust, ratatui-native output.
-
-pub mod parser;
-pub mod layout;
-pub mod grid;
+//! those blocks and replaces them with rendered box-drawing art via d2-ascii.
 
 use ratatui::text::Line;
 
@@ -15,11 +11,22 @@ use crate::organism::{ListenerDef, Organism};
 /// Render D2 source text to styled ratatui Lines.
 ///
 /// `d2_source` is the raw D2 text (without the fenced code markers).
-/// `max_width` constrains the output to fit the terminal width.
-pub fn render_d2(d2_source: &str, max_width: usize) -> Vec<Line<'static>> {
-    let graph = parser::parse_d2(d2_source);
-    let positioned = layout::layout(&graph, max_width);
-    grid::render_to_lines(&positioned, max_width)
+/// `_max_width` is accepted for API compatibility but d2-ascii handles layout internally.
+pub fn render_d2(d2_source: &str, _max_width: usize) -> Vec<Line<'static>> {
+    // Debug: log D2 input to /tmp/d2_debug.log for diagnosing parse failures
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(r"C:\tmp\d2_debug.log")
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "--- D2 INPUT ---\n{d2_source}\n--- END ---\n");
+    }
+
+    match d2_ascii::render_d2(d2_source) {
+        Ok(output) => output.lines().map(|l| Line::from(l.to_owned())).collect(),
+        Err(e) => vec![Line::from(format!("D2 error: {e}"))],
+    }
 }
 
 /// Determine the D2 shape for a listener based on its type.
@@ -183,5 +190,40 @@ mod organism_tests {
         let lines = render_d2(&d2, 80);
         // Should produce some output without panicking
         assert!(!lines.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn lines_to_text(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn sequence_diagram_dispatches() {
+        let d2 = "d2-config {\n  type: sequence\n}\nUser -> Server: login\nServer -> DB: query";
+        let lines = render_d2(d2, 80);
+        let text = lines_to_text(&lines);
+        assert!(text.contains("User"), "should render User actor");
+        assert!(text.contains("Server"), "should render Server actor");
+        assert!(text.contains('│'), "should have lifelines");
+        assert!(text.contains("login"), "should have message label");
+    }
+
+    #[test]
+    fn graph_still_works() {
+        let d2 = "a -> b: hello";
+        let lines = render_d2(d2, 80);
+        let text = lines_to_text(&lines);
+        assert!(text.contains('a'), "should render node a");
+        assert!(text.contains('b'), "should render node b");
+        assert!(text.contains("hello"), "should render edge label");
+        assert!(text.contains('▼'), "should have arrow");
     }
 }

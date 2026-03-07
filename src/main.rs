@@ -8,9 +8,9 @@ use agentos::config::{AgentsConfig, ModelsConfig};
 use agentos::llm::LlmPool;
 use agentos::organism::parser::parse_organism;
 use agentos::pipeline::AgentPipelineBuilder;
-use agentos::tools::{
-    command_exec::CommandExecTool, file_edit::FileEditTool, file_read::FileReadTool,
-    file_write::FileWriteTool, glob_tool::GlobTool, grep::GrepTool,
+use agentos::tools::vdrive_tools::{
+    self, VDriveFileRead, VDriveFileWrite, VDriveFileEdit,
+    VDriveGlob, VDriveGrep, VDriveListDir, VDriveCommandExec,
 };
 use agentos::tui::runner::run_tui;
 
@@ -53,6 +53,7 @@ listeners:
       max_agentic_iterations: 25
       permissions:
         file-read: auto
+        list-dir: auto
         glob: auto
         grep: auto
         codebase-index: auto
@@ -60,7 +61,7 @@ listeners:
         file-edit: prompt
         command-exec: prompt
     librarian: true
-    peers: [file-read, file-write, file-edit, glob, grep, command-exec, codebase-index]
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, command-exec, codebase-index]
 
   - name: llm-pool
     payload_class: llm.LlmRequest
@@ -109,6 +110,11 @@ listeners:
     handler: tools.grep.handle
     description: "Grep search"
 
+  - name: list-dir
+    payload_class: tools.ListDirRequest
+    handler: tools.list_dir.handle
+    description: "List directory contents"
+
   - name: command-exec
     payload_class: tools.CommandExecRequest
     handler: tools.command_exec.handle
@@ -117,7 +123,7 @@ listeners:
 profiles:
   coding:
     linux_user: agentos
-    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, command-exec, codebase-index, llm-pool, librarian]
+    listeners: [coding-agent, file-read, file-write, file-edit, glob, grep, list-dir, command-exec, codebase-index, llm-pool, librarian]
     network: [llm-pool]
     journal: retain_forever
 "#;
@@ -187,6 +193,10 @@ async fn main() -> Result<()> {
 
     info!("AgentOS starting in {work_dir}");
 
+    // Auto-mount CWD as the agent's workspace if it looks like a project directory
+    let drive_slot = vdrive_tools::empty_slot();
+    let auto_mount_msg = try_auto_mount(&drive_slot);
+
     // Parse organism config
     let yaml = if let Some(ref path) = cli.organism {
         std::fs::read_to_string(path)?
@@ -240,20 +250,23 @@ async fn main() -> Result<()> {
     }
     // Try to load local inference engine (optional — graceful if missing)
     builder = builder.with_local_inference().to_anyhow()?;
+    let slot = drive_slot.clone();
     let mut pipeline = builder
         .with_code_index()
         .to_anyhow()?
-        .register_tool("file-read", FileReadTool)
+        .register_tool("file-read", VDriveFileRead::new(slot.clone()))
         .to_anyhow()?
-        .register_tool("file-write", FileWriteTool)
+        .register_tool("file-write", VDriveFileWrite::new(slot.clone()))
         .to_anyhow()?
-        .register_tool("file-edit", FileEditTool)
+        .register_tool("file-edit", VDriveFileEdit::new(slot.clone()))
         .to_anyhow()?
-        .register_tool("glob", GlobTool)
+        .register_tool("glob", VDriveGlob::new(slot.clone()))
         .to_anyhow()?
-        .register_tool("grep", GrepTool)
+        .register_tool("grep", VDriveGrep::new(slot.clone()))
         .to_anyhow()?
-        .register_tool("command-exec", CommandExecTool::new())
+        .register_tool("list-dir", VDriveListDir::new(slot.clone()))
+        .to_anyhow()?
+        .register_tool("command-exec", VDriveCommandExec::new(slot))
         .to_anyhow()?
         .with_buffer_nodes(&PathBuf::from(&work_dir))
         .to_anyhow()?;
@@ -274,11 +287,88 @@ async fn main() -> Result<()> {
     pipeline.run();
 
     // Run TUI (blocks until quit)
-    run_tui(&mut pipeline, debug, &yaml, models_config, agents_config, has_pool).await?;
+    run_tui(&mut pipeline, debug, &yaml, models_config, agents_config, has_pool, drive_slot, auto_mount_msg).await?;
 
     // Shutdown
     info!("Shutting down");
     pipeline.shutdown().await;
 
     Ok(())
+}
+
+/// Try to auto-mount the working directory as the agent's workspace.
+/// Returns a message to show in the TUI on startup, or None if no mount.
+fn try_auto_mount(
+    slot: &vdrive_tools::DriveSlot,
+) -> Option<String> {
+    use std::path::Path;
+
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+
+    let canonical = match cwd.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    let s = canonical.to_string_lossy();
+
+    // Don't auto-mount if CWD is AgentOS's own source directory
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    if let Some(ref ed) = exe_dir {
+        if canonical.starts_with(ed) {
+            return None;
+        }
+    }
+
+    // Don't auto-mount sensitive paths (roots, home, system dirs)
+    let normalized = s.replace('\\', "/");
+    let lower = normalized.to_lowercase();
+
+    // Filesystem roots
+    if lower == "/" || (lower.len() == 3 && lower.ends_with(":/")) {
+        return None;
+    }
+
+    // System directories
+    if lower.starts_with("c:/windows") || lower.starts_with("c:/program files") {
+        return None;
+    }
+
+    // Home directory itself (not subdirectories)
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        let home_normalized = home.replace('\\', "/");
+        if normalized.trim_end_matches('/') == home_normalized.trim_end_matches('/') {
+            return None;
+        }
+    }
+
+    // Don't auto-mount if --dir was explicitly "." and we're in the cargo project dir
+    // (i.e., Cargo.toml exists and package.name == "agentos")
+    if Path::new("Cargo.toml").exists() {
+        if let Ok(content) = std::fs::read_to_string("Cargo.toml") {
+            if content.contains("name = \"agentos\"") {
+                return None;
+            }
+        }
+    }
+
+    // Mount it
+    match agentos::vdrive::mount(&canonical) {
+        Ok(drive) => {
+            let name = drive.name().to_string();
+            let root = drive.root().display().to_string();
+            if let Ok(mut guard) = slot.try_write() {
+                *guard = Some(drive);
+                Some(format!("Workspace: {name} ({root})"))
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
 }
