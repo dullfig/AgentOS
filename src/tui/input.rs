@@ -563,17 +563,19 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         KeyCode::Right if app.active_tab == TabId::Graph => {
             app.scroll_graph_right();
         }
-        // Left/Right on Messages tab: depends on focus
+        // Left/Right on Messages tab: h-scroll when input empty, else move cursor
         KeyCode::Left if app.active_tab.is_agent() => {
-            match app.messages_focus {
-                MessagesFocus::Input => app.input_line.move_left(),
-                MessagesFocus::Messages => app.scroll_messages_left(),
+            if app.input_line.content().is_empty() {
+                app.scroll_messages_left();
+            } else {
+                app.input_line.move_left();
             }
         }
         KeyCode::Right if app.active_tab.is_agent() => {
-            match app.messages_focus {
-                MessagesFocus::Input => app.input_line.move_right(),
-                MessagesFocus::Messages => app.scroll_messages_right(),
+            if app.input_line.content().is_empty() {
+                app.scroll_messages_right();
+            } else {
+                app.input_line.move_right();
             }
         }
         // Left/Right on ContextTree focus: collapse/expand
