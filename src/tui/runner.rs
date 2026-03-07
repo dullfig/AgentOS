@@ -310,6 +310,8 @@ pub async fn run_tui(
 
         // Check for pending task submission (set by input handler on Enter)
         if let Some(task) = app.pending_task.take() {
+            // Mark start of new agentic burst for inline ticker
+            app.activity_burst_start = app.activity_log.len();
             let agent_name = if let super::app::TabId::Agent(ref name) = app.active_tab {
                 Some(name.as_str())
             } else {

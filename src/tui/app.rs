@@ -332,6 +332,9 @@ pub struct TuiApp {
     pub viewport_height: u16,
     /// Live activity trace (ring buffer, Threads tab).
     pub activity_log: Vec<ActivityEntry>,
+    /// Index into activity_log where the current agentic burst started.
+    /// Reset when user submits a new message. Used by inline ticker.
+    pub activity_burst_start: usize,
     /// Scroll offset for the activity trace pane.
     pub activity_scroll: u16,
     /// When true, auto-scroll activity to bottom on next render.
@@ -548,6 +551,7 @@ impl TuiApp {
             chat_log: Vec::new(),
             viewport_height: 20, // sensible default, updated by renderer
             activity_log: Vec::new(),
+            activity_burst_start: 0,
             activity_scroll: 0,
             activity_auto_scroll: true,
             activity_viewport_height: 20,

@@ -174,22 +174,59 @@ pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         }
     }
 
-    if agent_status == AgentStatus::Thinking {
+    // Inline activity ticker — show recent tool calls as compact dots
+    if !matches!(agent_status, AgentStatus::Idle) {
+        use super::super::app::ActivityStatus;
+
         lines.push(Line::from(""));
         nowrap.push(false);
-        lines.push(Line::from(vec![Span::styled(
-            "thinking...",
-            Style::default().fg(Color::Yellow),
-        )]));
-        nowrap.push(false);
-    } else if let AgentStatus::ToolCall(ref name) = agent_status {
-        lines.push(Line::from(""));
-        nowrap.push(false);
-        lines.push(Line::from(vec![Span::styled(
-            format!("using {name}..."),
-            Style::default().fg(Color::Cyan),
-        )]));
-        nowrap.push(false);
+        entry_map.push(None);
+
+        // Show activities from the current agentic burst only
+        let burst = &app.activity_log[app.activity_burst_start..];
+        for entry in burst {
+            if entry.label == "thinking" {
+                continue; // skip thinking entries, shown as spinner below
+            }
+            let (dot, color) = match entry.status {
+                ActivityStatus::Done => ("\u{25cf}", Color::Green),      // ●
+                ActivityStatus::Error => ("\u{25cf}", Color::Red),       // ●
+                ActivityStatus::InProgress => ("\u{25cb}", Color::Cyan), // ○
+            };
+            let detail = if entry.detail.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", entry.detail)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {dot} "), Style::default().fg(color)),
+                Span::styled(
+                    entry.label.clone(),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(detail, Style::default().fg(Color::DarkGray)),
+            ]));
+            nowrap.push(false);
+            entry_map.push(None);
+        }
+
+        // Current status spinner at the bottom
+        if agent_status == AgentStatus::Thinking {
+            lines.push(Line::from(vec![Span::styled(
+                "  \u{25cb} thinking...",
+                Style::default().fg(Color::Yellow),
+            )]));
+            nowrap.push(false);
+            entry_map.push(None);
+        } else if let AgentStatus::ToolCall(ref name) = agent_status {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{25cb} ", Style::default().fg(Color::Cyan)),
+                Span::styled(name.clone(), Style::default().fg(Color::Cyan)),
+                Span::styled("...", Style::default().fg(Color::DarkGray)),
+            ]));
+            nowrap.push(false);
+            entry_map.push(None);
+        }
     }
 
     if lines.is_empty() {
