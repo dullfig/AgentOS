@@ -427,8 +427,14 @@ pub async fn execute(
 }
 
 /// Push command feedback into the chat log as a system message.
+/// Writes to the active agent tab if on one, otherwise the global chat log.
 pub fn push_feedback(app: &mut TuiApp, text: &str) {
-    app.chat_log.push(ChatEntry::new("system", text));
+    let entry = ChatEntry::new("system", text);
+    if let Some(tab) = app.active_agent_tab_mut() {
+        tab.chat_log.push(entry.clone());
+        tab.message_auto_scroll = true;
+    }
+    app.chat_log.push(entry);
     app.message_auto_scroll = true;
 }
 
