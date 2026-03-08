@@ -130,23 +130,23 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .dropdown_width(16)
+        .dropdown_width(20)
         .dropdown_style(Style::default().fg(Color::Black).bg(Color::White));
     f.render_stateful_widget(menu_widget, menu_area, &mut app.menu_state);
 
     // Underline accelerator letters by overwriting specific cells.
-    // Non-debug: File, Run, Inspect, Help — accels F, R, I, H
-    // Debug:     File, Run, Inspect, Debug, Help — accels F, R, I, D, H
+    // Non-debug: File, View, Help — accels F, V, H
+    // Debug:     File, View, Debug, Help — accels F, V, D, H
     let accel_style = Style::default()
         .fg(Color::Black)
         .bg(Color::White)
         .add_modifier(Modifier::UNDERLINED);
     let (names, accels): (&[&str], &[char]) = if app.debug_mode {
-        (&["File", "Run", "Inspect", "Debug", "Help"],
-         &['F', 'R', 'I', 'D', 'H'])
+        (&["File", "View", "Debug", "Help"],
+         &['F', 'V', 'D', 'H'])
     } else {
-        (&["File", "Run", "Inspect", "Help"],
-         &['F', 'R', 'I', 'H'])
+        (&["File", "View", "Help"],
+         &['F', 'V', 'H'])
     };
     let mut x = outer[0].x + 1; // skip initial " "
     for (i, name) in names.iter().enumerate() {
@@ -161,40 +161,110 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
 }
 
 fn draw_tab_bar(f: &mut Frame, app: &mut TuiApp, area: Rect) {
-    // Build tab_regions for mouse hit-testing
-    let mut tab_regions = Vec::new();
-    let mut x = area.x;
+    let arrow_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let avail_w = area.width as usize;
 
-    let spans: Vec<Span> = app.open_tabs
+    // Pre-compute label widths: " [^N label]" per tab
+    let labels: Vec<(String, usize)> = app.open_tabs
         .iter()
         .enumerate()
-        .flat_map(|(i, tab)| {
-            let is_active = *tab == app.active_tab;
-            let style = if is_active {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            let num = i + 1;
-            let label = format!("[^{num} {}]", tab.label());
-            let label_len = label.len() as u16;
-            // " " prefix (1 col) + label
-            let x_start = x + 1; // after the space
-            let x_end = x_start + label_len;
-            tab_regions.push((x_start, x_end, tab.clone()));
-            x = x_end;
-            vec![
-                Span::raw(" "),
-                Span::styled(label, style),
-            ]
+        .map(|(i, tab)| {
+            let label = format!("[^{} {}]", i + 1, tab.label());
+            let w = 1 + label.len(); // " " prefix + label
+            (label, w)
         })
         .collect();
+
+    let total_w: usize = labels.iter().map(|(_, w)| w).sum();
+
+    // Auto-scroll so active tab is always visible
+    let active_idx = app.open_tabs.iter().position(|t| *t == app.active_tab).unwrap_or(0);
+
+    // Check if scrolling is needed at all
+    let needs_scroll = total_w > avail_w;
+
+    if needs_scroll {
+        // Ensure active tab is in the visible window.
+        // Reserve 2 chars for each arrow that's showing.
+        let right_arrow_w = 2; // conservative — assume we might need it
+
+        // If active tab is before scroll, scroll left
+        if active_idx < app.tab_scroll {
+            app.tab_scroll = active_idx;
+        }
+
+        // If active tab is after visible range, scroll right
+        loop {
+            let start = app.tab_scroll;
+            let la = if start > 0 { 2 } else { 0 };
+            let mut used = la;
+            let mut last_visible = start;
+            for i in start..labels.len() {
+                let needed = labels[i].1 + if i + 1 < labels.len() { 0 } else { 0 };
+                if used + needed + right_arrow_w > avail_w && i > start {
+                    break;
+                }
+                used += labels[i].1;
+                last_visible = i;
+            }
+            if active_idx <= last_visible {
+                break;
+            }
+            app.tab_scroll += 1;
+            if app.tab_scroll >= labels.len() {
+                break;
+            }
+        }
+    } else {
+        app.tab_scroll = 0;
+    }
+
+    // Now render with the computed scroll offset
+    let show_left_arrow = needs_scroll && app.tab_scroll > 0;
+    let show_right_arrow; // computed below
+
+    let mut tab_regions = Vec::new();
+    let mut spans: Vec<Span> = Vec::new();
+    let mut x = area.x;
+
+    if show_left_arrow {
+        spans.push(Span::styled("\u{25C0} ", arrow_style)); // ◀
+        x += 2;
+    }
+
+    let mut last_rendered = app.tab_scroll;
+    for i in app.tab_scroll..labels.len() {
+        let (ref label, w) = labels[i];
+        let projected = (x - area.x) as usize + w + if needs_scroll { 2 } else { 0 };
+        if projected > avail_w && i > app.tab_scroll {
+            break;
+        }
+
+        let tab = &app.open_tabs[i];
+        let is_active = *tab == app.active_tab;
+        let style = if is_active {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        let x_start = x + 1; // after space
+        let x_end = x_start + label.len() as u16;
+        tab_regions.push((x_start, x_end, tab.clone()));
+
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(label.clone(), style));
+        x = x_end;
+        last_rendered = i;
+    }
+
+    show_right_arrow = needs_scroll && last_rendered + 1 < labels.len();
+    if show_right_arrow {
+        spans.push(Span::styled(" \u{25B6}", arrow_style)); // ▶
+    }
 
     app.layout_areas.tab_regions = tab_regions;
 
     let line = Line::from(spans);
-    let para = Paragraph::new(line);
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(line), area);
 }

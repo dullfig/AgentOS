@@ -231,8 +231,11 @@ impl FilePickerState {
 pub enum MenuAction {
     SwitchTab(TabId),
     OpenAgentTab(String),
+    OpenAgentConfig(String),
     CloseTab,
-    NewTask,
+    NewAgent,
+    NewTool,
+    Save,
     Quit,
     SetModel,
     ShowAbout,
@@ -557,6 +560,8 @@ pub struct TuiApp {
     pub graph_viewport_height: u16,
     /// File picker state. Some = picker is open/visible.
     pub file_picker: Option<FilePickerState>,
+    /// Tab bar scroll offset (index of first visible tab).
+    pub tab_scroll: usize,
 }
 
 /// Current time in seconds since Unix epoch.
@@ -575,50 +580,63 @@ const ACTIVITY_LOG_CAPACITY: usize = 512;
 
 /// Build the menu item tree for the menu bar.
 ///
-/// When `debug_mode` is false: File / Run / Inspect / Help
-/// When `debug_mode` is true:  File / Run / Inspect / Debug / Help
+/// Non-debug: File / View / Help
+/// Debug:     File / View / Debug / Help
 pub fn build_menu_items(
     available_agents: &[String],
     debug_mode: bool,
 ) -> Vec<MenuItem<MenuAction>> {
-    // Build Run menu items from available agents
-    let run_items: Vec<MenuItem<MenuAction>> = available_agents
-        .iter()
-        .map(|name| {
-            MenuItem::item(
-                name.clone(),
-                MenuAction::OpenAgentTab(name.clone()),
-            )
-        })
-        .collect();
-
-    let inspect_items = vec![
-        MenuItem::item("Threads   ^T", MenuAction::SwitchTab(TabId::Threads)),
-        MenuItem::item("Graph     ^G", MenuAction::SwitchTab(TabId::Graph)),
-        MenuItem::item("YAML      ^Y", MenuAction::SwitchTab(TabId::Yaml)),
-    ];
-
-    let mut menus = vec![
+    // ── File menu ──
+    let file_items = vec![
+        MenuItem::item("New Agent", MenuAction::NewAgent),
+        MenuItem::item("New Tool", MenuAction::NewTool),
+        MenuItem::item("Load...    ", MenuAction::LoadFile),
         MenuItem::group(
-            "File",
+            "Virtual Drives",
             vec![
-                MenuItem::item("Load...", MenuAction::LoadFile),
-                MenuItem::item("New Task", MenuAction::NewTask),
-                MenuItem::group(
-                    "Virtual Drives",
-                    vec![
-                        MenuItem::item("Mount Folder", MenuAction::VDriveMount),
-                        MenuItem::item("Unmount", MenuAction::VDriveUnmount),
-                        MenuItem::item("Create Workspace", MenuAction::VDriveCreate),
-                        MenuItem::item("Info", MenuAction::VDriveInfo),
-                    ],
-                ),
-                MenuItem::item("Close Tab ^W", MenuAction::CloseTab),
-                MenuItem::item("Quit      ^C", MenuAction::Quit),
+                MenuItem::item("Mount Folder", MenuAction::VDriveMount),
+                MenuItem::item("Unmount", MenuAction::VDriveUnmount),
+                MenuItem::item("Create Workspace", MenuAction::VDriveCreate),
+                MenuItem::item("Info", MenuAction::VDriveInfo),
             ],
         ),
-        MenuItem::group("Run", run_items),
-        MenuItem::group("Inspect", inspect_items),
+        MenuItem::item("Save       ^S", MenuAction::Save),
+        MenuItem::item("Close Tab  ^W", MenuAction::CloseTab),
+        MenuItem::item("Quit       ^C", MenuAction::Quit),
+    ];
+
+    // ── View menu: agents (chat + config), utility views ──
+    let mut view_items: Vec<MenuItem<MenuAction>> = Vec::new();
+
+    // Agent entries: each gets a chat tab and a .yaml config tab
+    for name in available_agents {
+        view_items.push(MenuItem::item(
+            name.clone(),
+            MenuAction::OpenAgentTab(name.clone()),
+        ));
+        view_items.push(MenuItem::item(
+            format!("{name}.yaml"),
+            MenuAction::OpenAgentConfig(name.clone()),
+        ));
+    }
+
+    // TODO: tool entries will go here once tool loading is wired
+
+    // Utility views
+    if !view_items.is_empty() {
+        // Separator via a disabled-looking group header
+        view_items.push(MenuItem::item(
+            "──────────────",
+            MenuAction::SwitchTab(TabId::Threads), // harmless default
+        ));
+    }
+    view_items.push(MenuItem::item("Threads    ^T", MenuAction::SwitchTab(TabId::Threads)));
+    view_items.push(MenuItem::item("Graph      ^G", MenuAction::SwitchTab(TabId::Graph)));
+    view_items.push(MenuItem::item("YAML       ^Y", MenuAction::SwitchTab(TabId::Yaml)));
+
+    let mut menus = vec![
+        MenuItem::group("File", file_items),
+        MenuItem::group("View", view_items),
     ];
 
     if debug_mode {
@@ -725,6 +743,7 @@ impl TuiApp {
             graph_h_scroll: 0,
             graph_viewport_height: 20,
             file_picker: None,
+            tab_scroll: 0,
         }
     }
 

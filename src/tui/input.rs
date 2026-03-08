@@ -21,14 +21,10 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
         MenuAction::SwitchTab(tab) => {
             app.active_tab = tab;
         }
-        MenuAction::NewTask => {
-            app.clear_input();
-        }
         MenuAction::Quit => {
             app.should_quit = true;
         }
         MenuAction::SetModel => {
-            // Pre-fill the input with "/model " so user can type the model name
             set_input(app, "/model ");
         }
         MenuAction::ShowAbout => {
@@ -40,9 +36,9 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
         }
         MenuAction::ShowShortcuts => {
             let menu_line = if app.debug_mode {
-                "  Alt+F/R/I/D/H  Open File/Run/Inspect/Debug/Help menu\n"
+                "  Alt+F/V/D/H    Open File/View/Debug/Help menu\n"
             } else {
-                "  Alt+F/R/I/H    Open File/Run/Inspect/Help menu\n"
+                "  Alt+F/V/H      Open File/View/Help menu\n"
             };
             let activity_line = if app.debug_mode {
                 "  Ctrl+Y          YAML      Ctrl+A  Activity\n"
@@ -56,6 +52,7 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
                  \x20 F10             Open/close menu bar\n\
                  \x20 Ctrl+1..9       Switch to tab by position\n\
                  \x20 Ctrl+W          Close active tab\n\
+                 \x20 Ctrl+E          Edit agent config (from chat tab)\n\
                  \x20 Ctrl+T          Threads   Ctrl+G  Graph\n\
                  \x20 Shift+Enter     Insert newline\n\
                  \x20 Tab             Cycle focus (Threads) / autocomplete (/commands)\n\
@@ -72,9 +69,27 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
         MenuAction::OpenAgentTab(name) => {
             app.open_agent_tab(&name);
         }
+        MenuAction::OpenAgentConfig(name) => {
+            // TODO: open agent-specific YAML editor tab
+            // For now, switch to the organism YAML tab
+            push_feedback(app, &format!("Opening config for {name} (YAML tab)"));
+            if !app.open_tabs.contains(&TabId::Yaml) {
+                app.open_tabs.push(TabId::Yaml);
+            }
+            app.active_tab = TabId::Yaml;
+        }
         MenuAction::CloseTab => {
             let tab = app.active_tab.clone();
             app.close_tab(&tab);
+        }
+        MenuAction::NewAgent => {
+            push_feedback(app, "New Agent: not yet implemented — coming soon");
+        }
+        MenuAction::NewTool => {
+            push_feedback(app, "New Tool: not yet implemented — coming soon");
+        }
+        MenuAction::Save => {
+            push_feedback(app, "Save: not yet implemented — coming soon");
         }
         MenuAction::VDriveMount => {
             use super::app::{FilePickerPurpose, FilePickerState};
@@ -313,15 +328,14 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
     }
 
     // Alt+letter opens a specific menu group (Windows-style accelerators)
-    // Non-debug: File(0) Run(1) Inspect(2) Help(3)
-    // Debug:     File(0) Run(1) Inspect(2) Debug(3) Help(4)
+    // Non-debug: File(0) View(1) Help(2)
+    // Debug:     File(0) View(1) Debug(2) Help(3)
     if key.modifiers.contains(KeyModifiers::ALT) {
         let menu_index = match key.code {
             KeyCode::Char('f') => Some(0), // File
-            KeyCode::Char('r') => Some(1), // Run
-            KeyCode::Char('i') => Some(2), // Inspect
-            KeyCode::Char('d') if app.debug_mode => Some(3), // Debug (debug only)
-            KeyCode::Char('h') => Some(if app.debug_mode { 4 } else { 3 }), // Help
+            KeyCode::Char('v') => Some(1), // View
+            KeyCode::Char('d') if app.debug_mode => Some(2), // Debug (debug only)
+            KeyCode::Char('h') => Some(if app.debug_mode { 3 } else { 2 }), // Help
             _ => None,
         };
         if let Some(index) = menu_index {
@@ -421,6 +435,23 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             }
             KeyCode::Char('a') if app.debug_mode => {
                 toggle_utility_tab(app, TabId::Activity);
+                return;
+            }
+            // Ctrl+E: open agent config (YAML tab) from a chat tab
+            KeyCode::Char('e') => {
+                if let super::app::TabId::Agent(ref name) = app.active_tab {
+                    let name = name.clone();
+                    push_feedback(app, &format!("Opening config for {name} (YAML tab)"));
+                    if !app.open_tabs.contains(&TabId::Yaml) {
+                        app.open_tabs.push(TabId::Yaml);
+                    }
+                    app.active_tab = TabId::Yaml;
+                }
+                return;
+            }
+            // Ctrl+S: save (YAML tab has its own handler, skip here)
+            KeyCode::Char('s') if !matches!(app.active_tab, TabId::Yaml) => {
+                push_feedback(app, "Save: not yet implemented — coming soon");
                 return;
             }
             _ => {}
@@ -1217,8 +1248,8 @@ mod tests {
         use super::super::app::build_menu_items;
 
         let items = build_menu_items(&[], true);
-        // Debug mode: File, Run, Inspect, Debug, Help = 5 groups
-        assert_eq!(items.len(), 5);
+        // Debug mode: File, View, Debug, Help = 4 groups
+        assert_eq!(items.len(), 4);
     }
 
     #[test]
@@ -1226,7 +1257,7 @@ mod tests {
         use super::super::app::build_menu_items;
 
         let items = build_menu_items(&[], false);
-        // Non-debug: File, Run, Inspect, Help = 4 groups
-        assert_eq!(items.len(), 4);
+        // Non-debug: File, View, Help = 3 groups
+        assert_eq!(items.len(), 3);
     }
 }
