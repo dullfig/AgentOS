@@ -130,6 +130,112 @@ pub(super) fn draw_approval_popup(f: &mut Frame, app: &TuiApp, content_area: Rec
     f.render_widget(Paragraph::new(text).style(bg), popup);
 }
 
+/// Render the file picker as a centered modal overlay.
+pub(super) fn draw_file_picker(f: &mut Frame, app: &TuiApp, content_area: Rect) {
+    let picker = match &app.file_picker {
+        Some(p) => p,
+        None => return,
+    };
+
+    // Size: 60% of width, 70% of height, with minimums
+    let popup_w = (content_area.width * 3 / 5).max(40).min(content_area.width.saturating_sub(2));
+    let popup_h = (content_area.height * 7 / 10).max(10).min(content_area.height.saturating_sub(2));
+    let x = content_area.x + (content_area.width.saturating_sub(popup_w)) / 2;
+    let y = content_area.y + (content_area.height.saturating_sub(popup_h)) / 2;
+    let popup_area = Rect::new(x, y, popup_w, popup_h);
+
+    // Clear background
+    f.render_widget(Clear, popup_area);
+
+    // Title: current directory (truncated)
+    let dir_str = picker.current_dir.display().to_string();
+    let max_title = popup_w.saturating_sub(4) as usize;
+    let title = if dir_str.len() > max_title {
+        format!(" ...{} ", &dir_str[dir_str.len() - max_title + 3..])
+    } else {
+        format!(" {} ", dir_str)
+    };
+
+    let border_color = Color::Cyan;
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    if inner.height < 3 || inner.width < 10 {
+        return;
+    }
+
+    // Filter line at top
+    let filter_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    let filter_text = if picker.filter.is_empty() {
+        Span::styled("  Type to filter...", Style::default().fg(Color::DarkGray))
+    } else {
+        Span::styled(format!("  Filter: {}", picker.filter), Style::default().fg(Color::Yellow))
+    };
+    f.render_widget(Paragraph::new(filter_text), filter_area);
+
+    // Help line at bottom
+    let help_area = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+    let help_text = match picker.purpose {
+        super::super::app::FilePickerPurpose::LoadFile =>
+            " Enter:open  \u{2190}\u{2192}:navigate  Backspace:up  Esc:cancel",
+        super::super::app::FilePickerPurpose::MountDrive =>
+            " Enter:select folder  \u{2192}:open  Backspace:up  Esc:cancel",
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(help_text, Style::default().fg(Color::DarkGray))),
+        help_area,
+    );
+
+    // File list area (between filter and help)
+    let list_h = inner.height.saturating_sub(2);
+    let list_area = Rect::new(inner.x, inner.y + 1, inner.width, list_h);
+
+    let filtered = picker.filtered_entries();
+    let selected = picker.selected;
+
+    // Scroll so selected is visible
+    let list_h_usize = list_h as usize;
+    let scroll = if selected >= list_h_usize {
+        selected - list_h_usize + 1
+    } else {
+        0
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, &(_, entry)) in filtered.iter().enumerate().skip(scroll).take(list_h_usize) {
+        let is_selected = i == selected;
+        let (icon, name_color) = if entry.is_dir {
+            ("\u{25B8} ", Color::Cyan) // ▸ (triangle, always renders)
+        } else {
+            ("  ", Color::White)
+        };
+
+        let bg = if is_selected { Color::Rgb(40, 40, 55) } else { Color::Reset };
+        let name_style = Style::default().fg(name_color).bg(bg);
+        let icon_style = Style::default().bg(bg);
+
+        let line = Line::from(vec![
+            Span::styled(" ", icon_style),
+            Span::styled(icon, icon_style),
+            Span::styled(&entry.name, name_style),
+        ]);
+        lines.push(line);
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (empty)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    f.render_widget(Paragraph::new(lines), list_area);
+}
+
 /// Render the wizard input bar (single-step: API key).
 pub(super) fn draw_wizard_input(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     use super::super::app::InputMode;

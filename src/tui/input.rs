@@ -77,7 +77,9 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             app.close_tab(&tab);
         }
         MenuAction::VDriveMount => {
-            set_input(app, "/vdrive mount ");
+            use super::app::{FilePickerPurpose, FilePickerState};
+            let start = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            app.file_picker = Some(FilePickerState::new(start, FilePickerPurpose::MountDrive));
         }
         MenuAction::VDriveUnmount => {
             app.pending_command = Some("/vdrive unmount".to_string());
@@ -88,6 +90,114 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
         MenuAction::VDriveInfo => {
             app.pending_command = Some("/vdrive info".to_string());
         }
+        MenuAction::LoadFile => {
+            use super::app::{FilePickerPurpose, FilePickerState};
+            let start = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            app.file_picker = Some(FilePickerState::new(start, FilePickerPurpose::LoadFile));
+        }
+    }
+}
+
+/// Handle key events when the file picker is open.
+fn handle_file_picker_key(app: &mut TuiApp, key: KeyEvent) {
+    use super::app::FilePickerPurpose;
+
+    let picker = app.file_picker.as_mut().unwrap();
+
+    match key.code {
+        KeyCode::Esc => {
+            app.file_picker = None;
+        }
+        KeyCode::Up => {
+            if picker.selected > 0 {
+                picker.selected -= 1;
+            }
+        }
+        KeyCode::Down => {
+            let count = picker.filtered_entries().len();
+            if picker.selected + 1 < count {
+                picker.selected += 1;
+            }
+        }
+        KeyCode::PageUp => {
+            picker.selected = picker.selected.saturating_sub(10);
+        }
+        KeyCode::PageDown => {
+            let count = picker.filtered_entries().len();
+            picker.selected = (picker.selected + 10).min(count.saturating_sub(1));
+        }
+        KeyCode::Home => {
+            picker.selected = 0;
+        }
+        KeyCode::End => {
+            let count = picker.filtered_entries().len();
+            picker.selected = count.saturating_sub(1);
+        }
+        KeyCode::Backspace => {
+            if picker.filter.is_empty() {
+                picker.go_up();
+            } else {
+                picker.filter.pop();
+                picker.selected = 0;
+            }
+        }
+        KeyCode::Right => {
+            // Navigate into the selected directory
+            let filtered = picker.filtered_entries();
+            if let Some(&(_, entry)) = filtered.get(picker.selected) {
+                if entry.is_dir {
+                    let path = entry.path.clone();
+                    let picker = app.file_picker.as_mut().unwrap();
+                    picker.current_dir = path;
+                    picker.refresh_entries();
+                }
+            }
+        }
+        KeyCode::Left => {
+            // Navigate up (alias for Backspace when filter empty)
+            if picker.filter.is_empty() {
+                picker.go_up();
+            }
+        }
+        KeyCode::Enter => {
+            let filtered = picker.filtered_entries();
+            if let Some(&(_, entry)) = filtered.get(picker.selected) {
+                let is_dir = entry.is_dir;
+                let path = entry.path.clone();
+                let purpose = picker.purpose.clone();
+
+                match purpose {
+                    FilePickerPurpose::LoadFile => {
+                        if is_dir {
+                            // Navigate into directory
+                            let picker = app.file_picker.as_mut().unwrap();
+                            picker.current_dir = path;
+                            picker.refresh_entries();
+                        } else {
+                            // File selected
+                            let display = path.display().to_string();
+                            app.file_picker = None;
+                            push_feedback(app, &format!("Loading: {display}"));
+                            app.pending_command = Some(format!("/load {}", display));
+                        }
+                    }
+                    FilePickerPurpose::MountDrive => {
+                        if is_dir {
+                            // Select this directory as mount target
+                            let display = path.display().to_string();
+                            app.file_picker = None;
+                            app.pending_command = Some(format!("/vdrive mount {}", display));
+                        }
+                        // Files are ignored for mount purpose
+                    }
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            picker.filter.push(c);
+            picker.selected = 0;
+        }
+        _ => {}
     }
 }
 
@@ -182,6 +292,12 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             }
             _ => return, // Ignore all other keys while approval is pending
         }
+    }
+
+    // File picker modal
+    if app.file_picker.is_some() {
+        handle_file_picker_key(app, key);
+        return;
     }
 
     // F10 toggles menu bar

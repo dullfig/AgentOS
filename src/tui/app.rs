@@ -4,6 +4,7 @@
 //! View reads state to produce ratatui widgets. No side effects in view.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use ratatui::layout::Rect;
 use tokio::sync::Mutex;
@@ -107,6 +108,124 @@ pub enum MessagesFocus {
     Input,
 }
 
+/// A single entry in the file picker list.
+#[derive(Debug, Clone)]
+pub struct FilePickerEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub path: PathBuf,
+}
+
+/// State for the modal file picker overlay.
+#[derive(Debug, Clone)]
+pub struct FilePickerState {
+    pub current_dir: PathBuf,
+    pub entries: Vec<FilePickerEntry>,
+    pub selected: usize,
+    pub filter: String,
+    /// Why the picker was opened — determines what happens on file selection.
+    pub purpose: FilePickerPurpose,
+}
+
+/// What the file picker is being used for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilePickerPurpose {
+    LoadFile,
+    MountDrive,
+}
+
+impl FilePickerState {
+    pub fn new(start_dir: PathBuf, purpose: FilePickerPurpose) -> Self {
+        let mut state = Self {
+            current_dir: start_dir,
+            entries: Vec::new(),
+            selected: 0,
+            filter: String::new(),
+            purpose,
+        };
+        state.refresh_entries();
+        state
+    }
+
+    /// Re-read the current directory and populate entries.
+    pub fn refresh_entries(&mut self) {
+        self.entries.clear();
+        self.selected = 0;
+        self.filter.clear();
+
+        let Ok(read_dir) = std::fs::read_dir(&self.current_dir) else {
+            return;
+        };
+
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+
+        for entry in read_dir.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden files/dirs
+            if name.starts_with('.') {
+                continue;
+            }
+            let item = FilePickerEntry {
+                name,
+                is_dir: meta.is_dir(),
+                path: entry.path(),
+            };
+            if item.is_dir {
+                dirs.push(item);
+            } else {
+                files.push(item);
+            }
+        }
+
+        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        self.entries.extend(dirs);
+        self.entries.extend(files);
+    }
+
+    /// Filtered view: entries matching the current filter string.
+    pub fn filtered_entries(&self) -> Vec<(usize, &FilePickerEntry)> {
+        if self.filter.is_empty() {
+            self.entries.iter().enumerate().collect()
+        } else {
+            let lower = self.filter.to_lowercase();
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.name.to_lowercase().contains(&lower))
+                .collect()
+        }
+    }
+
+    /// Navigate into the selected directory or go up to parent.
+    pub fn enter_selected(&mut self) {
+        let filtered = self.filtered_entries();
+        if let Some(&(_, entry)) = filtered.get(self.selected) {
+            if entry.is_dir {
+                self.current_dir = entry.path.clone();
+                self.refresh_entries();
+            }
+        }
+    }
+
+    /// Go up one directory level.
+    pub fn go_up(&mut self) {
+        if let Some(parent) = self.current_dir.parent() {
+            self.current_dir = parent.to_path_buf();
+            self.refresh_entries();
+        }
+    }
+
+    /// Get the selected entry's path (if any).
+    pub fn selected_path(&self) -> Option<PathBuf> {
+        let filtered = self.filtered_entries();
+        filtered.get(self.selected).map(|(_, e)| e.path.clone())
+    }
+}
+
 /// Actions that can be triggered from the menu bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
@@ -122,6 +241,7 @@ pub enum MenuAction {
     VDriveUnmount,
     VDriveCreate,
     VDriveInfo,
+    LoadFile,
 }
 
 /// Agent processing status.
@@ -435,6 +555,8 @@ pub struct TuiApp {
     pub graph_h_scroll: u16,
     /// Viewport height of the Graph tab content area.
     pub graph_viewport_height: u16,
+    /// File picker state. Some = picker is open/visible.
+    pub file_picker: Option<FilePickerState>,
 }
 
 /// Current time in seconds since Unix epoch.
@@ -480,6 +602,7 @@ pub fn build_menu_items(
         MenuItem::group(
             "File",
             vec![
+                MenuItem::item("Load...", MenuAction::LoadFile),
                 MenuItem::item("New Task", MenuAction::NewTask),
                 MenuItem::group(
                     "Virtual Drives",
@@ -601,6 +724,7 @@ impl TuiApp {
             graph_scroll: 0,
             graph_h_scroll: 0,
             graph_viewport_height: 20,
+            file_picker: None,
         }
     }
 

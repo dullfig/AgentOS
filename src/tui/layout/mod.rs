@@ -104,6 +104,11 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
         shared::draw_approval_popup(f, app, outer[2]);
     }
 
+    // File picker overlay
+    if app.file_picker.is_some() {
+        shared::draw_file_picker(f, app, outer[2]);
+    }
+
     // Fill the menu bar row with white background before rendering menu items.
     f.render_widget(
         Paragraph::new("").style(Style::default().bg(Color::White)),
