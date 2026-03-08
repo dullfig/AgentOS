@@ -17,6 +17,7 @@ mod graph;
 mod messages;
 mod shared;
 mod threads;
+mod tool_editor;
 pub(crate) mod wrap;
 mod yaml;
 
@@ -40,7 +41,7 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     // YAML tab: input is hidden (editor takes full area).
     // Other tabs: external input bar below content.
     let input_height = match app.active_tab {
-        TabId::Agent(_) | TabId::Yaml => 0,
+        TabId::Agent(_) | TabId::Yaml | TabId::Tool(_) => 0,
         _ => 3,
     };
     let outer = Layout::default()
@@ -65,6 +66,7 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
 
     match app.active_tab {
         TabId::Agent(_) => messages::draw_messages(f, app, outer[2]),
+        TabId::Tool(_) => tool_editor::draw_tool_editor(f, app, outer[2]),
         TabId::Threads => threads::draw_threads(f, app, outer[2]),
         TabId::Yaml => yaml::draw_yaml_editor(f, app, outer[2]),
         TabId::Graph => graph::draw_graph(f, app, outer[2]),

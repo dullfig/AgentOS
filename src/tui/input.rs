@@ -189,11 +189,40 @@ fn handle_file_picker_key(app: &mut TuiApp, key: KeyEvent) {
                             picker.current_dir = path;
                             picker.refresh_entries();
                         } else {
-                            // File selected
-                            let display = path.display().to_string();
+                            let name = entry.name.clone();
                             app.file_picker = None;
-                            push_feedback(app, &format!("Loading: {display}"));
-                            app.pending_command = Some(format!("/load {}", display));
+
+                            if name.ends_with(".py") {
+                                // Python file → open in tool editor
+                                match std::fs::read_to_string(&path) {
+                                    Ok(content) => {
+                                        app.open_tool_editor(&name, &content, Some(path));
+                                    }
+                                    Err(e) => {
+                                        push_feedback(app, &format!("Error reading {name}: {e}"));
+                                    }
+                                }
+                            } else if name.ends_with(".yaml") || name.ends_with(".yml") {
+                                // YAML file → load into organism editor
+                                match std::fs::read_to_string(&path) {
+                                    Ok(content) => {
+                                        app.load_yaml_editor(&content);
+                                        if !app.open_tabs.contains(&super::app::TabId::Yaml) {
+                                            app.open_tabs.push(super::app::TabId::Yaml);
+                                        }
+                                        app.active_tab = super::app::TabId::Yaml;
+                                        push_feedback(app, &format!("Loaded: {name}"));
+                                    }
+                                    Err(e) => {
+                                        push_feedback(app, &format!("Error reading {name}: {e}"));
+                                    }
+                                }
+                            } else {
+                                // Unknown file type — generic load command
+                                let display = path.display().to_string();
+                                push_feedback(app, &format!("Loading: {display}"));
+                                app.pending_command = Some(format!("/load {}", display));
+                            }
                         }
                     }
                     FilePickerPurpose::MountDrive => {
@@ -455,6 +484,25 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
                 return;
             }
             _ => {}
+        }
+    }
+
+    // Tool editor tab: route keys to Python code editor
+    if let TabId::Tool(ref name) = app.active_tab {
+        let name = name.clone();
+        if let Some(state) = app.tool_editors.get_mut(&name) {
+            match key.code {
+                KeyCode::Esc => {
+                    // Could dismiss overlays later; for now just clear input
+                    app.clear_input();
+                }
+                _ => {
+                    let area = app.tool_editor_area;
+                    let _ = state.editor.input(key, &area);
+                    state.modified = true;
+                }
+            }
+            return;
         }
     }
 

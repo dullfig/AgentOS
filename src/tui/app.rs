@@ -28,6 +28,7 @@ use super::event::TuiMessage;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TabId {
     Agent(String),  // listener name: "planner", "coding-agent"
+    Tool(String),   // tool editor: "search_tool.py", etc.
     Threads,
     Graph,
     Yaml,
@@ -44,6 +45,7 @@ impl TabId {
     pub fn label(&self) -> &str {
         match self {
             TabId::Agent(name) => name,
+            TabId::Tool(name) => name,
             TabId::Threads => "Threads",
             TabId::Graph => "Graph",
             TabId::Yaml => "YAML",
@@ -91,6 +93,13 @@ impl AgentTabState {
             text_selection: super::mouse::TextSelection::default(),
         }
     }
+}
+
+/// Per-tool editor state.
+pub struct ToolEditorState {
+    pub editor: ratatui_code_editor::editor::Editor,
+    pub file_path: Option<PathBuf>,
+    pub modified: bool,
 }
 
 /// Which sub-pane has focus within the Threads tab.
@@ -560,6 +569,10 @@ pub struct TuiApp {
     pub graph_viewport_height: u16,
     /// File picker state. Some = picker is open/visible.
     pub file_picker: Option<FilePickerState>,
+    /// Tool editor instances keyed by tool name (e.g., "search_tool.py").
+    pub tool_editors: HashMap<String, ToolEditorState>,
+    /// Cached render area for the active tool editor (needed for input routing).
+    pub tool_editor_area: Rect,
     /// Tab bar scroll offset (index of first visible tab).
     pub tab_scroll: usize,
 }
@@ -743,6 +756,8 @@ impl TuiApp {
             graph_h_scroll: 0,
             graph_viewport_height: 20,
             file_picker: None,
+            tool_editors: HashMap::new(),
+            tool_editor_area: Rect::default(),
             tab_scroll: 0,
         }
     }
@@ -840,6 +855,60 @@ impl TuiApp {
             ("namespace", "#FFAA44"),
             ("type.builtin", "#FFAA44"),
         ]
+    }
+
+    /// Syntax theme for Python tool editors.
+    fn python_theme() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("keyword", "#DD77DD"),           // def, class, import, if, for, etc.
+            ("function", "#FFAA44"),           // function names
+            ("function.builtin", "#FFAA44"),   // print, len, etc.
+            ("string", "#66DD66"),             // strings
+            ("string.escape", "#DDDD00"),      // \n, \t, etc.
+            ("number", "#FFAA44"),             // numeric literals
+            ("integer", "#FFAA44"),
+            ("float", "#FFAA44"),
+            ("boolean", "#DD77DD"),            // True, False
+            ("constant.builtin", "#AA55AA"),   // None
+            ("comment", "#666666"),            // # comments
+            ("identifier", "#FFFFFF"),         // variable names
+            ("variable", "#FFFFFF"),
+            ("variable.builtin", "#00DDDD"),   // self, cls
+            ("type", "#00DDDD"),               // type names
+            ("type.builtin", "#00DDDD"),       // int, str, list, etc.
+            ("operator", "#AAAAAA"),           // +, -, =, etc.
+            ("punctuation.delimiter", "#AAAAAA"),
+            ("punctuation.bracket", "#CCCCCC"),
+            ("decorator", "#DDDD00"),          // @decorator
+            ("namespace", "#FFAA44"),          // module names in imports
+            ("error", "#FF4444"),
+        ]
+    }
+
+    /// Open a Python tool in an editor tab. Creates the tab if not already open.
+    pub fn open_tool_editor(&mut self, name: &str, content: &str, file_path: Option<PathBuf>) {
+        let tab_id = TabId::Tool(name.to_string());
+
+        if !self.tool_editors.contains_key(name) {
+            match ratatui_code_editor::editor::Editor::new("python", content, Self::python_theme()) {
+                Ok(editor) => {
+                    self.tool_editors.insert(name.to_string(), ToolEditorState {
+                        editor,
+                        file_path,
+                        modified: false,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to create Python editor for {name}: {e}");
+                    return;
+                }
+            }
+        }
+
+        if !self.open_tabs.contains(&tab_id) {
+            self.open_tabs.push(tab_id.clone());
+        }
+        self.active_tab = tab_id;
     }
 
     /// Load content into the YAML editor with syntax highlighting.

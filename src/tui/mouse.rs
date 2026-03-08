@@ -139,8 +139,8 @@ fn handle_scroll(app: &mut TuiApp, col: u16, row: u16, up: bool) {
                     }
                 }
             }
-            TabId::Yaml => {
-                // YAML editor handles its own scroll
+            TabId::Yaml | TabId::Tool(_) => {
+                // Code editors handle their own scroll
             }
         }
     }
