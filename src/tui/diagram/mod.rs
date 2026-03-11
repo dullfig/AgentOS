@@ -96,6 +96,7 @@ mod organism_tests {
             semantic_description: None,
             agent_config: None,
             buffer: None,
+            python: None,
         }
     }
 
@@ -153,6 +154,7 @@ mod organism_tests {
             organism: Some("child.yaml".into()),
             max_concurrency: 5,
             timeout_secs: 300,
+            context_visible: false,
         });
         org.register_listener(tool).unwrap();
 

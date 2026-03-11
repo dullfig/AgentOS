@@ -3,12 +3,23 @@
 //! Tools don't think — they execute. Every tool-peer is a Handler,
 //! but adds self-documenting metadata (name, description, schemas).
 
+#[cfg(test)]
 pub mod command_exec;
+pub mod compile_wasm;
+#[cfg(test)]
 pub mod file_edit;
+#[cfg(test)]
 pub mod file_read;
+#[cfg(test)]
 pub mod file_write;
+#[cfg(test)]
 pub mod glob_tool;
+#[cfg(test)]
 pub mod grep;
+pub mod list_agents;
+pub mod safe_commands;
+pub mod user_channel;
+pub mod validate_organism;
 pub mod vdrive_tools;
 
 use std::collections::HashMap;

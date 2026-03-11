@@ -83,8 +83,10 @@ async fn inject_task(
         if let Ok(envelope) =
             build_envelope("user", &agent_name, &uuid, xml.as_bytes())
         {
+            let profile = pipeline.organism().profile_names().into_iter().next()
+                .unwrap_or("default");
             let _ = pipeline
-                .inject_checked(envelope, &uuid, "coding", &agent_name)
+                .inject_checked(envelope, &uuid, &profile, &agent_name)
                 .await;
         }
     }
@@ -100,6 +102,7 @@ pub async fn run_tui(
     has_pool: bool,
     drive_slot: crate::tools::vdrive_tools::DriveSlot,
     auto_mount_msg: Option<String>,
+    startup_errors: Vec<String>,
 ) -> anyhow::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -142,9 +145,19 @@ pub async fn run_tui(
             "No API key configured. Use /provider <name> to set up a provider.\nExample: /provider anthropic",
         );
     }
+    // Display any startup errors as feedback messages
+    for err in &startup_errors {
+        super::commands::push_feedback(&mut app, &format!("⚠ {err}"));
+    }
     let kernel = pipeline.kernel();
     let mut event_rx = pipeline.subscribe();
     let mut approval_rx = pipeline.take_approval_receiver();
+    let mut query_rx = pipeline.take_query_receiver();
+
+    // Proactive greeting: Bob introduces himself on startup
+    if has_pool {
+        inject_task(pipeline, &kernel, "Briefly introduce yourself in one line. You are starting a new session.", Some(&first_agent)).await;
+    }
 
     // Dedicated input thread — reads crossterm events and sends through channel.
     // One thread, no polling/spinning. event::read() blocks until input arrives.
@@ -216,6 +229,18 @@ pub async fn run_tui(
             }
             Some(request) = async { match approval_rx.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
                 app.pending_approval = Some(request);
+            }
+            Some(query) = async { match query_rx.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                // Show the question in chat and switch input to query mode
+                let agent = query.agent_name.clone();
+                let question = query.question.clone();
+                app.chat_log.push(super::app::ChatEntry::new(
+                    "agent",
+                    format!("**{}** asks: {}", agent, question),
+                ));
+                app.pending_query = Some(query);
+                app.query_prompt = Some(agent);
+                app.message_auto_scroll = true;
             }
         }
 
@@ -310,14 +335,26 @@ pub async fn run_tui(
 
         // Check for pending task submission (set by input handler on Enter)
         if let Some(task) = app.pending_task.take() {
-            // Mark start of new agentic burst for inline ticker
-            app.activity_burst_start = app.activity_log.len();
-            let agent_name = if let super::app::TabId::Agent(ref name) = app.active_tab {
-                Some(name.as_str())
+            // If we're in query mode, send the response to the waiting agent
+            if let Some(query) = app.pending_query.take() {
+                let agent = app.query_prompt.take().unwrap_or_default();
+                let _ = query.response_tx.send(task.clone());
+                app.chat_log.push(super::app::ChatEntry::new(
+                    "user",
+                    format!("[→ {}] {}", agent, task),
+                ));
+                app.message_auto_scroll = true;
             } else {
-                app.selected_agent.as_deref()
-            };
-            inject_task(pipeline, &kernel, &task, agent_name).await;
+                // Normal mode: inject as new task
+                // Mark start of new agentic burst for inline ticker
+                app.activity_burst_start = app.activity_log.len();
+                let agent_name = if let super::app::TabId::Agent(ref name) = app.active_tab {
+                    Some(name.as_str())
+                } else {
+                    app.selected_agent.as_deref()
+                };
+                inject_task(pipeline, &kernel, &task, agent_name).await;
+            }
         }
     }
 

@@ -40,6 +40,7 @@ use crate::treesitter::handler::CodeIndexHandler;
 use crate::treesitter::CodeIndex;
 use crate::wasm::definitions::WasmToolRegistry;
 use crate::wasm::peer::WasmToolPeer;
+use crate::wasm::python_runtime::{PythonRuntime, PythonToolPeer};
 use crate::wasm::runtime::WasmRuntime;
 
 /// AgentPipeline: wraps rust-pipeline's Pipeline with kernel integration.
@@ -58,6 +59,8 @@ pub struct AgentPipeline {
     llm_pool: Option<Arc<Mutex<LlmPool>>>,
     /// Receiver for tool approval requests from handlers (consumed by TUI runner).
     approval_rx: Option<tokio::sync::mpsc::Receiver<crate::agent::permissions::ToolApprovalRequest>>,
+    /// Receiver for user query requests from agents (consumed by TUI runner).
+    query_rx: Option<tokio::sync::mpsc::Receiver<crate::tools::user_channel::UserQueryRequest>>,
 }
 
 impl AgentPipeline {
@@ -92,6 +95,7 @@ impl AgentPipeline {
             event_tx,
             llm_pool: None,
             approval_rx: None,
+            query_rx: None,
         })
     }
 
@@ -226,6 +230,13 @@ impl AgentPipeline {
         self.approval_rx.take()
     }
 
+    /// Take the user query request receiver (consumed once by TUI runner).
+    pub fn take_query_receiver(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::tools::user_channel::UserQueryRequest>> {
+        self.query_rx.take()
+    }
+
     /// Reload organism configuration and rebuild security tables.
     pub fn reload(
         &mut self,
@@ -263,6 +274,10 @@ pub struct AgentPipelineBuilder {
     approval_tx: tokio::sync::mpsc::Sender<crate::agent::permissions::ToolApprovalRequest>,
     /// Receiver end of approval channel (consumed by TUI runner).
     approval_rx: Option<tokio::sync::mpsc::Receiver<crate::agent::permissions::ToolApprovalRequest>>,
+    /// User query channel (agent asks user a question → TUI).
+    query_tx: tokio::sync::mpsc::Sender<crate::tools::user_channel::UserQueryRequest>,
+    /// Receiver end of query channel (consumed by TUI runner).
+    query_rx: Option<tokio::sync::mpsc::Receiver<crate::tools::user_channel::UserQueryRequest>>,
     /// Debug mode: enables DebugGate middleware and PermissionGate override.
     debug: bool,
 }
@@ -272,6 +287,7 @@ impl AgentPipelineBuilder {
     pub fn new(organism: Organism, data_dir: &Path) -> Self {
         let (event_tx, _) = broadcast::channel(256);
         let (approval_tx, approval_rx) = tokio::sync::mpsc::channel(8);
+        let (query_tx, query_rx) = tokio::sync::mpsc::channel(8);
         Self {
             organism,
             data_dir: data_dir.to_path_buf(),
@@ -289,8 +305,20 @@ impl AgentPipelineBuilder {
             buffer_tool_definitions: Vec::new(),
             approval_tx,
             approval_rx: Some(approval_rx),
+            query_tx,
+            query_rx: Some(query_rx),
             debug: false,
         }
+    }
+
+    /// Get the event broadcast sender (for registering UserChannelHandler).
+    pub fn event_sender(&self) -> broadcast::Sender<PipelineEvent> {
+        self.event_tx.clone()
+    }
+
+    /// Get the user query sender (for registering UserChannelHandler).
+    pub fn query_sender(&self) -> tokio::sync::mpsc::Sender<crate::tools::user_channel::UserQueryRequest> {
+        self.query_tx.clone()
     }
 
     /// Enable debug mode: registers DebugGate middleware and overrides PermissionGate.
@@ -433,7 +461,11 @@ impl AgentPipelineBuilder {
     /// 4. Create BufferHandler and register it
     ///
     /// Buffer tool definitions are stored for later inclusion by `with_agents()`.
-    pub fn with_buffer_nodes(mut self, base_dir: &std::path::Path) -> Result<Self, String> {
+    pub fn with_buffer_nodes(
+        mut self,
+        base_dir: &std::path::Path,
+        drive_slot: crate::tools::vdrive_tools::DriveSlot,
+    ) -> Result<Self, String> {
         let pool = match self.llm_pool.clone() {
             Some(p) => p,
             None => return Ok(self), // No LLM pool — skip silently (buffer needs LLM)
@@ -474,14 +506,22 @@ impl AgentPipelineBuilder {
             }
 
             // Validate: all required tools are known
-            let known_tools = [
+            let mut known_tools = vec![
                 "file-read",
                 "file-write",
                 "file-edit",
                 "glob",
                 "grep",
+                "list-dir",
                 "bash",
+                "validate-organism",
+                "codebase-index",
+                "user",
             ];
+            // Safe command tools are also known
+            for def in crate::tools::safe_commands::ALL_SAFE_COMMANDS {
+                known_tools.push(def.name);
+            }
             for req in &buf.requires {
                 if !known_tools.contains(&req.as_str()) {
                     return Err(format!(
@@ -495,12 +535,14 @@ impl AgentPipelineBuilder {
             let tool_def = buf.to_tool_definition(&def.name);
             self.buffer_tool_definitions.push(tool_def);
 
-            // Create and register the BufferHandler
+            // Create and register the BufferHandler (inherits parent's VDrive sandbox)
             let handler = crate::buffer::BufferHandler::new(
                 pool.clone(),
                 child_org,
                 buf.clone(),
+                drive_slot.clone(),
                 Some(self.event_tx.clone()),
+                Some(self.query_tx.clone()),
             );
             self = self.register(&def.name, handler)?;
         }
@@ -657,6 +699,68 @@ impl AgentPipelineBuilder {
                 Arc::new(component),
                 caps.clone(),
             );
+            self = self.register(name, peer)?;
+        }
+
+        self.wasm_runtime = Some(runtime);
+        self.wasm_registry = Some(registry);
+        Ok(self)
+    }
+
+    /// Scans the organism config for listeners with `handler: "python"`,
+    /// loads each .py source, extracts metadata via PythonRuntime, registers
+    /// PythonToolPeer as the handler, and stores ToolDefinitions for `with_agents()`.
+    ///
+    /// Source paths in the python config are resolved relative to `base_dir`.
+    /// The python-runtime.wasm is loaded from `wasm_dir`.
+    pub fn with_python_tools(mut self, base_dir: &Path, wasm_dir: &Path) -> Result<Self, String> {
+        // Collect Python listener info to avoid borrow conflict
+        let py_listeners: Vec<_> = self
+            .organism
+            .listeners()
+            .values()
+            .filter(|l| l.handler == "python")
+            .filter_map(|l| {
+                l.python.as_ref().map(|p| {
+                    (l.name.clone(), p.source.clone())
+                })
+            })
+            .collect();
+
+        if py_listeners.is_empty() {
+            return Ok(self); // No Python tools declared — nothing to do
+        }
+
+        // Create or reuse the WASM runtime
+        let runtime = match self.wasm_runtime.take() {
+            Some(rt) => rt,
+            None => Arc::new(
+                WasmRuntime::new().map_err(|e| format!("WASM runtime creation failed: {e}"))?,
+            ),
+        };
+
+        // Load the Python runtime component (once — 42MB, shared across all tools)
+        let py_wasm_path = wasm_dir.join("python-runtime.wasm");
+        let py_runtime = Arc::new(
+            PythonRuntime::load(runtime.clone(), &py_wasm_path)
+                .map_err(|e| format!("Python runtime load failed: {e}"))?,
+        );
+
+        // Ensure we have a WASM registry for tool definitions
+        let mut registry = self.wasm_registry.take().unwrap_or_default();
+
+        for (name, source_path) in &py_listeners {
+            let full_path = base_dir.join(source_path);
+            let source = std::fs::read_to_string(&full_path)
+                .map_err(|e| format!("Python tool '{}' source read failed ({}): {e}", name, full_path.display()))?;
+
+            let peer = PythonToolPeer::new(py_runtime.clone(), source)
+                .map_err(|e| format!("Python tool '{}' init failed: {e}", name))?;
+
+            // Register metadata in WASM registry for ToolDefinition lookup
+            registry.register(peer.metadata())
+                .map_err(|e| format!("Python tool '{}' registry failed: {e}", name))?;
+
             self = self.register(name, peer)?;
         }
 
@@ -965,6 +1069,24 @@ impl AgentPipelineBuilder {
             ),
         );
 
+        // InjectionGuard (pre_dispatch): quarantines tool output headed to agents.
+        // On suspected injection: popup for approval (interactive) or block (headless).
+        {
+            let agent_name_set: std::collections::HashSet<String> = self
+                .organism
+                .agent_listeners()
+                .iter()
+                .map(|def| def.name.clone())
+                .collect();
+            pipeline.add_middleware(
+                crate::agent::middleware::injection_guard::InjectionGuard::new(
+                    agent_name_set,
+                )
+                .with_approval(self.approval_tx.clone())
+                .with_events(self.event_tx.clone()),
+            );
+        }
+
         Ok(AgentPipeline {
             pipeline,
             kernel: Arc::new(Mutex::new(kernel)),
@@ -973,6 +1095,7 @@ impl AgentPipelineBuilder {
             event_tx: self.event_tx,
             llm_pool: self.llm_pool.clone(),
             approval_rx: self.approval_rx,
+            query_rx: self.query_rx,
         })
     }
 }

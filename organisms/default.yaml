@@ -188,9 +188,14 @@ listeners:
     handler: tools.command_exec.handle
     description: "Command execution"
 
+  - name: compile-wasm
+    payload_class: tools.CompileWasmRequest
+    handler: tools.compile_wasm.handle
+    description: "Compile Python tool to WASM component"
+
 profiles:
   coding:
     linux_user: agentos
-    listeners: [planner, coder, organism-builder, coding-agent, file-read, file-write, file-edit, glob, grep, command-exec, codebase-index, llm-pool, librarian]
+    listeners: [planner, coder, organism-builder, coding-agent, file-read, file-write, file-edit, glob, grep, command-exec, compile-wasm, codebase-index, llm-pool, librarian]
     network: [llm-pool]
     journal: retain_forever

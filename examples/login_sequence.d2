@@ -1,0 +1,11 @@
+shape: sequence_diagram
+
+User: User
+Server: Auth Server
+DB: Database
+
+User -> Server: POST /login
+Server -> DB: SELECT user
+DB -> Server: user record
+Server -> Server: validate password
+Server -> User: 200 OK + token

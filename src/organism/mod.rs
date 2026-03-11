@@ -20,6 +20,13 @@ pub struct WasmToolConfig {
     pub capabilities: WasmCapabilities,
 }
 
+/// Python tool configuration on a listener (handler == "python").
+#[derive(Debug, Clone)]
+pub struct PythonToolConfig {
+    /// Path to the .py source file (relative to organism base dir).
+    pub source: String,
+}
+
 /// Agent configuration block on a listener.
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -78,6 +85,9 @@ pub struct BufferConfig {
     pub organism: Option<String>, // None = clone self (recursive buffer)
     pub max_concurrency: usize,   // default 5
     pub timeout_secs: u64,        // default 300
+    /// When true, child pipeline events (thinking, tool calls) are forwarded
+    /// to the parent event bus so the TUI can display agent activity in real time.
+    pub context_visible: bool,    // default false
 }
 
 impl BufferConfig {
@@ -158,6 +168,8 @@ pub struct ListenerDef {
     pub librarian: bool,
     /// WASM tool configuration (present when handler == "wasm").
     pub wasm: Option<WasmToolConfig>,
+    /// Python tool configuration (present when handler == "python").
+    pub python: Option<PythonToolConfig>,
     /// Rich semantic description for embedding-based routing.
     /// Consumed by the embedding model, never enters the thinker's context.
     pub semantic_description: Option<String>,
@@ -375,6 +387,7 @@ mod tests {
             semantic_description: None,
             agent_config: None,
             buffer: None,
+            python: None,
         }
     }
 
@@ -504,6 +517,7 @@ mod tests {
             semantic_description: None,
             agent_config: None,
             buffer: None,
+            python: None,
         })
         .unwrap();
 
@@ -534,6 +548,7 @@ mod tests {
             semantic_description: None,
             agent_config: None,
             buffer: None,
+            python: None,
         })
         .unwrap();
 

@@ -3,3 +3,7 @@
 /.claude
 /tools/*/target
 .agentos/
+*.env
+.env.*
+CODEBASE_REVIEW.md
+REVIEW.md

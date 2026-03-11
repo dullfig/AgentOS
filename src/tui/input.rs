@@ -338,6 +338,21 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         }
     }
 
+    // User query mode: Esc cancels, all other input goes to normal input handler
+    // (the pending_task path in runner.rs routes it to the query response)
+    if app.pending_query.is_some() {
+        if key.code == KeyCode::Esc {
+            if let Some(query) = app.pending_query.take() {
+                let agent = app.query_prompt.take().unwrap_or_default();
+                drop(query.response_tx); // dropping oneshot signals "declined"
+                push_feedback(app, &format!("Declined query from {agent}"));
+            }
+            return;
+        }
+        // All other keys fall through to normal input handling —
+        // Enter will set pending_task, which runner.rs routes to the query.
+    }
+
     // File picker modal
     if app.file_picker.is_some() {
         handle_file_picker_key(app, key);

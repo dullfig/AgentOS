@@ -8,7 +8,7 @@ Zero-dependency crate containing the event types that flow between pipeline, age
 
 ## Types
 
-- **PipelineEvent** — Main enum: MessageInjected, SecurityBlocked, TokenUsage, KernelOp, SemanticMatch, FormFillAttempt, AgentResponse, AgentThinking, ToolDispatched, ToolCompleted, ConversationSync, ToolApproval
+- **PipelineEvent** — Main enum: MessageInjected, SecurityBlocked, TokenUsage, KernelOp, SemanticMatch, FormFillAttempt, AgentResponse, AgentThinking, ToolDispatched, ToolCompleted, ConversationSync, ToolApproval, InjectionDetected, InjectionAllowed, InjectionBlocked
 - **ConversationEntry** — Lightweight conversation display record (role, summary, tool info)
 - **KernelOpType** — ThreadCreated, ThreadPruned, ContextAllocated, ContextReleased, ContextFolded
 
@@ -17,6 +17,7 @@ Zero-dependency crate containing the event types that flow between pipeline, age
 - `agent/handler.rs` — emits AgentResponse, AgentThinking, ToolDispatched, ToolCompleted, ConversationSync
 - `agent/middleware/debug_gate.rs` — emits debug events
 - `agent/middleware/permission_gate.rs` — emits ToolApproval
+- `agent/middleware/injection_guard.rs` — emits InjectionDetected, InjectionAllowed, InjectionBlocked
 - `buffer/mod.rs` — forwards child pipeline events
 - `tui/app.rs` — displays all event types
 - `tui/event.rs` — wraps PipelineEvent in TUI event loop

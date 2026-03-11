@@ -83,6 +83,7 @@ mod tests {
                 semantic_description: None,
                 agent_config: None,
                 buffer: None,
+                python: None,
             },
         );
 

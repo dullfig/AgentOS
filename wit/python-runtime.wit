@@ -1,0 +1,24 @@
+package agentos:python-runtime@0.1.0;
+
+world python-runtime {
+    record tool-metadata {
+        name: string,
+        description: string,
+        semantic-description: string,
+        request-tag: string,
+        request-schema: string,
+        response-schema: string,
+        input-json-schema: string,
+    }
+
+    record tool-result {
+        success: bool,
+        payload: string,
+    }
+
+    /// Load a Python tool's source and extract its metadata.
+    export get-metadata: func(source: string) -> tool-metadata;
+
+    /// Execute a Python tool: load source, call handle(request_xml).
+    export handle: func(source: string, request-xml: string) -> tool-result;
+}

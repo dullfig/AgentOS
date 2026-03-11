@@ -126,12 +126,28 @@ These are provided by the runtime. Include them when your agent needs LLM infere
   handler: tools.grep.handle
   description: "Grep search"
 
-- name: command-exec
-  payload_class: tools.CommandExecRequest
+- name: list-dir
+  payload_class: tools.ListDirRequest
+  handler: tools.list_dir.handle
+  description: "List directory contents"
+
+- name: bash
+  payload_class: tools.BashRequest
   handler: tools.command_exec.handle
-  description: "Command execution"
+  description: "Shell command (last resort)"
+
+- name: validate-organism
+  payload_class: tools.ValidateOrganismRequest
+  handler: tools.validate_organism.handle
+  description: "Validate organism YAML configuration"
 ```
+
+## Safe command tools
+
+Virtualized commands with fixed executables — no shell interpretation, auto-approved by default.
+
+`cargo-test`, `cargo-build`, `cargo-check`, `cargo-clippy`, `git-status`, `git-diff`, `git-log`, `git-add`, `git-commit`, `git-push`
 
 ## Known tool names for `requires`
 
-`file-read`, `file-write`, `file-edit`, `glob`, `grep`, `command-exec`
+`file-read`, `file-write`, `file-edit`, `glob`, `grep`, `list-dir`, `bash`, `validate-organism`, `cargo-test`, `cargo-build`, `cargo-check`, `cargo-clippy`, `git-status`, `git-diff`, `git-log`, `git-add`, `git-commit`, `git-push`

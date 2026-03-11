@@ -11,7 +11,8 @@ use serde::Deserialize;
 
 use super::profile::{RetentionPolicy, SecurityProfile};
 use super::{
-    AgentConfig, BufferConfig, CallableParam, ListenerDef, Organism, PortDef, WasmToolConfig,
+    AgentConfig, BufferConfig, CallableParam, ListenerDef, Organism, PortDef, PythonToolConfig,
+    WasmToolConfig,
 };
 use crate::agent::permissions::{PermissionMap, PermissionTier};
 use crate::wasm::capabilities::{EnvGrant, FsGrant, WasmCapabilities};
@@ -77,6 +78,9 @@ struct ListenerYaml {
     /// Buffer node: callable tool interface + child pipeline spawn config.
     #[serde(default)]
     buffer: Option<BufferYaml>,
+    /// Python tool configuration (handler == "python").
+    #[serde(default)]
+    python: Option<PythonYaml>,
 }
 
 /// Agent field: `true` for defaults, or a configuration block. Untagged for YAML flexibility.
@@ -205,6 +209,9 @@ struct BufferYaml {
     #[serde(default = "default_timeout_secs")]
     #[schemars(default = "default_timeout_secs")]
     timeout_secs: u64,
+    /// Forward child events (thinking, tool calls) to parent TUI. Default: false.
+    #[serde(default)]
+    context_visible: bool,
 }
 
 fn default_max_concurrency() -> usize {
@@ -213,6 +220,13 @@ fn default_max_concurrency() -> usize {
 
 fn default_timeout_secs() -> u64 {
     300
+}
+
+/// Python tool configuration (handler == "python").
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PythonYaml {
+    /// Path to the .py source file (relative to organism base dir).
+    source: String,
 }
 
 /// Network port declaration for a listener.
@@ -415,7 +429,11 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
                     organism: b.organism,
                     max_concurrency: b.max_concurrency,
                     timeout_secs: b.timeout_secs,
+                    context_visible: b.context_visible,
                 }
+            }),
+            python: l.python.map(|p| PythonToolConfig {
+                source: p.source,
             }),
         })?;
     }
@@ -780,6 +798,58 @@ profiles:
         assert!(wasm.capabilities.filesystem.is_empty());
         assert!(wasm.capabilities.env_vars.is_empty());
         assert!(!wasm.capabilities.stdio);
+    }
+
+    // ── Python Tools: handler: python parsing ──
+
+    #[test]
+    fn parse_python_listener() {
+        let yaml = r#"
+organism:
+  name: test-python
+
+listeners:
+  - name: echo-py
+    payload_class: tools.EchoRequest
+    handler: python
+    description: "Echo tool (Python)"
+    python:
+      source: tools/echo_tool.py
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [echo-py]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let echo = org.get_listener("echo-py").unwrap();
+        assert_eq!(echo.handler, "python");
+        let py = echo.python.as_ref().expect("python config should be present");
+        assert_eq!(py.source, "tools/echo_tool.py");
+    }
+
+    #[test]
+    fn parse_listener_without_python() {
+        let yaml = r#"
+organism:
+  name: test-no-python
+
+listeners:
+  - name: regular
+    payload_class: tools.RegularRequest
+    handler: tools.regular.handle
+    description: "Regular tool"
+
+profiles:
+  admin:
+    linux_user: agentos-admin
+    listeners: [regular]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let regular = org.get_listener("regular").unwrap();
+        assert!(regular.python.is_none());
     }
 
     // ── Semantic Routing: semantic_description parsing ──
@@ -1459,7 +1529,7 @@ profiles:
 
     #[test]
     fn existing_organisms_parse() {
-        for path in &["organisms/default.yaml", "organisms/coder.yaml", "organisms/organism-builder.yaml"] {
+        for path in &["organisms/default.yaml", "organisms/coder.yaml", "organisms/coder-v2.yaml", "organisms/organism-builder.yaml", "organisms/agent-expert.yaml", "organisms/wiki-expert.yaml", "organisms/plan-expert.yaml"] {
             let content = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
             parse_organism(&content)

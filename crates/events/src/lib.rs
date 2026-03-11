@@ -80,6 +80,36 @@ pub enum PipelineEvent {
         tool_name: String,
         verdict: String, // "approved", "denied", "auto", "denied_by_policy"
     },
+    /// Suspected prompt injection detected in tool output.
+    InjectionDetected {
+        thread_id: String,
+        tool_name: String,
+        agent_name: String,
+    },
+    /// User allowed suspected injection through (quarantined).
+    InjectionAllowed {
+        thread_id: String,
+        tool_name: String,
+        agent_name: String,
+    },
+    /// User blocked suspected injection — sanitized output sent to agent.
+    InjectionBlocked {
+        thread_id: String,
+        tool_name: String,
+        agent_name: String,
+    },
+    /// Agent sent a display-only message to the user (no response expected).
+    UserDisplay {
+        thread_id: String,
+        agent_name: String,
+        text: String,
+    },
+    /// Agent is asking the user a question (response expected).
+    UserQuery {
+        thread_id: String,
+        agent_name: String,
+        question: String,
+    },
 }
 
 /// A conversation entry for TUI display (lightweight, no raw API content).

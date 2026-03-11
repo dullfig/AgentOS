@@ -536,6 +536,10 @@ pub struct TuiApp {
     /// Pending tool approval request from the agent handler.
     /// When Some, the TUI shows an inline approval bar and waits for user input.
     pub pending_approval: Option<ToolApprovalRequest>,
+    /// Pending user query from an agent (awaiting user's typed response).
+    pub pending_query: Option<crate::tools::user_channel::UserQueryRequest>,
+    /// Agent name to show in query mode prompt (e.g., "plan-expert >").
+    pub query_prompt: Option<String>,
     /// Cached layout regions for mouse hit-testing (updated each render frame).
     pub layout_areas: super::mouse::LayoutAreas,
     /// Current text selection state (Messages tab).
@@ -740,6 +744,8 @@ impl TuiApp {
             selected_agent: None,
             agents_config: AgentsConfig::default(),
             pending_approval: None,
+            pending_query: None,
+            query_prompt: None,
             layout_areas: super::mouse::LayoutAreas::default(),
             text_selection: super::mouse::TextSelection::default(),
             rendered_messages_text: Vec::new(),
@@ -1170,6 +1176,19 @@ impl TuiApp {
                     detail: verdict.clone(),
                     status,
                 });
+            }
+            PipelineEvent::UserDisplay { agent_name, text, .. } => {
+                // Display-only message from an agent — show in chat
+                let formatted = format!("*{}*: {}", agent_name, text);
+                if let Some(tab) = self.agent_tabs.get_mut(agent_name.as_str()) {
+                    tab.chat_log.push(ChatEntry::new("agent", &formatted));
+                }
+                self.chat_log.push(ChatEntry::new("agent", &formatted));
+                self.message_auto_scroll = true;
+            }
+            PipelineEvent::UserQuery { .. } => {
+                // Handled via query_rx channel in runner, not here.
+                // Event is emitted for logging/debug only.
             }
             _ => {}
         }

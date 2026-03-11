@@ -1,0 +1,148 @@
+organism:
+  name: coder-child
+
+prompts:
+  no_paperclipper: |
+    You are bounded. You do not pursue goals beyond your task.
+    You report uncertainty rather than improvising.
+
+  coder_base: |
+    You are a coding agent that executes tasks. You write code, edit files,
+    run tests, and use git — whatever the task requires.
+
+    Your output is rendered in a TUI with full markdown support. You can use:
+    - Headings, bold, italic, code blocks (with syntax highlighting)
+    - Pipe-delimited markdown tables (rendered as box-drawing art)
+    - D2 diagrams in fenced code blocks (```d2)
+
+    Rules:
+    1. Read before you write. Always understand existing code before modifying it.
+    2. Make the smallest change that solves the problem.
+    3. Test your changes when possible (run tests, verify output).
+    4. If a tool call fails, analyze the error and try a different approach.
+    5. When done, provide a clear summary of what you did.
+    6. Prefer specific tools over bash. Use cargo-test, cargo-check, git-status, etc.
+       Only use bash as a last resort when no specific tool exists for the command.
+    7. If a memory.md exists in the workspace root, read it at the start of each task
+       for project context and conventions. When you discover stable patterns,
+       architectural decisions, or recurring solutions, update it. Keep it concise.
+
+    {tool_definitions}
+
+listeners:
+  - name: coder-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Coding agent — writes code, runs tests, uses git"
+    agent:
+      prompt: "no_paperclipper & coder_base"
+      max_tokens: 4096
+      max_agentic_iterations: 25
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, bash, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, codebase-index]
+
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: codebase-index
+    payload_class: treesitter.CodeIndexRequest
+    handler: treesitter.handle
+    description: "Tree-sitter code indexing"
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+  - name: file-write
+    payload_class: tools.FileWriteRequest
+    handler: tools.file_write.handle
+    description: "Write files"
+
+  - name: file-edit
+    payload_class: tools.FileEditRequest
+    handler: tools.file_edit.handle
+    description: "Edit files"
+
+  - name: glob
+    payload_class: tools.GlobRequest
+    handler: tools.glob.handle
+    description: "Glob search"
+
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep search"
+
+  - name: list-dir
+    payload_class: tools.ListDirRequest
+    handler: tools.list_dir.handle
+    description: "List directory contents"
+
+  - name: bash
+    payload_class: tools.BashRequest
+    handler: tools.command_exec.handle
+    description: "Shell command (last resort)"
+
+  - name: cargo-test
+    payload_class: tools.CargoTestRequest
+    handler: tools.safe_commands.handle
+    description: "Run cargo test"
+
+  - name: cargo-build
+    payload_class: tools.CargoBuildRequest
+    handler: tools.safe_commands.handle
+    description: "Run cargo build"
+
+  - name: cargo-check
+    payload_class: tools.CargoCheckRequest
+    handler: tools.safe_commands.handle
+    description: "Run cargo check"
+
+  - name: cargo-clippy
+    payload_class: tools.CargoClippyRequest
+    handler: tools.safe_commands.handle
+    description: "Run cargo clippy"
+
+  - name: git-status
+    payload_class: tools.GitStatusRequest
+    handler: tools.safe_commands.handle
+    description: "Show git status"
+
+  - name: git-diff
+    payload_class: tools.GitDiffRequest
+    handler: tools.safe_commands.handle
+    description: "Show git diff"
+
+  - name: git-log
+    payload_class: tools.GitLogRequest
+    handler: tools.safe_commands.handle
+    description: "Show git log"
+
+  - name: git-add
+    payload_class: tools.GitAddRequest
+    handler: tools.safe_commands.handle
+    description: "Stage files for commit"
+
+  - name: git-commit
+    payload_class: tools.GitCommitRequest
+    handler: tools.safe_commands.handle
+    description: "Create a git commit"
+
+  - name: git-push
+    payload_class: tools.GitPushRequest
+    handler: tools.safe_commands.handle
+    description: "Push to remote"
+
+profiles:
+  executing:
+    linux_user: agentos
+    listeners: [coder-agent, file-read, file-write, file-edit, glob, grep, list-dir, bash, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, codebase-index, llm-pool]
+    network: [llm-pool]
+    journal: retain_forever

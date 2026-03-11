@@ -81,6 +81,11 @@
     "BufferYaml": {
       "description": "Buffer node: callable tool interface + child pipeline spawn config.\n\nA buffer makes a listener callable as a tool. The calling agent sends parameters; the system spawns an isolated child pipeline to execute.",
       "properties": {
+        "context_visible": {
+          "default": false,
+          "description": "Forward child events (thinking, tool calls) to parent TUI. Default: false.",
+          "type": "boolean"
+        },
         "description": {
           "description": "Tool description shown to the calling agent.",
           "type": "string"
@@ -307,6 +312,17 @@
           },
           "type": "array"
         },
+        "python": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PythonYaml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Python tool configuration (handler == \"python\")."
+        },
         "semantic_description": {
           "default": null,
           "description": "Natural language description for embedding-based semantic routing.",
@@ -432,6 +448,19 @@
       "required": [
         "linux_user",
         "listeners"
+      ],
+      "type": "object"
+    },
+    "PythonYaml": {
+      "description": "Python tool configuration (handler == \"python\").",
+      "properties": {
+        "source": {
+          "description": "Path to the .py source file (relative to organism base dir).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source"
       ],
       "type": "object"
     },

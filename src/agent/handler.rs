@@ -272,12 +272,20 @@ impl CodingAgentHandler {
     }
 
     /// Call the LLM API with the current conversation state.
+    ///
+    /// Wraps the API call in a 5-minute timeout to prevent indefinite hangs
+    /// (e.g., network stalls, API overload). The reqwest client also has its
+    /// own 5-minute timeout as a second safety net.
     async fn call_opus(
         &self,
         thread: &AgentThread,
     ) -> Result<crate::llm::types::MessagesResponse, String> {
         // Optional: curate context before the API call
-        let mut system = self.system_prompt.clone();
+        let mut system = format!(
+            "{}{}",
+            self.system_prompt,
+            crate::agent::middleware::injection_guard::QUARANTINE_SYSTEM_PROMPT,
+        );
         if let Some(ref librarian) = self.librarian {
             let lib = librarian.lock().await;
             let budget = 6000usize;
@@ -289,15 +297,18 @@ impl CodingAgentHandler {
         }
 
         let pool = self.pool.lock().await;
-        pool.complete_with_tools(
+        let fut = pool.complete_with_tools(
             self.model.as_deref(),
             thread.messages.clone(),
             self.max_tokens,
             Some(&system),
             self.tool_definitions.clone(),
-        )
-        .await
-        .map_err(|e| format!("LLM API error: {e}"))
+        );
+
+        match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
+            Ok(result) => result.map_err(|e| format!("LLM API error: {e}")),
+            Err(_) => Err("LLM API call timed out after 5 minutes".into()),
+        }
     }
 
     /// Process an Opus response: extract tool calls or final text.

@@ -4,5 +4,6 @@
 //! that belong at the pipeline level as composable middleware.
 
 pub mod debug_gate;
+pub mod injection_guard;
 pub mod loop_guard;
 pub mod permission_gate;

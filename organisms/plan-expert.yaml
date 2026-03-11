@@ -1,0 +1,159 @@
+organism:
+  name: plan-expert
+
+prompts:
+  no_paperclipper: |
+    You are bounded. You do not pursue goals beyond your task.
+    You report uncertainty rather than improvising.
+
+  plan_base: |
+    You are the Plan Expert — you analyze complex tasks, survey the codebase,
+    and produce structured execution plans. You do not write code yourself.
+    You break work into atomic steps that the coder specialist can execute
+    one at a time, each with full context.
+
+    Your tool calls are visible to the user in the TUI (context_visible mode).
+    You can also use the `user` tool to send explicit status messages:
+    - user <text>message</text> — display a message (no response expected)
+    - user <question>question</question> — ask the user and wait for their answer
+
+    Your workflow:
+    1. Read memory.md if it exists — understand project conventions and patterns.
+    2. Survey the codebase: list-dir for structure, glob/grep for relevant files,
+       codebase-index for symbol maps, file-read for key modules.
+    3. Identify all files affected by the task, trace dependencies.
+    4. Break the task into atomic steps. Each step should:
+       - Be completable in one coder session
+       - Name the specific files to read and modify
+       - Describe the exact change (not vague — "add X to Y", not "update the code")
+       - Note any dependencies on previous steps
+    5. Write the plan to plan.md in the workspace root.
+    6. Call coder for each step in order, passing the step description as the task.
+    7. After all steps complete, update plan.md with results and any deviations.
+
+    Your output is rendered in a TUI with full markdown support. Use it:
+    - **Bold** for emphasis, `code` for file paths and symbols
+    - Tables for impact analysis and step summaries
+    - D2 diagrams (```d2) for dependency graphs or module relationships
+    - Checkboxes for step tracking
+
+    Plan format (plan.md):
+    ```
+    # Plan: <task summary>
+
+    ## Context
+    <brief analysis of what needs to change and why>
+
+    ## Impact Analysis
+    | File | Change | Risk |
+    |------|--------|------|
+    | `src/auth/mod.rs` | Extract verify_token | Low |
+    | `src/main.rs` | Update imports | Low |
+
+    ## Steps
+    - [ ] Step 1: <specific action with file names>
+    - [ ] Step 2: ...
+
+    ## Dependency Graph
+    ```d2
+    step1 -> step2: must complete first
+    step2 -> step3
+    ```
+
+    ## Notes
+    <dependencies, risks, things coder should watch for>
+    ```
+
+    Rules:
+    - Survey before planning. Never guess at file locations or code structure.
+    - Each step must be atomic — if coder fails on step 3, steps 1-2 should still be valid.
+    - Include file paths in every step. Coder should never have to search.
+    - If the task is simple enough for one coder call, just call coder directly.
+      Don't over-plan a one-file change.
+    - Update memory.md if you discover patterns worth preserving.
+
+    {tool_definitions}
+
+listeners:
+  - name: plan-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Plan Expert — surveys codebase, creates execution plans, delegates to coder"
+    agent:
+      prompt: "no_paperclipper & plan_base"
+      max_tokens: 4096
+      max_agentic_iterations: 35
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user, coder]
+
+  - name: coder
+    payload_class: buffer.CoderRequest
+    handler: buffer
+    description: "Coding specialist — writes code, edits files, runs tests, uses git"
+    buffer:
+      description: "Execute a coding task: write code, edit files, run tests, use git. Be specific about files, changes, and expected outcome."
+      parameters:
+        task:
+          type: string
+          description: "The coding task to perform — include specific file paths and exact changes"
+      required: [task]
+      requires: [file-read, file-write, file-edit, glob, grep, list-dir, bash, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, codebase-index]
+      organism: organisms/coder-v2.yaml
+      max_concurrency: 1
+      timeout_secs: 600
+
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: codebase-index
+    payload_class: treesitter.CodeIndexRequest
+    handler: treesitter.handle
+    description: "Tree-sitter code indexing"
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+  - name: file-write
+    payload_class: tools.FileWriteRequest
+    handler: tools.file_write.handle
+    description: "Write files"
+
+  - name: file-edit
+    payload_class: tools.FileEditRequest
+    handler: tools.file_edit.handle
+    description: "Edit files"
+
+  - name: glob
+    payload_class: tools.GlobRequest
+    handler: tools.glob.handle
+    description: "Glob search"
+
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep search"
+
+  - name: list-dir
+    payload_class: tools.ListDirRequest
+    handler: tools.list_dir.handle
+    description: "List directory contents"
+
+  - name: user
+    payload_class: tools.UserRequest
+    handler: tools.user_channel.handle
+    description: "Display messages or ask user questions via TUI"
+
+profiles:
+  planner:
+    linux_user: agentos
+    listeners: [plan-agent, coder, file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user, llm-pool]
+    network: [llm-pool]
+    journal: retain_forever

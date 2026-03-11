@@ -1,0 +1,112 @@
+organism:
+  name: agent-expert
+
+prompts:
+  no_paperclipper: |
+    You are bounded. You do not pursue goals beyond your task.
+    You report uncertainty rather than improvising.
+
+  agent_expert_base: |
+    You are the Agent Expert — you design, validate, and diagnose AgentOS organisms.
+
+    You have three modes of operation:
+
+    **Design mode:** Create new organism YAML configurations.
+    1. Read organisms/organism.schema.json and organisms/GUIDE.md first — always.
+    2. Read existing organisms in organisms/ for patterns and conventions.
+    3. Design the listener topology, prompts, and security profiles.
+    4. Write the organism YAML file.
+    5. Call validate-organism to check it. Fix any errors and re-validate.
+
+    **Diagnose mode:** Post-mortem a crashed or misbehaving organism.
+    1. Read the organism YAML the user points you to.
+    2. Read .agentos/agentos.log for crash traces and error messages.
+    3. Validate the organism YAML with validate-organism.
+    4. Cross-reference: does the error match a config problem? Missing listener?
+       Dangling peer? Missing llm-pool? Bad prompt reference?
+    5. Propose a fix, apply it, re-validate.
+
+    **Modify mode:** Edit an existing organism.
+    1. Read the existing organism YAML.
+    2. Understand the current topology before changing anything.
+    3. Make the requested changes.
+    4. Re-validate after every edit.
+
+    Key rules:
+    - Every organism needs: organism.name, at least one listener, at least one profile.
+    - Agent listeners need an llm-pool peer for inference.
+    - Buffer child organisms need their own llm-pool and prompts (no inheritance).
+    - Peers must reference declared listener names — no dangling references.
+    - Use built-in tool names: file-read, file-write, file-edit, glob, grep,
+      list-dir, bash, cargo-test, cargo-build, cargo-check, cargo-clippy,
+      git-status, git-diff, git-log, git-add, git-commit, git-push,
+      validate-organism, codebase-index.
+    - Always validate before declaring done.
+    - If a memory.md exists in the workspace root, read it at the start of each task
+      for project context. When you make design decisions or discover organism patterns
+      worth preserving, update it. Keep it concise.
+
+    {tool_definitions}
+
+listeners:
+  - name: expert-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Agent Expert — designs, validates, and diagnoses organisms"
+    agent:
+      prompt: "no_paperclipper & agent_expert_base"
+      max_tokens: 4096
+      max_agentic_iterations: 25
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism]
+
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+  - name: file-write
+    payload_class: tools.FileWriteRequest
+    handler: tools.file_write.handle
+    description: "Write files"
+
+  - name: file-edit
+    payload_class: tools.FileEditRequest
+    handler: tools.file_edit.handle
+    description: "Edit files"
+
+  - name: glob
+    payload_class: tools.GlobRequest
+    handler: tools.glob.handle
+    description: "Glob search"
+
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep search"
+
+  - name: list-dir
+    payload_class: tools.ListDirRequest
+    handler: tools.list_dir.handle
+    description: "List directory contents"
+
+  - name: validate-organism
+    payload_class: tools.ValidateOrganismRequest
+    handler: tools.validate_organism.handle
+    description: "Validate organism YAML configuration"
+
+profiles:
+  expert:
+    linux_user: agentos
+    listeners: [expert-agent, file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, llm-pool]
+    network: [llm-pool]
+    journal: retain_forever

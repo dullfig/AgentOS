@@ -5,6 +5,7 @@
 //! instantiates the component, and calls handle(xml).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rust_pipeline::prelude::*;
@@ -15,6 +16,10 @@ use super::capabilities::WasmCapabilities;
 use super::error::WasmError;
 use super::runtime::{ToolMetadata, ToolState, WasmComponent, WasmRuntime};
 use crate::tools::{ToolPeer, ToolResponse};
+
+/// Timeout for WASM tool execution (5 minutes).
+/// Prevents hung tools from blocking the agent thread indefinitely.
+const WASM_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// A WASM tool component exposed as a pipeline Handler + ToolPeer.
 ///
@@ -65,12 +70,23 @@ impl Handler for WasmToolPeer {
 
         // Bridge async pipeline → sync WASM via spawn_blocking.
         // Fresh Store per invocation = complete isolation.
-        let result = tokio::task::spawn_blocking(move || {
+        // Wrapped in a timeout to prevent hung tools from blocking the agent.
+        let task = tokio::task::spawn_blocking(move || {
             execute_wasm_tool(&runtime, &component, &xml, &caps)
-        })
-        .await
-        .map_err(|e| PipelineError::Handler(format!("WASM task panicked: {e}")))?
-        .map_err(|e: WasmError| PipelineError::Handler(format!("WASM: {e}")))?;
+        });
+
+        let result = match tokio::time::timeout(WASM_TOOL_TIMEOUT, task).await {
+            Ok(join_result) => join_result
+                .map_err(|e| PipelineError::Handler(format!("WASM task panicked: {e}")))?
+                .map_err(|e: WasmError| PipelineError::Handler(format!("WASM: {e}")))?,
+            Err(_) => {
+                return Ok(HandlerResponse::Reply {
+                    payload_xml: ToolResponse::err(
+                        "WASM tool execution timed out after 5 minutes",
+                    ),
+                });
+            }
+        };
 
         let response = if result.0 {
             ToolResponse::ok(&result.1)
@@ -345,6 +361,42 @@ mod tests {
             HandlerResponse::Reply { payload_xml } => {
                 let xml = String::from_utf8(payload_xml).unwrap();
                 assert!(xml.contains("echo: second"));
+            }
+            _ => panic!("expected Reply"),
+        }
+    }
+
+    // ── Python WASM component tests ──
+
+    fn load_echo_py_peer() -> (Arc<WasmRuntime>, WasmToolPeer) {
+        let runtime = Arc::new(WasmRuntime::new().unwrap());
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("echo-py.wasm");
+        let component = Arc::new(runtime.load_component_from_path(&path).unwrap());
+        let peer = WasmToolPeer::new(runtime.clone(), component);
+        (runtime, peer)
+    }
+
+    #[test]
+    fn python_peer_name() {
+        let (_rt, peer) = load_echo_py_peer();
+        assert_eq!(peer.name(), "echo-py");
+    }
+
+    #[tokio::test]
+    async fn python_handle_echo() {
+        let (_rt, peer) = load_echo_py_peer();
+        let payload = ValidatedPayload {
+            xml: b"<EchoRequest><message>hello from python</message></EchoRequest>".to_vec(),
+            tag: "EchoRequest".into(),
+        };
+        let result = peer.handle(payload, make_ctx()).await.unwrap();
+        match result {
+            HandlerResponse::Reply { payload_xml } => {
+                let xml = String::from_utf8(payload_xml).unwrap();
+                assert!(xml.contains("echo-py: hello from python"), "got: {xml}");
             }
             _ => panic!("expected Reply"),
         }

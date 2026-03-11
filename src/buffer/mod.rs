@@ -26,6 +26,11 @@ use crate::organism::parser::load_organism;
 use crate::organism::{BufferConfig, Organism};
 use crate::pipeline::events::PipelineEvent;
 use crate::pipeline::AgentPipelineBuilder;
+use crate::tools::vdrive_tools::{
+    DriveSlot, VDriveFileRead, VDriveFileWrite, VDriveFileEdit,
+    VDriveGlob, VDriveGrep, VDriveListDir, VDriveCommandExec,
+};
+use crate::tools::user_channel::{UserChannelHandler, UserQueryRequest};
 use crate::tools::{self, ToolResponse};
 
 /// Buffer handler — manages ephemeral child pipeline lifecycles.
@@ -34,8 +39,12 @@ pub struct BufferHandler {
     child_organism: Organism,
     config: BufferConfig,
     semaphore: Arc<Semaphore>,
+    /// Shared drive slot — child pipelines inherit the parent's VDrive sandbox.
+    drive_slot: DriveSlot,
     /// Event sender from the host pipeline (for forwarding child events).
-    _event_tx: Option<broadcast::Sender<PipelineEvent>>,
+    event_tx: Option<broadcast::Sender<PipelineEvent>>,
+    /// Query sender from the host pipeline (for forwarding user queries to TUI).
+    query_tx: Option<tokio::sync::mpsc::Sender<UserQueryRequest>>,
 }
 
 impl BufferHandler {
@@ -44,7 +53,9 @@ impl BufferHandler {
         pool: Arc<Mutex<LlmPool>>,
         child_organism: Organism,
         config: BufferConfig,
+        drive_slot: DriveSlot,
         event_tx: Option<broadcast::Sender<PipelineEvent>>,
+        query_tx: Option<tokio::sync::mpsc::Sender<UserQueryRequest>>,
     ) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrency));
         Self {
@@ -52,7 +63,9 @@ impl BufferHandler {
             child_organism,
             config,
             semaphore,
-            _event_tx: event_tx,
+            drive_slot,
+            event_tx,
+            query_tx,
         }
     }
 
@@ -77,8 +90,14 @@ impl BufferHandler {
         // Inject shared LLM pool
         builder = builder.with_shared_llm_pool(self.pool.clone())?;
 
-        // Register required tools as fresh instances
-        builder = register_required_tools(builder, &self.config.requires)?;
+        // Register sandboxed VDrive tools (inheriting parent's drive slot)
+        builder = register_required_tools(
+            builder,
+            &self.config.requires,
+            self.drive_slot.clone(),
+            self.event_tx.as_ref(),
+            self.query_tx.as_ref(),
+        )?;
 
         // Wire agents from child organism config
         builder = builder.with_agents()?;
@@ -102,6 +121,39 @@ impl BufferHandler {
 
         // Subscribe to child events
         let mut rx = child_pipeline.subscribe();
+
+        // If context_visible, spawn a forwarder that relays child events to parent TUI
+        let _forwarder = if self.config.context_visible {
+            if let Some(parent_tx) = &self.event_tx {
+                let mut fwd_rx = child_pipeline.subscribe();
+                let parent_tx = parent_tx.clone();
+                Some(tokio::spawn(async move {
+                    loop {
+                        match fwd_rx.recv().await {
+                            Ok(event) => {
+                                // Forward events that show agent activity
+                                match &event {
+                                    PipelineEvent::AgentThinking { .. }
+                                    | PipelineEvent::ToolDispatched { .. }
+                                    | PipelineEvent::ToolCompleted { .. }
+                                    | PipelineEvent::UserDisplay { .. }
+                                    | PipelineEvent::UserQuery { .. } => {
+                                        let _ = parent_tx.send(event);
+                                    }
+                                    _ => {} // skip internal events
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Start child pipeline
         child_pipeline.run();
@@ -186,22 +238,50 @@ impl Handler for BufferHandler {
     }
 }
 
-/// Register fresh tool instances for the required tools.
+/// Register sandboxed VDrive tool instances for the required tools.
 ///
-/// Matches tool names to their constructors. Unknown tools are hard errors.
+/// All child pipelines share the parent's DriveSlot, inheriting the same
+/// VDrive sandbox. No unsandboxed filesystem access is possible.
 fn register_required_tools(
     mut builder: AgentPipelineBuilder,
     requires: &[String],
+    drive_slot: DriveSlot,
+    event_tx: Option<&broadcast::Sender<PipelineEvent>>,
+    query_tx: Option<&tokio::sync::mpsc::Sender<UserQueryRequest>>,
 ) -> Result<AgentPipelineBuilder, String> {
     for name in requires {
+        // Check safe commands first
+        let safe_def = crate::tools::safe_commands::ALL_SAFE_COMMANDS
+            .iter()
+            .find(|def| def.name == name.as_str());
+
+        if let Some(def) = safe_def {
+            builder = builder.register_tool(
+                name,
+                crate::tools::safe_commands::SafeCommandTool::new(def, drive_slot.clone()),
+            )?;
+            continue;
+        }
+
         builder = match name.as_str() {
-            "file-read" => builder.register_tool(name, crate::tools::file_read::FileReadTool)?,
-            "file-write" => builder.register_tool(name, crate::tools::file_write::FileWriteTool)?,
-            "file-edit" => builder.register_tool(name, crate::tools::file_edit::FileEditTool)?,
-            "glob" => builder.register_tool(name, crate::tools::glob_tool::GlobTool)?,
-            "grep" => builder.register_tool(name, crate::tools::grep::GrepTool)?,
-            "bash" => {
-                builder.register_tool(name, crate::tools::command_exec::CommandExecTool::new())?
+            "file-read" => builder.register_tool(name, VDriveFileRead::new(drive_slot.clone()))?,
+            "file-write" => builder.register_tool(name, VDriveFileWrite::new(drive_slot.clone()))?,
+            "file-edit" => builder.register_tool(name, VDriveFileEdit::new(drive_slot.clone()))?,
+            "glob" => builder.register_tool(name, VDriveGlob::new(drive_slot.clone()))?,
+            "grep" => builder.register_tool(name, VDriveGrep::new(drive_slot.clone()))?,
+            "list-dir" => builder.register_tool(name, VDriveListDir::new(drive_slot.clone()))?,
+            "bash" => builder.register_tool(name, VDriveCommandExec::new(drive_slot.clone()))?,
+            "validate-organism" => builder.register_tool(name, crate::tools::validate_organism::ValidateOrganismTool::new(drive_slot.clone()))?,
+            "codebase-index" => {
+                builder = builder.with_code_index()?;
+                continue;
+            }
+            "user" => {
+                if let (Some(etx), Some(qtx)) = (event_tx, query_tx) {
+                    builder.register_tool(name, UserChannelHandler::new(etx.clone(), qtx.clone()))?
+                } else {
+                    return Err("'user' tool requires parent event/query channels".into());
+                }
             }
             _ => return Err(format!("unknown required tool: '{name}'")),
         };
@@ -261,7 +341,8 @@ profiles:
         let builder = AgentPipelineBuilder::new(org, dir.path());
 
         let requires = vec!["file-read".to_string(), "bash".to_string()];
-        let result = register_required_tools(builder, &requires);
+        let slot = crate::tools::vdrive_tools::empty_slot();
+        let result = register_required_tools(builder, &requires, slot, None, None);
         assert!(result.is_ok());
     }
 
@@ -282,7 +363,8 @@ profiles:
         let builder = AgentPipelineBuilder::new(org, dir.path());
 
         let requires = vec!["nonexistent-tool".to_string()];
-        let result = register_required_tools(builder, &requires);
+        let slot = crate::tools::vdrive_tools::empty_slot();
+        let result = register_required_tools(builder, &requires, slot, None, None);
         match result {
             Err(e) => assert!(e.contains("unknown required tool"), "unexpected error: {e}"),
             Ok(_) => panic!("expected error for unknown tool"),
@@ -326,6 +408,7 @@ profiles:
             organism: Some("child.yaml".to_string()),
             max_concurrency: 5,
             timeout_secs: 300,
+            context_visible: false,
         };
 
         let def = config.to_tool_definition("email-sender");

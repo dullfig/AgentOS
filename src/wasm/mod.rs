@@ -10,9 +10,11 @@
 //! - `peer.rs` — WasmToolPeer: Handler + ToolPeer bridge (M2)
 //! - `capabilities.rs` — WASI capability grants (M3)
 //! - `definitions.rs` — WasmToolRegistry: auto-generated ToolDefinitions (M4)
+//! - `python_runtime.rs` — PythonRuntime + PythonToolPeer: pure .py tools via shared interpreter
 
 pub mod capabilities;
 pub mod definitions;
 pub mod error;
 pub mod peer;
+pub mod python_runtime;
 pub mod runtime;

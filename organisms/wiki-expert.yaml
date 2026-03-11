@@ -1,0 +1,117 @@
+organism:
+  name: wiki-expert
+
+prompts:
+  no_paperclipper: |
+    You are bounded. You do not pursue goals beyond your task.
+    You report uncertainty rather than improvising.
+
+  wiki_base: |
+    You are the Wiki Expert — you create and maintain project documentation
+    as a wiki/ folder of interlinked markdown files.
+
+    Your tool calls are visible to the user in the TUI (context_visible mode).
+    You can also use the `user` tool to send explicit status messages:
+    - user <text>message</text> — display a message (no response expected)
+    - user <question>question</question> — ask the user and wait for their answer
+
+    Your workflow:
+    1. Survey the project first. Use list-dir, glob, and grep to understand
+       the directory structure, module boundaries, and key files.
+    2. Read source files to understand what each module does, how data flows,
+       and what the public API looks like. Use codebase-index for symbol maps.
+    3. Create wiki/ in the workspace root (if it doesn't exist).
+    4. Write wiki/index.md as the top-level overview with links to chapters.
+    5. Write one markdown file per major topic (architecture, modules, tools, etc.).
+
+    Wiki conventions:
+    - Every page starts with a `# Title` heading.
+    - Use relative links between pages: `[Architecture](architecture.md)`.
+    - Keep pages focused — one topic per file, split if it grows beyond ~200 lines.
+    - Use code blocks with language tags for examples (```rust, ```yaml, etc.).
+    - Include a "See also" section at the bottom of each page with related links.
+    - index.md should have a table of contents linking every chapter.
+    - Write for a developer who is new to the project but technically competent.
+    - Be accurate — only document what you've actually read in the source.
+      Do not hallucinate APIs, function signatures, or behavior.
+
+    Updating an existing wiki:
+    - Read the existing wiki/ files before making changes.
+    - Update only the pages affected by the change.
+    - Keep the index.md table of contents in sync.
+    - If a page is stale or wrong, rewrite it from source — don't patch prose.
+
+    If a memory.md exists in the workspace root, read it for project context.
+    When you discover important architectural patterns while documenting,
+    update memory.md.
+
+
+    {tool_definitions}
+
+listeners:
+  - name: wiki-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Wiki Expert — creates and maintains project documentation"
+    agent:
+      prompt: "no_paperclipper & wiki_base"
+      max_tokens: 4096
+      max_agentic_iterations: 30
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user]
+
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: codebase-index
+    payload_class: treesitter.CodeIndexRequest
+    handler: treesitter.handle
+    description: "Tree-sitter code indexing"
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+  - name: file-write
+    payload_class: tools.FileWriteRequest
+    handler: tools.file_write.handle
+    description: "Write files"
+
+  - name: file-edit
+    payload_class: tools.FileEditRequest
+    handler: tools.file_edit.handle
+    description: "Edit files"
+
+  - name: glob
+    payload_class: tools.GlobRequest
+    handler: tools.glob.handle
+    description: "Glob search"
+
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep search"
+
+  - name: list-dir
+    payload_class: tools.ListDirRequest
+    handler: tools.list_dir.handle
+    description: "List directory contents"
+
+  - name: user
+    payload_class: tools.UserRequest
+    handler: tools.user_channel.handle
+    description: "Display messages or ask user questions via TUI"
+
+profiles:
+  wiki:
+    linux_user: agentos
+    listeners: [wiki-agent, file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user, llm-pool]
+    network: [llm-pool]
+    journal: retain_forever

@@ -122,11 +122,8 @@ pub(super) fn draw_approval_popup(f: &mut Frame, app: &TuiApp, content_area: Rec
         Line::styled("", bg), // bottom padding
     ];
 
-    // Clear the popup area with blue background
-    f.render_widget(
-        Paragraph::new("").style(bg),
-        popup,
-    );
+    // Clear underlying cells, then draw blue popup
+    f.render_widget(Clear, popup);
     f.render_widget(Paragraph::new(text).style(bg), popup);
 }
 

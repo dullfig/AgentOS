@@ -1,6 +1,6 @@
 # AgentOS
 
-An operating system for AI coding agents — not a framework, not a library, not a tool.
+An operating system for AI agents — not a framework, not a library, not a tool.
 
 AgentOS is complete, secure, validated infrastructure where AI agents read, write,
 search, and execute with the same guarantees an OS provides to processes. Every
@@ -10,7 +10,7 @@ Built on [rust-pipeline](https://github.com/dullfig/rust-pipeline), a zero-trust
 async message pipeline where handler responses re-enter as untrusted bytes —
 because the most dangerous input is the output you just produced.
 
-**819 tests. ~27,000 lines of Rust. Zero unsafe blocks. No compaction, ever.**
+**761 tests. ~40,000 lines of Rust. Zero unsafe blocks. No compaction, ever.**
 
 ## Architecture
 
@@ -23,14 +23,19 @@ because the most dangerous input is the output you just produced.
     ┌────────────────────────────────┼────────────────────────────────┐
     │                           Pipeline                              │
     │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-    │  │  Coding   │  │Librarian │  │ Semantic │  │   LLM Pool    │  │
-    │  │  Agent    │  │ (Haiku)  │  │  Router  │  │  (Anthropic)  │  │
+    │  │   Bob     │  │Librarian │  │ Semantic │  │   LLM Pool    │  │
+    │  │ (concierge)│ │ (Haiku)  │  │  Router  │  │  (Anthropic)  │  │
     │  └────┬─────┘  └──────────┘  └──────────┘  └───────────────┘  │
+    │       │ delegates                                               │
+    │  ┌────┴──────────────────────────────────────────────────────┐  │
+    │  │               Specialist Buffers                          │  │
+    │  │  coder · plan-expert · wiki-expert · agent-expert         │  │
+    │  └────┬─────────────────────────────────────────────────────┘  │
     │       │ dispatch                                                │
     │  ┌────┴──────────────────────────────────────────────────────┐  │
     │  │                     Tool Peers                            │  │
     │  │  file-read · file-write · file-edit · glob · grep         │  │
-    │  │  command-exec · codebase-index · WASM user tools          │  │
+    │  │  bash · codebase-index · WASM user tools                  │  │
     │  └───────────────────────────────────────────────────────────┘  │
     └────────────────────────────────┼────────────────────────────────┘
                                      │
@@ -43,7 +48,10 @@ because the most dangerous input is the output you just produced.
                     └─────────────────────────────────┘
 ```
 
-**One thinker (Opus), everything else executes.** Tools don't think. The agent calls tools through the pipeline, tools reply with results, the pipeline routes everything under zero-trust security.
+**One thinker, specialist executors.** Bob is the concierge — he routes tasks to
+the right specialist. Each specialist runs in an isolated child pipeline (buffer)
+with only the tools it needs. Tools don't think. The pipeline routes everything
+under zero-trust security.
 
 Three pieces of nuclear-proof state compose the kernel:
 
@@ -88,6 +96,7 @@ agentos [OPTIONS]
 | `/models update <provider>` | Update API key for a provider |
 | `/models remove <alias>` | Remove a model |
 | `/models default <alias>` | Set the default model |
+| `/vdrive mount <path>` | Mount a workspace (sandbox all file tools to this directory) |
 | `/clear` | Clear chat |
 | `/help` | Show all commands |
 | `/exit` | Quit |
@@ -98,7 +107,7 @@ agentos [OPTIONS]
 |-----|--------|
 | Enter | Submit task to agent |
 | F10 | Toggle menu bar |
-| Ctrl+1-5 | Switch tabs (Messages, Threads, YAML, Debug) |
+| Ctrl+1-5 | Switch tabs (Messages, Threads, YAML, Debug, Code) |
 | Alt+letter | Menu accelerators |
 | Ctrl+S | Validate YAML (YAML tab) |
 | Ctrl+Space | Trigger completions (YAML editor) |
@@ -112,54 +121,60 @@ a dispatch table that does not contain the route you are trying to reach.
 
 Three concentric walls:
 1. **Dispatch table** — missing route = structural impossibility
-2. **Linux user isolation** — each organism runs as its own user
+2. **VDrive sandbox** — all file tools are sandboxed to the mounted workspace. No path escapes.
 3. **Kernel process isolation** — one WAL, one process, atomic operations
 
 ```yaml
 # organism.yaml — security profiles
 profiles:
-  coding:                          # full access
-    listeners: [file-read, file-write, file-edit, glob, grep, command-exec]
-  researcher:                      # read-only, structurally enforced
+  admin:                             # full access
+    listeners: [file-read, file-write, file-edit, glob, grep, bash]
+  restricted:                        # read-only, structurally enforced
     listeners: [file-read, glob, grep]
 ```
 
-The command-exec tool enforces an allowlist at the token level — the first word
-of every command is checked before execution. WASM user tools run in
-capability-based sandboxes — they can only access what their WIT interface declares.
+The bash tool enforces a command allowlist — only `cargo`, `git`, `npm`, `python`,
+and other safe commands pass. WASM user tools run in capability-based sandboxes —
+they can only access what their WIT interface declares.
 
-## Ships With a Coding Agent
+**Injection guard middleware** scans all tool outputs for prompt injection attempts
+(regex patterns + semantic classification). Flagged content is quarantined before
+reaching the agent.
 
-AgentOS ships with a working coding agent — not a toy demo, but a real tool that
-exercises every layer of the stack: pipeline, kernel, security profiles, tool
-peers, buffer nodes, prompt resolution, and the TUI. Point it at a codebase and
-start working.
+## Ships With Specialists
 
-The default organism (`organisms/default.yaml`) defines three agents:
+AgentOS ships with a working team of AI agents — not toy demos, but real tools
+that exercise every layer of the stack. Point it at a codebase and start working.
 
-- **Planner** — read-only access (file-read, glob, grep, codebase-index). Explores
-  the codebase, designs an implementation plan, then calls the coder.
-- **Coder** — a buffer node that spawns an isolated child pipeline with write tools.
-  Executes the plan in its own kernel, its own context store, its own thread table.
-  `fork()+exec()` for agents.
-- **Coding-agent** — the all-in-one option. Full read/write access in a single agent.
+**Bob** is the concierge. He reads your task and routes it to the right specialist:
+
+| Specialist | What it does |
+|------------|-------------|
+| **coder** | Writes code, edits files, runs tests, uses git. Spawns in an isolated child pipeline with write tools. `fork()+exec()` for agents. |
+| **plan-expert** | Surveys the codebase, creates structured execution plans (plan.md with impact tables and dependency graphs), then delegates each step to the coder. |
+| **wiki-expert** | Generates project documentation as a wiki/ folder of interlinked markdown files. |
+| **agent-expert** | Designs, validates, and diagnoses organism YAML configurations. |
 
 ```
-User task → Planner (read-only tools)
-                ↓ calls coder as a tool
+User task → Bob (concierge)
+                ↓ routes to specialist
             [buffer] ← isolation boundary
                 ↓
-            Coder (child pipeline, write tools)
+            plan-expert (surveys, plans)
+                ↓ delegates steps
+            [buffer] ← nested isolation
                 ↓
-            Result flows back through planner to user
+            coder (child pipeline, write tools)
+                ↓
+            Result flows back through chain to user
 ```
 
 Agent identity is data, not code. Prompts, model selection, token limits, and
-iteration caps are all declared in organism YAML. One agent per file. New agent
-types require a YAML file and a prompt — zero Rust.
+iteration caps are all declared in organism YAML. New agent types require a
+YAML file and a prompt — zero Rust.
 
 ```yaml
-# organisms/default.yaml
+# organisms/coder-v2.yaml
 prompts:
   coding_base: |
     You are a coding agent running inside AgentOS...
@@ -173,16 +188,16 @@ listeners:
     agent:
       prompt: "no_paperclipper & coding_base"  # composition with &
       max_tokens: 4096
-    peers: [file-read, file-write, file-edit, glob, grep, command-exec]
+    peers: [file-read, file-write, file-edit, glob, grep, bash]
 
   - name: coder
     handler: buffer
     buffer:                                    # buffer IS the tool
-      description: "Execute an implementation plan"
+      description: "Execute a coding task"
       parameters:
-        plan: { type: string, description: "The plan to execute" }
-      required: [plan]
-      organism: organisms/coder.yaml           # child pipeline
+        task: { type: string, description: "The coding task to perform" }
+      required: [task]
+      organism: organisms/coder-v2.yaml        # child pipeline
       max_concurrency: 1
 ```
 
@@ -237,6 +252,7 @@ A ratatui terminal UI following TEA (The Elm Architecture):
 - **Threads tab** — three-pane split: thread list, conversation timeline, context tree
 - **YAML tab** — tree-sitter syntax-highlighted editor for the organism config, with diagnostics, completions, and hover from an in-process language service
 - **Debug tab** — live activity trace with timestamps (enabled with `--debug`)
+- **Code tab** — Python tool editor with tree-sitter syntax highlighting
 
 The YAML editor provides the same intelligence as a real LSP — schema-aware
 completions, cross-reference validation, hover documentation — but runs as
@@ -249,16 +265,18 @@ Menu bar (F10) with dropdown navigation and Alt+letter accelerators.
 
 | Module | Purpose |
 |--------|---------|
-| `kernel/` | WAL, thread table, context store, message journal — durable state |
-| `agent/` | Coding agent: agentic loop, tool-use state machine, JSON/XML translation, prompts |
+| `crates/kernel/` | WAL, thread table, context store, message journal — durable state |
+| `crates/events/` | PipelineEvent, ConversationEntry — shared event types (zero deps) |
+| `crates/vdrive/` | VDrive sandbox: path-validated workspace isolation, 47 tests |
+| `agent/` | Agentic loop, tool-use state machine, middleware (LoopGuard, PermissionGate, DebugGate, InjectionGuard) |
 | `pipeline/` | Builder pattern, event bus, organism-to-pipeline wiring |
 | `organism/` | YAML config: listeners, profiles, prompts, agent config, buffer config |
 | `buffer/` | Buffer nodes: fork()+exec() for callable organisms, ephemeral child pipelines |
 | `security/` | Dispatch table enforcement, profile resolution |
 | `llm/` | Anthropic API client, LlmPool, model aliasing, list models API |
 | `config/` | Multi-provider model config (`~/.agentos/models.yaml`) |
-| `tools/` | Six native tool peers: file-read, file-write, file-edit, glob, grep, command-exec |
-| `wasm/` | WASM+WIT component runtime, capability-based sandboxing |
+| `tools/` | Native tool peers: file-read, file-write, file-edit, glob, grep, bash, list-agents, user channel |
+| `wasm/` | WASM+WIT component runtime, Python→WASM pipeline, capability-based sandboxing |
 | `librarian/` | Haiku-powered context curation, relevance-based paging |
 | `routing/` | Semantic router: TF-IDF embeddings, form filler, invisible dispatch |
 | `embedding/` | EmbeddingProvider trait, TF-IDF implementation |
@@ -271,9 +289,8 @@ Menu bar (F10) with dropdown navigation and Alt+letter accelerators.
 
 ```bash
 cargo build                # debug build
-cargo test --lib           # 819 tests, no API key needed, ~7s
+cargo test --lib           # 761 tests, no API key needed
 cargo test                 # full suite including live API integration tests
-cargo clippy               # zero warnings from project code
 ```
 
 ## Target Hardware

@@ -107,6 +107,7 @@ User -> coordinator -> [analyzer-buffer, coder-buffer, reviewer-buffer]
 | Tool | Description | When to include |
 |------|-------------|-----------------|
 | `bash` | Run shell commands | Tests, builds, git, system commands |
+| `compile-wasm` | Compile Python tool to WASM component | When agent creates/modifies Python tools |
 
 ### Infrastructure
 | Component | Purpose | When to include |

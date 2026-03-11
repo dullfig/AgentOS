@@ -2,11 +2,16 @@
 //!
 //! No pipeline awareness — just makes API calls via reqwest.
 
-use reqwest::Client;
+use std::time::Duration;
 
+use reqwest::Client;
 use serde::Deserialize;
 
 use super::types::{MessagesRequest, MessagesResponse};
+
+/// HTTP request timeout for LLM API calls (5 minutes).
+/// Large contexts can take a while; this prevents infinite hangs.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// A model returned by the List Models API.
 #[derive(Debug, Clone, Deserialize)]
@@ -64,8 +69,12 @@ impl AnthropicClient {
 
     /// Create a client with a custom base URL (for testing with mock servers).
     pub fn with_base_url(api_key: String, base_url: String) -> Self {
+        let http = Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
-            http: Client::new(),
+            http,
             api_key,
             base_url,
             api_version: "2023-06-01".into(),

@@ -296,4 +296,35 @@ mod tests {
         assert!(result.is_ok(), "load from path failed: {:?}", result.err());
         assert_eq!(result.unwrap().metadata.name, "echo");
     }
+
+    // ── Python WASM component tests ──
+
+    fn echo_py_wasm_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("echo-py.wasm")
+    }
+
+    #[test]
+    fn load_python_component() {
+        let runtime = WasmRuntime::new().unwrap();
+        let result = runtime.load_component_from_path(&echo_py_wasm_path());
+        assert!(result.is_ok(), "Python component load failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn python_metadata_extraction() {
+        let runtime = WasmRuntime::new().unwrap();
+        let wc = runtime.load_component_from_path(&echo_py_wasm_path()).unwrap();
+        let m = &wc.metadata;
+        assert_eq!(m.name, "echo-py");
+        assert_eq!(m.request_tag, "EchoRequest");
+        assert!(!m.description.is_empty());
+        assert!(!m.semantic_description.is_empty());
+        // JSON schema must parse
+        let schema: serde_json::Value =
+            serde_json::from_str(&m.input_json_schema).unwrap();
+        assert_eq!(schema["type"], "object");
+    }
 }
