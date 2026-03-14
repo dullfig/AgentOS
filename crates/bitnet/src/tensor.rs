@@ -72,7 +72,7 @@ impl TernaryTensor {
         assert_eq!(values.len(), rows * cols, "value count must equal rows × cols");
 
         let n = values.len();
-        let packed_len = (n + 3) / 4;
+        let packed_len = n.div_ceil(4);
         let mut data = vec![0u8; packed_len];
 
         for (i, &v) in values.iter().enumerate() {
@@ -87,7 +87,7 @@ impl TernaryTensor {
     /// Create a zero-initialized ternary tensor.
     pub fn zeros(rows: usize, cols: usize) -> Self {
         let n = rows * cols;
-        let packed_len = (n + 3) / 4;
+        let packed_len = n.div_ceil(4);
         // 0b01 = Zero for each slot → 0b01_01_01_01 = 0x55
         let data = vec![0x55u8; packed_len];
         Self { data, rows, cols }
@@ -156,7 +156,7 @@ impl TernaryTensor {
         let end_val = start_val + self.cols;
         let start_byte = start_val / 4;
         let start_offset = start_val % 4;
-        let end_byte = (end_val + 3) / 4;
+        let end_byte = end_val.div_ceil(4);
         let end_remainder = end_val % 4;
         let vals_in_last = if end_remainder == 0 { 4 } else { end_remainder };
         (&self.data[start_byte..end_byte], start_offset, vals_in_last)
@@ -166,7 +166,7 @@ impl TernaryTensor {
     ///
     /// `data` must have at least `ceil(rows * cols / 4)` bytes.
     pub fn from_packed(data: Vec<u8>, rows: usize, cols: usize) -> Self {
-        let expected = (rows * cols + 3) / 4;
+        let expected = (rows * cols).div_ceil(4);
         assert!(data.len() >= expected, "packed data too short");
         Self { data, rows, cols }
     }

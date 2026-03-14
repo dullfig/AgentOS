@@ -9,3 +9,5 @@ CODEBASE_REVIEW.md
 REVIEW.md
 __pycache__/
 *.pyc
+models/
+*.gguf

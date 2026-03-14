@@ -8,6 +8,7 @@
 //! Where γ is a learnable per-feature scale parameter.
 
 /// RMSNorm layer with learnable scale weights.
+#[derive(Clone)]
 pub struct RmsNorm {
     /// Per-feature scale weights γ.
     weight: Vec<f32>,

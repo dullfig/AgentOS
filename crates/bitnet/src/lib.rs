@@ -19,6 +19,13 @@
 
 pub mod tensor;
 pub mod ops;
+pub mod compute;
 pub mod layers;
+pub mod gguf;
+pub mod tokenizer;
+pub mod loader;
 
 pub use tensor::{TernaryTensor, ActivationTensor, Ternary};
+pub use gguf::{GgufFile, GgufError, GgmlType, TensorInfo, ModelConfig, MetadataValue};
+pub use tokenizer::Tokenizer;
+pub use loader::{load_model, LoadedModel};

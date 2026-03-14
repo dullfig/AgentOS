@@ -63,12 +63,12 @@ pub fn quantize_per_token(values: &[f32], cols: usize) -> (Vec<i8>, Vec<f32>) {
     let mut quantized = vec![0i8; values.len()];
     let mut scales = vec![0.0f32; rows];
 
-    for row in 0..rows {
+    for (row, scale_out) in scales.iter_mut().enumerate() {
         let start = row * cols;
         let end = start + cols;
         let row_slice = &values[start..end];
         let scale = absmax_scale(row_slice);
-        scales[row] = scale;
+        *scale_out = scale;
         quantize_with_scale(row_slice, scale, &mut quantized[start..end]);
     }
 

@@ -85,8 +85,8 @@ pub fn lut_matvec(weights: &TernaryTensor, input: &[i8]) -> Vec<i32> {
     let cols = weights.cols();
     let mut output = vec![0i32; rows];
 
-    for row in 0..rows {
-        output[row] = lut_dot(weights, row, input, cols);
+    for (row, out) in output.iter_mut().enumerate() {
+        *out = lut_dot(weights, row, input, cols);
     }
 
     output

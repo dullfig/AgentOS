@@ -32,8 +32,8 @@ pub fn ternary_matvec(weights: &TernaryTensor, input: &[i8]) -> Vec<i32> {
     let cols = weights.cols();
     let mut output = vec![0i32; rows];
 
-    for row in 0..rows {
-        output[row] = ternary_dot_i2s(weights, row, input, cols);
+    for (row, out) in output.iter_mut().enumerate() {
+        *out = ternary_dot_i2s(weights, row, input, cols);
     }
 
     output
