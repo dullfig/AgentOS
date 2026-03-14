@@ -55,6 +55,10 @@ prompts:
        delegate to wiki-expert.
     7. Summarize the specialist's results for the user.
 
+    You also have direct tools:
+    - **calc**: Evaluates math expressions (Python tool running in WASM sandbox).
+      Call it for any arithmetic, scientific calculations, or numeric computation.
+
     You can also explore the codebase yourself using file-read, glob, grep, and
     codebase-index to answer questions or gather context before delegating.
 
@@ -111,8 +115,9 @@ listeners:
         user: auto
         plan-expert: auto
         wiki-expert: auto
+        calc: auto
     librarian: true
-    peers: [file-read, glob, grep, list-dir, codebase-index, list-agents, user, coder, plan-expert, agent-expert, wiki-expert]
+    peers: [file-read, glob, grep, list-dir, codebase-index, list-agents, user, coder, plan-expert, agent-expert, wiki-expert, calc]
 
   # Coder — hands-on coding specialist (buffer → child pipeline)
   - name: coder
@@ -147,7 +152,7 @@ listeners:
       organism: organisms/plan-expert.yaml
       max_concurrency: 1
       timeout_secs: 1800
-      context_visible: true
+      interactive: true
 
   # Agent Expert — organism design specialist (buffer → child pipeline)
   - name: agent-expert
@@ -161,10 +166,11 @@ listeners:
           type: string
           description: "What to do — e.g., 'create a research agent with web search', 'diagnose why organisms/my-agent.yaml crashes on startup'"
       required: [task]
-      requires: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism]
+      requires: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, user]
       organism: organisms/agent-expert.yaml
       max_concurrency: 1
       timeout_secs: 600
+      interactive: true
 
   # Wiki Expert — documentation specialist (buffer → child pipeline)
   - name: wiki-expert
@@ -182,7 +188,7 @@ listeners:
       organism: organisms/wiki-expert.yaml
       max_concurrency: 1
       timeout_secs: 900
-      context_visible: true
+      interactive: true
 
   # Infrastructure
   - name: llm-pool
@@ -313,10 +319,17 @@ listeners:
     handler: tools.compile_wasm.handle
     description: "Compile Python tool to WASM component"
 
+  - name: calc
+    payload_class: tools.CalcRequest
+    handler: python
+    description: "Calculator — evaluates math expressions safely (Python/WASM)"
+    python:
+      source: tools/samples/calc_tool.py
+
 profiles:
   default:
     linux_user: agentos
-    listeners: [bob, coder, plan-expert, agent-expert, wiki-expert, user, file-read, file-write, file-edit, glob, grep, list-dir, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, bash, list-agents, validate-organism, compile-wasm, codebase-index, llm-pool, librarian]
+    listeners: [bob, coder, plan-expert, agent-expert, wiki-expert, user, file-read, file-write, file-edit, glob, grep, list-dir, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, bash, list-agents, validate-organism, compile-wasm, calc, codebase-index, llm-pool, librarian]
     network: [llm-pool]
     journal: retain_forever
 "#;
@@ -488,7 +501,10 @@ async fn main() -> Result<()> {
     info!("Shutting down");
     pipeline.shutdown().await;
 
-    Ok(())
+    // Force exit — spawned tasks (buffer child pipelines, in-flight LLM requests)
+    // may still be running. The tokio runtime won't exit until all tasks complete,
+    // so we force it. All state is WAL-backed, nothing is lost.
+    std::process::exit(0);
 }
 
 /// Build the full pipeline with all tools, buffers, and agents.
@@ -548,6 +564,10 @@ fn build_pipeline(
     // compile-wasm tool
     let wit_dir = PathBuf::from(work_dir).join("tools").join("wit");
     builder = builder.register_tool("compile-wasm", CompileWasmTool::new(wit_dir))?;
+
+    // Python tools (handler: "python" listeners in organism)
+    let wasm_dir = PathBuf::from(work_dir).join("tools").join("python-runtime");
+    builder = builder.with_python_tools(&PathBuf::from(work_dir), &wasm_dir)?;
 
     // Buffer nodes (child pipelines for coder, agent-expert)
     builder = builder.with_buffer_nodes(&PathBuf::from(work_dir), slot)?;

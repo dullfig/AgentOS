@@ -155,6 +155,7 @@ mod organism_tests {
             max_concurrency: 5,
             timeout_secs: 300,
             context_visible: false,
+            interactive: false,
         });
         org.register_listener(tool).unwrap();
 

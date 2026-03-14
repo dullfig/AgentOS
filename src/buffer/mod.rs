@@ -70,7 +70,10 @@ impl BufferHandler {
     }
 
     /// Build and run a child pipeline, returning the agent's response text.
-    async fn run_child(&self, task_text: &str) -> Result<String, String> {
+    ///
+    /// If `interactive` is true, emits FocusAcquire/FocusRelease events so the
+    /// TUI switches to the child agent's tab during execution.
+    async fn run_child(&self, task_text: &str, parent_agent: &str) -> Result<String, String> {
         // Acquire semaphore permit (backpressure)
         let _permit = self
             .semaphore
@@ -122,25 +125,62 @@ impl BufferHandler {
         // Subscribe to child events
         let mut rx = child_pipeline.subscribe();
 
-        // If context_visible, spawn a forwarder that relays child events to parent TUI
-        let _forwarder = if self.config.context_visible {
+        // Determine the child agent's name for focus events
+        let child_agent_name = child_pipeline
+            .organism()
+            .agent_listeners()
+            .into_iter()
+            .next()
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "child".to_string());
+
+        // If interactive, emit FocusAcquire so TUI switches to child agent tab
+        if self.config.interactive {
+            if let Some(parent_tx) = &self.event_tx {
+                let _ = parent_tx.send(PipelineEvent::FocusAcquire {
+                    agent_name: child_agent_name.clone(),
+                    parent_agent: parent_agent.to_string(),
+                });
+            }
+        }
+
+        // If context_visible or interactive, spawn a forwarder that relays child events to parent TUI
+        let _forwarder = if self.config.context_visible || self.config.interactive {
             if let Some(parent_tx) = &self.event_tx {
                 let mut fwd_rx = child_pipeline.subscribe();
                 let parent_tx = parent_tx.clone();
+                let interactive = self.config.interactive;
                 Some(tokio::spawn(async move {
                     loop {
                         match fwd_rx.recv().await {
                             Ok(event) => {
-                                // Forward events that show agent activity
-                                match &event {
-                                    PipelineEvent::AgentThinking { .. }
-                                    | PipelineEvent::ToolDispatched { .. }
-                                    | PipelineEvent::ToolCompleted { .. }
-                                    | PipelineEvent::UserDisplay { .. }
-                                    | PipelineEvent::UserQuery { .. } => {
-                                        let _ = parent_tx.send(event);
+                                if interactive {
+                                    // Interactive: forward ALL agent-visible events
+                                    match &event {
+                                        PipelineEvent::AgentThinking { .. }
+                                        | PipelineEvent::AgentResponse { .. }
+                                        | PipelineEvent::ToolDispatched { .. }
+                                        | PipelineEvent::ToolCompleted { .. }
+                                        | PipelineEvent::ToolApproval { .. }
+                                        | PipelineEvent::UserDisplay { .. }
+                                        | PipelineEvent::UserQuery { .. }
+                                        | PipelineEvent::ConversationSync { .. } => {
+                                            let _ = parent_tx.send(event);
+                                        }
+                                        _ => {} // skip kernel/internal events
                                     }
-                                    _ => {} // skip internal events
+                                } else {
+                                    // Context-visible only: forward activity indicators
+                                    match &event {
+                                        PipelineEvent::AgentThinking { .. }
+                                        | PipelineEvent::ToolDispatched { .. }
+                                        | PipelineEvent::ToolCompleted { .. }
+                                        | PipelineEvent::UserDisplay { .. }
+                                        | PipelineEvent::UserQuery { .. } => {
+                                            let _ = parent_tx.send(event);
+                                        }
+                                        _ => {}
+                                    }
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -203,6 +243,16 @@ impl BufferHandler {
         child_pipeline.shutdown().await;
         // tempdir drops here
 
+        // If interactive, emit FocusRelease so TUI switches back to parent
+        if self.config.interactive {
+            if let Some(parent_tx) = &self.event_tx {
+                let _ = parent_tx.send(PipelineEvent::FocusRelease {
+                    agent_name: child_agent_name,
+                    parent_agent: parent_agent.to_string(),
+                });
+            }
+        }
+
         result
     }
 }
@@ -212,7 +262,7 @@ impl Handler for BufferHandler {
     async fn handle(
         &self,
         payload: ValidatedPayload,
-        _ctx: HandlerContext,
+        ctx: HandlerContext,
     ) -> Result<HandlerResponse, PipelineError> {
         // Extract parameters from the XML payload
         let xml = String::from_utf8_lossy(&payload.xml).to_string();
@@ -226,8 +276,8 @@ impl Handler for BufferHandler {
         }
         let task_text = task_parts.join("\n");
 
-        // Run the child pipeline
-        match self.run_child(&task_text).await {
+        // Run the child pipeline (ctx.from = the calling agent's name)
+        match self.run_child(&task_text, &ctx.from).await {
             Ok(result) => Ok(HandlerResponse::Reply {
                 payload_xml: ToolResponse::ok(&result),
             }),
@@ -409,6 +459,7 @@ profiles:
             max_concurrency: 5,
             timeout_secs: 300,
             context_visible: false,
+            interactive: false,
         };
 
         let def = config.to_tool_definition("email-sender");

@@ -40,7 +40,13 @@ pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     // Uses the same wrap_line logic for consistent rendering.
     // Cap at 1/3 of inner height so messages always have room.
     let input_content = app.input_line.content().to_string();
-    let input_wrap_width = inner.width.saturating_sub(2).max(1) as usize; // minus "> " prompt
+    let input_prompt_width = if app.query_prompt.is_some() {
+        // "agent-name > " — agent name + 3 for " > "
+        app.query_prompt.as_ref().map(|a| a.len() + 3).unwrap_or(2)
+    } else {
+        2 // "> "
+    } as u16;
+    let input_wrap_width = inner.width.saturating_sub(input_prompt_width).max(1) as usize;
     let wrapped_input: Vec<Line<'static>> = if input_content.is_empty() {
         vec![Line::from("")]
     } else {
@@ -324,24 +330,31 @@ pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         );
     }
 
-    // Render "> " prompt on each visible line (only first logical line gets "> ")
+    // Render prompt on each visible line — shows agent name when a query is pending
+    let prompt_label = if let Some(ref agent) = app.query_prompt {
+        format!("{agent} > ")
+    } else {
+        "> ".to_string()
+    };
+    let prompt_width = prompt_label.len() as u16;
+    let prompt_color = if app.query_prompt.is_some() { Color::Yellow } else { Color::Cyan };
     for row in 0..input_area.height {
-        let prompt_area = Rect::new(input_area.x, input_area.y + row, 2, 1);
-        let prompt_text = if row == 0 && app.input_scroll == 0 { "> " } else { "  " };
+        let prompt_area = Rect::new(input_area.x, input_area.y + row, prompt_width.min(input_area.width), 1);
+        let prompt_text = if row == 0 && app.input_scroll == 0 { &prompt_label } else { "" };
         f.render_widget(
             Paragraph::new(Span::styled(
                 prompt_text,
-                Style::default().fg(Color::Cyan).bg(input_bg).add_modifier(Modifier::BOLD),
+                Style::default().fg(prompt_color).bg(input_bg).add_modifier(Modifier::BOLD),
             )),
             prompt_area,
         );
     }
 
-    // Render wrapped input text (after "> ")
+    // Render wrapped input text (after prompt)
     let editor_area = Rect::new(
-        input_area.x + 2,
+        input_area.x + prompt_width,
         input_area.y,
-        input_area.width.saturating_sub(2),
+        input_area.width.saturating_sub(prompt_width),
         input_area.height,
     );
     app.input_area = editor_area;

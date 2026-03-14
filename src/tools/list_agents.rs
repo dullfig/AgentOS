@@ -151,6 +151,7 @@ mod tests {
                 max_concurrency: 1,
                 timeout_secs: 600,
                 context_visible: false,
+                interactive: false,
             }),
         }).unwrap();
 

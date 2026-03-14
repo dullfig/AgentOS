@@ -88,6 +88,10 @@ pub struct BufferConfig {
     /// When true, child pipeline events (thinking, tool calls) are forwarded
     /// to the parent event bus so the TUI can display agent activity in real time.
     pub context_visible: bool,    // default false
+    /// When true, the child agent takes over the TUI — its output appears in chat,
+    /// user input routes to it, and focus returns to the parent when the child completes.
+    /// Implies context_visible. Non-interactive buffers run silently in the background.
+    pub interactive: bool,        // default false
 }
 
 impl BufferConfig {

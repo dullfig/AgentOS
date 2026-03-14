@@ -727,7 +727,10 @@ impl Handler for CodingAgentHandler {
 /// Convert a slice of Messages into ConversationEntry items for TUI display.
 pub fn build_conversation_entries(messages: &[crate::llm::types::Message]) -> Vec<ConversationEntry> {
     use crate::llm::types::{ContentBlock, MessageContent};
+    use std::collections::HashSet;
     let mut entries = Vec::new();
+    // Track tool_use IDs for the `user` tool so we can suppress their tool_results too
+    let mut user_tool_ids: HashSet<String> = HashSet::new();
     for msg in messages {
         match &msg.content {
             MessageContent::Text(text) => {
@@ -751,28 +754,61 @@ pub fn build_conversation_entries(messages: &[crate::llm::types::Message]) -> Ve
                                 is_error: false,
                             });
                         }
-                        ContentBlock::ToolUse { name, input, .. } => {
-                            let detail = summarize_tool_input(name, input);
-                            entries.push(ConversationEntry {
-                                role: "assistant".into(),
-                                summary: format!("{name} → {detail}"),
-                                is_tool_use: true,
-                                tool_name: Some(name.clone()),
-                                is_error: false,
-                            });
+                        ContentBlock::ToolUse { id, name, input } => {
+                            if name == "user" {
+                                // Render user tool calls as natural chat, not tool dispatch.
+                                user_tool_ids.insert(id.clone());
+                                let text = input.get("question")
+                                    .or_else(|| input.get("text"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if !text.is_empty() {
+                                    entries.push(ConversationEntry {
+                                        role: "assistant".into(),
+                                        summary: truncate_text(text, 200),
+                                        is_tool_use: false,
+                                        tool_name: None,
+                                        is_error: false,
+                                    });
+                                }
+                            } else {
+                                let detail = summarize_tool_input(name, input);
+                                entries.push(ConversationEntry {
+                                    role: "assistant".into(),
+                                    summary: format!("{name} → {detail}"),
+                                    is_tool_use: true,
+                                    tool_name: Some(name.clone()),
+                                    is_error: false,
+                                });
+                            }
                         }
                         ContentBlock::ToolResult {
-                            content, is_error, ..
+                            tool_use_id, content, is_error,
                         } => {
-                            let err = is_error.unwrap_or(false);
-                            let text = content.as_deref().unwrap_or("");
-                            entries.push(ConversationEntry {
-                                role: "tool_result".into(),
-                                summary: truncate_text(text, 120),
-                                is_tool_use: false,
-                                tool_name: None,
-                                is_error: err,
-                            });
+                            // Suppress user tool results — the user's reply shows naturally
+                            if user_tool_ids.contains(tool_use_id) {
+                                // Render as user message instead of tool_result
+                                let text = content.as_deref().unwrap_or("");
+                                if !text.is_empty() {
+                                    entries.push(ConversationEntry {
+                                        role: "user".into(),
+                                        summary: truncate_text(text, 200),
+                                        is_tool_use: false,
+                                        tool_name: None,
+                                        is_error: false,
+                                    });
+                                }
+                            } else {
+                                let err = is_error.unwrap_or(false);
+                                let text = content.as_deref().unwrap_or("");
+                                entries.push(ConversationEntry {
+                                    role: "tool_result".into(),
+                                    summary: truncate_text(text, 120),
+                                    is_tool_use: false,
+                                    tool_name: None,
+                                    is_error: err,
+                                });
+                            }
                         }
                     }
                 }

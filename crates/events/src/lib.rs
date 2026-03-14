@@ -110,6 +110,16 @@ pub enum PipelineEvent {
         agent_name: String,
         question: String,
     },
+    /// Interactive buffer child wants TUI focus (child agent taking over).
+    FocusAcquire {
+        agent_name: String,
+        parent_agent: String,
+    },
+    /// Interactive buffer child released TUI focus (returning to parent).
+    FocusRelease {
+        agent_name: String,
+        parent_agent: String,
+    },
 }
 
 /// A conversation entry for TUI display (lightweight, no raw API content).

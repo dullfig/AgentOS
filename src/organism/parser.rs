@@ -212,6 +212,10 @@ struct BufferYaml {
     /// Forward child events (thinking, tool calls) to parent TUI. Default: false.
     #[serde(default)]
     context_visible: bool,
+    /// Child agent takes over TUI focus (interactive mode). Default: false.
+    /// When true, the child agent's output appears in chat and user input routes to it.
+    #[serde(default)]
+    interactive: bool,
 }
 
 fn default_max_concurrency() -> usize {
@@ -429,7 +433,8 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
                     organism: b.organism,
                     max_concurrency: b.max_concurrency,
                     timeout_secs: b.timeout_secs,
-                    context_visible: b.context_visible,
+                    context_visible: b.context_visible || b.interactive,
+                    interactive: b.interactive,
                 }
             }),
             python: l.python.map(|p| PythonToolConfig {
@@ -850,6 +855,75 @@ profiles:
         let org = parse_organism(yaml).unwrap();
         let regular = org.get_listener("regular").unwrap();
         assert!(regular.python.is_none());
+    }
+
+    // ── Interactive Buffer: interactive flag parsing ──
+
+    #[test]
+    fn parse_interactive_buffer() {
+        let yaml = r#"
+organism:
+  name: test-interactive
+
+listeners:
+  - name: expert
+    payload_class: buffer.ExpertRequest
+    handler: buffer
+    description: "Expert agent"
+    buffer:
+      description: "Expert that takes over the TUI"
+      parameters:
+        task:
+          type: string
+      required: [task]
+      requires: [file-read]
+      organism: expert.yaml
+      interactive: true
+
+profiles:
+  default:
+    linux_user: agentos
+    listeners: [expert]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let expert = org.get_listener("expert").unwrap();
+        let buf = expert.buffer.as_ref().expect("buffer config present");
+        assert!(buf.interactive, "interactive should be true");
+        assert!(buf.context_visible, "context_visible implied by interactive");
+    }
+
+    #[test]
+    fn parse_non_interactive_buffer_default() {
+        let yaml = r#"
+organism:
+  name: test-default
+
+listeners:
+  - name: worker
+    payload_class: buffer.WorkerRequest
+    handler: buffer
+    description: "Worker"
+    buffer:
+      description: "Background worker"
+      parameters:
+        task:
+          type: string
+      required: [task]
+      requires: [file-read]
+      organism: worker.yaml
+
+profiles:
+  default:
+    linux_user: agentos
+    listeners: [worker]
+    journal: retain_forever
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let worker = org.get_listener("worker").unwrap();
+        let buf = worker.buffer.as_ref().expect("buffer config present");
+        assert!(!buf.interactive, "interactive defaults to false");
+        assert!(!buf.context_visible, "context_visible defaults to false");
     }
 
     // ── Semantic Routing: semantic_description parsing ──

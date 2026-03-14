@@ -424,6 +424,9 @@ pub struct TuiApp {
     pub agent_tabs: HashMap<String, AgentTabState>,
     /// Available agent names (from organism, for Run menu).
     pub available_agents: Vec<String>,
+    /// When an interactive buffer child has focus, stores the parent agent name
+    /// so we can return focus when the child completes.
+    pub focus_parent: Option<String>,
     /// Whether the app should quit.
     pub should_quit: bool,
     /// Currently selected thread index.
@@ -689,6 +692,7 @@ impl TuiApp {
                 m
             },
             available_agents: Vec::new(),
+            focus_parent: None,
             should_quit: false,
             selected_thread: 0,
             message_scroll: 0,
@@ -1135,16 +1139,19 @@ impl TuiApp {
             PipelineEvent::ToolDispatched {
                 agent_name, tool_name, detail, ..
             } => {
-                if let Some(tab) = self.agent_tabs.get_mut(agent_name) {
-                    tab.agent_status = AgentStatus::ToolCall(tool_name.clone());
+                // Skip `user` tool — its display goes through UserDisplay/UserQuery events
+                if tool_name != "user" {
+                    if let Some(tab) = self.agent_tabs.get_mut(agent_name) {
+                        tab.agent_status = AgentStatus::ToolCall(tool_name.clone());
+                    }
+                    self.agent_status = AgentStatus::ToolCall(tool_name.clone());
+                    self.push_activity(ActivityEntry {
+                        timestamp: now_secs(),
+                        label: tool_name.clone(),
+                        detail: detail.clone(),
+                        status: ActivityStatus::InProgress,
+                    });
                 }
-                self.agent_status = AgentStatus::ToolCall(tool_name.clone());
-                self.push_activity(ActivityEntry {
-                    timestamp: now_secs(),
-                    label: tool_name.clone(),
-                    detail: detail.clone(),
-                    status: ActivityStatus::InProgress,
-                });
             }
             PipelineEvent::ToolCompleted {
                 tool_name,
@@ -1152,7 +1159,10 @@ impl TuiApp {
                 detail,
                 ..
             } => {
-                self.complete_activity(tool_name, *success, detail);
+                // Skip `user` tool — its display goes through UserDisplay/UserQuery events
+                if tool_name != "user" {
+                    self.complete_activity(tool_name, *success, detail);
+                }
             }
             PipelineEvent::ConversationSync {
                 thread_id, entries, ..
@@ -1189,6 +1199,18 @@ impl TuiApp {
             PipelineEvent::UserQuery { .. } => {
                 // Handled via query_rx channel in runner, not here.
                 // Event is emitted for logging/debug only.
+            }
+            PipelineEvent::FocusAcquire { agent_name, parent_agent } => {
+                // Interactive buffer child wants TUI focus.
+                // Open a tab for the child agent and switch to it.
+                self.focus_parent = Some(parent_agent.clone());
+                self.open_agent_tab(agent_name);
+            }
+            PipelineEvent::FocusRelease { parent_agent, .. } => {
+                // Interactive buffer child released TUI focus.
+                // Switch back to the parent agent's tab.
+                self.focus_parent = None;
+                self.open_agent_tab(parent_agent);
             }
             _ => {}
         }

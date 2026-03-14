@@ -90,6 +90,11 @@
           "description": "Tool description shown to the calling agent.",
           "type": "string"
         },
+        "interactive": {
+          "default": false,
+          "description": "Child agent takes over TUI focus (interactive mode). Default: false. When true, the child agent's output appears in chat and user input routes to it.",
+          "type": "boolean"
+        },
         "max_concurrency": {
           "default": 5,
           "description": "Maximum parallel child instances. Default: 5.",

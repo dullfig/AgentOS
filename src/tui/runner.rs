@@ -234,10 +234,15 @@ pub async fn run_tui(
                 // Show the question in chat and switch input to query mode
                 let agent = query.agent_name.clone();
                 let question = query.question.clone();
-                app.chat_log.push(super::app::ChatEntry::new(
+                let entry = super::app::ChatEntry::new(
                     "agent",
                     format!("**{}** asks: {}", agent, question),
-                ));
+                );
+                // Show in the agent's tab if it exists, otherwise main chat
+                if let Some(tab) = app.agent_tabs.get_mut(agent.as_str()) {
+                    tab.chat_log.push(entry.clone());
+                }
+                app.chat_log.push(entry);
                 app.pending_query = Some(query);
                 app.query_prompt = Some(agent);
                 app.message_auto_scroll = true;
@@ -339,10 +344,17 @@ pub async fn run_tui(
             if let Some(query) = app.pending_query.take() {
                 let agent = app.query_prompt.take().unwrap_or_default();
                 let _ = query.response_tx.send(task.clone());
-                app.chat_log.push(super::app::ChatEntry::new(
+                let entry = super::app::ChatEntry::new(
                     "user",
                     format!("[→ {}] {}", agent, task),
-                ));
+                );
+                // Route to agent tab if active
+                if let super::app::TabId::Agent(ref name) = app.active_tab {
+                    if let Some(tab) = app.agent_tabs.get_mut(name.as_str()) {
+                        tab.chat_log.push(entry.clone());
+                    }
+                }
+                app.chat_log.push(entry);
                 app.message_auto_scroll = true;
             } else {
                 // Normal mode: inject as new task
