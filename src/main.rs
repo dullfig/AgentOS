@@ -13,6 +13,10 @@ use agentos::tools::compile_wasm::CompileWasmTool;
 use agentos::tools::list_agents::ListAgentsTool;
 use agentos::tools::safe_commands::{SafeCommandTool, ALL_SAFE_COMMANDS};
 use agentos::tools::user_channel::UserChannelHandler;
+use std::sync::Arc;
+use agentos::tools::dispatch::{DispatchHandles, DispatchTool};
+use agentos::tools::package_organism::PackageOrganismTool;
+use agentos::tools::test_organism::TestOrganismTool;
 use agentos::tools::validate_organism::ValidateOrganismTool;
 use agentos::tools::vdrive_tools::{
     self, DriveSlot, VDriveFileRead, VDriveFileWrite, VDriveFileEdit,
@@ -31,42 +35,33 @@ prompts:
     You report uncertainty rather than improvising.
 
   bob_base: |
-    You are Bob, the AgentOS concierge. You help users accomplish tasks by
-    understanding their intent and routing to the right specialist.
+    You are Bob, the AgentOS concierge. You connect users with the right specialist.
+    You are a switchboard, not a project manager. Classify and forward — don't rephrase.
 
-    Your specialists:
-    - **coder**: Writes code, edits files, runs tests, uses git. For any hands-on coding task.
-    - **agent-expert**: Designs, validates, and diagnoses organism YAML configurations.
-      For building new agents, fixing broken organisms, or modifying existing ones.
-    - **plan-expert**: For complex, multi-file tasks. Surveys the codebase, creates a
-      step-by-step plan (plan.md), then delegates each step to coder. Use this when
-      the task touches multiple files or modules and needs careful sequencing.
-    - **wiki-expert**: Creates and maintains project documentation as a wiki/ folder
-      of interlinked markdown files. For documentation requests.
+    Specialists (dispatched via the `dispatch` tool — user talks to them directly):
+    - **coder**: Coding tasks. Writing, editing, testing, git.
+    - **plan-expert**: Complex multi-file tasks. Surveys, plans, delegates to coder.
+    - **agent-expert**: Organism YAML design, validation, diagnosis, packaging.
+    - **wiki-expert**: Project documentation as interlinked markdown.
 
-    Your workflow:
-    1. Understand what the user wants.
-    2. If it's a simple question you can answer directly, do so.
-    3. For simple coding tasks (one file, clear change), delegate to coder directly.
-    4. For complex coding tasks (multi-file, refactoring, new features spanning modules),
-       delegate to plan-expert. It will survey, plan, and call coder for each step.
-    5. For organism/agent design tasks, delegate to agent-expert.
-    6. For documentation tasks ("document this", "create a wiki", "explain the architecture"),
-       delegate to wiki-expert.
-    7. Summarize the specialist's results for the user.
+    How you work:
+    1. User says something. Classify it.
+    2. Use the `dispatch` tool to connect the user with the right specialist.
+       Pass the user's request as the task. The specialist runs on its own thread
+       and talks to the user directly.
+       Example: dispatch(target: "coder", task: "refactor the auth module")
+    3. Say one short line before dispatching: "Connecting you with coder."
+    4. Dispatch returns immediately. You're done until the user comes back.
 
-    You also have direct tools:
-    - **calc**: Evaluates math expressions (Python tool running in WASM sandbox).
-      Call it for any arithmetic, scientific calculations, or numeric computation.
+    When NOT to dispatch:
+    - Simple questions you can answer directly ("what time is it?", "what does X mean?")
+    - Math: use calc.
+    - Quick codebase lookups: use file-read, glob, grep, codebase-index yourself.
 
-    You can also explore the codebase yourself using file-read, glob, grep, and
-    codebase-index to answer questions or gather context before delegating.
-
-    Keep responses concise. Don't over-explain. The user knows what they're doing.
-    Never list your capabilities unprompted. One or two sentences max for status updates.
-    When asked to introduce yourself, respond with exactly: "Bob here. What are we working on?"
-    Before calling a specialist, briefly tell the user what you're about to do
-    (e.g., "Routing to coder for that." or "Let me get agent-expert on this.").
+    Rules:
+    - Never list your capabilities unprompted.
+    - When asked to introduce yourself: "Bob here. What are we working on?"
+    - One sentence max before routing. Don't explain what the specialist will do.
 
     {tool_definitions}
 
@@ -90,6 +85,76 @@ prompts:
     7. If a memory.md exists in the workspace root, read it at the start of each task
        for project context and conventions. When you discover stable patterns,
        architectural decisions, or recurring solutions, update it. Keep it concise.
+
+    {tool_definitions}
+
+  plan_base: |
+    You are the Plan Expert — you analyze complex tasks, survey the codebase,
+    and produce structured execution plans, then execute them step by step.
+
+    Your output is rendered in a TUI. The user talks to you directly.
+
+    Your workflow:
+    1. Read memory.md if it exists — understand project conventions and patterns.
+    2. Survey the codebase: list-dir for structure, glob/grep for relevant files,
+       codebase-index for symbol maps, file-read for key modules.
+    3. Identify all files affected by the task, trace dependencies.
+    4. Break the task into atomic steps. Each step should:
+       - Name the specific files to read and modify
+       - Describe the exact change (not vague — "add X to Y", not "update the code")
+       - Note any dependencies on previous steps
+    5. Write the plan to plan.md in the workspace root.
+    6. Execute each step in order using your file tools.
+    7. After all steps complete, update plan.md with results and any deviations.
+
+    Rules:
+    - Survey before planning. Never guess at file locations or code structure.
+    - Each step must be atomic — if step 3 fails, steps 1-2 should still be valid.
+    - Include file paths in every step.
+    - If the task is simple enough for one change, just do it. Don't over-plan.
+    - Update memory.md if you discover patterns worth preserving.
+    - Test your changes when possible (run tests, verify output).
+
+    {tool_definitions}
+
+  wiki_base: |
+    You are the Wiki Expert — you create and maintain project documentation
+    as a wiki/ folder of interlinked markdown files.
+
+    Your output is rendered in a TUI. The user talks to you directly.
+
+    Your workflow:
+    1. Survey the project first. Use list-dir, glob, and grep to understand
+       the directory structure, module boundaries, and key files.
+    2. Read source files to understand what each module does and how data flows.
+    3. Create wiki/ in the workspace root (if it doesn't exist).
+    4. Write wiki/index.md as the top-level overview with links to chapters.
+    5. Write one markdown file per major topic.
+
+    Wiki conventions:
+    - Every page starts with a # Title heading.
+    - Use relative links between pages: [Architecture](architecture.md).
+    - Keep pages focused — one topic per file.
+    - Use code blocks with language tags for examples.
+    - Include a "See also" section at the bottom of each page.
+    - Write for a developer new to the project but technically competent.
+    - Be accurate — only document what you've read in the source.
+
+    If memory.md exists, read it for context. Update it if you discover
+    important architectural patterns while documenting.
+
+    {tool_definitions}
+
+  agent_expert_base: |
+    You are the Agent Expert — you design, validate, test, and package
+    AgentOS organism configurations.
+
+    Your output is rendered in a TUI. The user talks to you directly.
+
+    Use validate-organism to check YAML, test-organism to smoke-test with
+    Haiku, and package-organism to bundle into .agent files. Follow the
+    design→validate→test→package pipeline. Source files go in the workspace,
+    .agent packages are the build artifacts.
 
     {tool_definitions}
 
@@ -117,78 +182,51 @@ listeners:
         wiki-expert: auto
         calc: auto
     librarian: true
-    peers: [file-read, glob, grep, list-dir, codebase-index, list-agents, user, coder, plan-expert, agent-expert, wiki-expert, calc]
+    peers: [file-read, glob, grep, list-dir, codebase-index, list-agents, user, dispatch, calc]
 
-  # Coder — hands-on coding specialist (buffer → child pipeline)
+  # Coder — hands-on coding specialist (top-level agent, dispatched by Bob)
   - name: coder
-    payload_class: buffer.CoderRequest
-    handler: buffer
+    payload_class: agent.AgentTask
+    handler: agent.handle
     description: "Coding specialist — writes code, edits files, runs tests, uses git"
-    buffer:
-      description: "Execute a coding task: write code, edit files, run tests, use git. Describe what needs to be done."
-      parameters:
-        task:
-          type: string
-          description: "The coding task to perform — be specific about files, changes, and expected outcome"
-      required: [task]
-      requires: [file-read, file-write, file-edit, glob, grep, list-dir, bash, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push]
-      organism: organisms/coder-v2.yaml
-      max_concurrency: 1
-      timeout_secs: 600
+    agent:
+      prompt: "no_paperclipper & coding_base"
+      max_tokens: 4096
+      max_agentic_iterations: 25
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, bash, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, codebase-index]
 
-  # Plan Expert — surveys codebase, creates plans, delegates steps to coder
+  # Plan Expert — top-level agent, dispatched by Bob
   - name: plan-expert
-    payload_class: buffer.PlanExpertRequest
-    handler: buffer
-    description: "Plan Expert — surveys codebase, creates step-by-step plans, delegates to coder"
-    buffer:
-      description: "Analyze a complex task, survey the codebase, create a structured plan (plan.md), then execute each step via the coder specialist. Use for multi-file changes, refactoring, or new features spanning multiple modules."
-      parameters:
-        task:
-          type: string
-          description: "The task to plan and execute — e.g., 'refactor auth module into separate crate', 'add WebSocket support to the server'"
-      required: [task]
-      requires: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user]
-      organism: organisms/plan-expert.yaml
-      max_concurrency: 1
-      timeout_secs: 1800
-      interactive: true
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Plan Expert — surveys codebase, creates step-by-step plans, executes them"
+    agent:
+      prompt: "no_paperclipper & plan_base"
+      max_tokens: 4096
+      max_agentic_iterations: 35
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, bash]
 
-  # Agent Expert — organism design specialist (buffer → child pipeline)
+  # Agent Expert — top-level agent, dispatched by Bob
   - name: agent-expert
-    payload_class: buffer.AgentExpertRequest
-    handler: buffer
-    description: "Agent Expert — designs, validates, and diagnoses organism configurations"
-    buffer:
-      description: "Design, validate, or diagnose an AgentOS organism YAML configuration. Modes: design (create new), diagnose (post-mortem a crash), modify (edit existing)."
-      parameters:
-        task:
-          type: string
-          description: "What to do — e.g., 'create a research agent with web search', 'diagnose why organisms/my-agent.yaml crashes on startup'"
-      required: [task]
-      requires: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, user]
-      organism: organisms/agent-expert.yaml
-      max_concurrency: 1
-      timeout_secs: 600
-      interactive: true
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Agent Expert — designs, validates, tests, and packages organism configurations"
+    agent:
+      prompt: "no_paperclipper & agent_expert_base"
+      max_tokens: 4096
+      max_agentic_iterations: 25
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, test-organism, package-organism]
 
-  # Wiki Expert — documentation specialist (buffer → child pipeline)
+  # Wiki Expert — top-level agent, dispatched by Bob
   - name: wiki-expert
-    payload_class: buffer.WikiExpertRequest
-    handler: buffer
+    payload_class: agent.AgentTask
+    handler: agent.handle
     description: "Wiki Expert — creates and maintains project documentation as interlinked markdown"
-    buffer:
-      description: "Create or update project documentation in a wiki/ folder. Surveys the codebase, writes interlinked markdown pages with index, architecture, module guides, etc."
-      parameters:
-        task:
-          type: string
-          description: "What to document — e.g., 'document this project', 'update the architecture page', 'add a page about the tool system'"
-      required: [task]
-      requires: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user]
-      organism: organisms/wiki-expert.yaml
-      max_concurrency: 1
-      timeout_secs: 900
-      interactive: true
+    agent:
+      prompt: "no_paperclipper & wiki_base"
+      max_tokens: 4096
+      max_agentic_iterations: 30
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index]
 
   # Infrastructure
   - name: llm-pool
@@ -314,6 +352,21 @@ listeners:
     handler: tools.validate_organism.handle
     description: "Validate organism YAML configuration"
 
+  - name: test-organism
+    payload_class: tools.TestOrganismRequest
+    handler: tools.test_organism.handle
+    description: "Smoke-test organism YAML with Haiku and dummy tools"
+
+  - name: package-organism
+    payload_class: tools.PackageOrganismRequest
+    handler: tools.package_organism.handle
+    description: "Bundle organism source folder into .agent package"
+
+  - name: dispatch
+    payload_class: tools.DispatchRequest
+    handler: tools.dispatch.handle
+    description: "Spawn a thread for a target agent — non-blocking handoff"
+
   - name: compile-wasm
     payload_class: tools.CompileWasmRequest
     handler: tools.compile_wasm.handle
@@ -329,7 +382,7 @@ listeners:
 profiles:
   default:
     linux_user: agentos
-    listeners: [bob, coder, plan-expert, agent-expert, wiki-expert, user, file-read, file-write, file-edit, glob, grep, list-dir, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, bash, list-agents, validate-organism, compile-wasm, calc, codebase-index, llm-pool, librarian]
+    listeners: [bob, coder, plan-expert, agent-expert, wiki-expert, user, dispatch, file-read, file-write, file-edit, glob, grep, list-dir, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, bash, list-agents, validate-organism, test-organism, package-organism, compile-wasm, calc, codebase-index, llm-pool, librarian]
     network: [llm-pool]
     journal: retain_forever
 "#;
@@ -467,8 +520,8 @@ async fn main() -> Result<()> {
         org, &data_dir, debug, pool, has_pool, slot.clone(), &work_dir,
     );
 
-    let (mut pipeline, build_error) = match build_result {
-        Ok(p) => (p, None),
+    let (mut pipeline, dispatch_handles, build_error) = match build_result {
+        Ok((p, handles)) => (p, Some(handles), None),
         Err(e) => {
             let err_msg = format!("{e}");
             startup_errors.push(format!("Pipeline build failed: {e}"));
@@ -478,7 +531,7 @@ async fn main() -> Result<()> {
             let bare = AgentPipelineBuilder::new(bare_org, &data_dir)
                 .build()
                 .to_anyhow()?;
-            (bare, Some(err_msg))
+            (bare, None, Some(err_msg))
         }
     };
 
@@ -487,6 +540,11 @@ async fn main() -> Result<()> {
         .unwrap_or("default");
     if let Err(e) = pipeline.initialize_root("agentos", profile).await {
         startup_errors.push(format!("Root thread init failed: {e}"));
+    }
+
+    // Wire dispatch tool's deferred handles now that pipeline is built
+    if let Some(handles) = dispatch_handles {
+        handles.connect(pipeline.kernel(), pipeline.ingress_tx()).await;
     }
 
     info!("Pipeline ready, starting TUI");
@@ -519,9 +577,18 @@ fn build_pipeline(
     has_pool: bool,
     slot: DriveSlot,
     work_dir: &str,
-) -> Result<AgentPipeline, String> {
+) -> Result<(AgentPipeline, DispatchHandles), String> {
     let list_agents_tool = ListAgentsTool::from_organism(&org);
-    let mut builder = AgentPipelineBuilder::new(org, data_dir).with_debug(debug);
+    let mut builder = AgentPipelineBuilder::new(org.clone(), data_dir).with_debug(debug);
+
+    // Dispatch tool — deferred handles, wired post-build
+    let dispatch_handles = DispatchHandles::new();
+    let dispatch_tool = DispatchTool::new_deferred(
+        dispatch_handles.clone(),
+        builder.event_sender(),
+        Arc::new(org),
+    );
+    builder = builder.register_tool("dispatch", dispatch_tool)?;
 
     // LLM pool + dependents (librarian, semantic router)
     if let Some(p) = pool {
@@ -551,8 +618,10 @@ fn build_pipeline(
         builder = builder.register_tool(def.name, SafeCommandTool::new(def, slot.clone()))?;
     }
 
-    // validate-organism tool
+    // validate-organism and test-organism tools
     builder = builder.register_tool("validate-organism", ValidateOrganismTool::new(slot.clone()))?;
+    builder = builder.register_tool("test-organism", TestOrganismTool::new(slot.clone(), None))?;
+    builder = builder.register_tool("package-organism", PackageOrganismTool::new(slot.clone()))?;
 
     // list-agents tool (snapshot of organism agents/buffers for Bob)
     builder = builder.register_tool("list-agents", list_agents_tool)?;
@@ -577,7 +646,8 @@ fn build_pipeline(
         builder = builder.with_agents()?;
     }
 
-    builder.build()
+    let pipeline = builder.build()?;
+    Ok((pipeline, dispatch_handles))
 }
 
 /// Try to auto-mount the working directory as the agent's workspace.

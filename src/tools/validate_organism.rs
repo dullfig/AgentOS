@@ -26,6 +26,9 @@ impl Handler for ValidateOrganismTool {
     async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
         let xml_str = String::from_utf8_lossy(&payload.xml);
 
+        // Optional: source directory for breadcrumb
+        let source_dir = extract_tag(&xml_str, "source_dir");
+
         // Accept either inline YAML or a file path
         let yaml = if let Some(inline) = extract_tag(&xml_str, "yaml") {
             inline
@@ -139,6 +142,20 @@ impl Handler for ValidateOrganismTool {
 
                 if warnings.is_empty() {
                     report.push("validation: OK".to_string());
+
+                    // Write breadcrumb if source_dir provided
+                    if let Some(ref dir) = source_dir {
+                        let guard = self.slot.read().await;
+                        if let Some(drive) = guard.as_ref() {
+                            let marker_path = format!("{}/.validated", dir);
+                            let timestamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let content = format!("{{\"status\":\"ok\",\"timestamp\":{}}}", timestamp);
+                            let _ = drive.write_file(&marker_path, &content);
+                        }
+                    }
                 } else {
                     report.push(format!("warnings: {}", warnings.len()));
                     for w in &warnings {
@@ -172,6 +189,8 @@ interface validate-organism {
         yaml: option<string>,
         /// Path to a YAML file to read and validate (mutually exclusive with yaml)
         path: option<string>,
+        /// Source directory to write .validated breadcrumb on success
+        source-dir: option<string>,
     }
     validate: func(req: request) -> result<string, string>;
 }

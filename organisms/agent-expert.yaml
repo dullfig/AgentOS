@@ -91,6 +91,8 @@ prompts:
     list-dir:    { payload_class: tools.ListDirRequest,     handler: tools.list_dir.handle }
     bash:        { payload_class: tools.BashRequest,        handler: tools.command_exec.handle }
     validate-organism: { payload_class: tools.ValidateOrganismRequest, handler: tools.validate_organism.handle }
+    test-organism: { payload_class: tools.TestOrganismRequest, handler: tools.test_organism.handle }
+    package-organism: { payload_class: tools.PackageOrganismRequest, handler: tools.package_organism.handle }
     user:        { payload_class: tools.UserRequest,        handler: tools.user_channel.handle }
     ```
 
@@ -100,7 +102,7 @@ prompts:
 
     ### Known tool names for requires:
     file-read, file-write, file-edit, glob, grep, list-dir, bash,
-    validate-organism, user, cargo-test, cargo-build, cargo-check,
+    validate-organism, test-organism, package-organism, user, cargo-test, cargo-build, cargo-check,
     cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push
 
     ### Common patterns
@@ -192,7 +194,7 @@ listeners:
       prompt: "no_paperclipper & agent_expert_base"
       max_tokens: 4096
       max_agentic_iterations: 25
-    peers: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, user]
+    peers: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, test-organism, package-organism, user]
 
   - name: llm-pool
     payload_class: llm.LlmRequest
@@ -239,6 +241,16 @@ listeners:
     handler: tools.validate_organism.handle
     description: "Validate organism YAML configuration"
 
+  - name: test-organism
+    payload_class: tools.TestOrganismRequest
+    handler: tools.test_organism.handle
+    description: "Smoke-test organism YAML with Haiku and dummy tools"
+
+  - name: package-organism
+    payload_class: tools.PackageOrganismRequest
+    handler: tools.package_organism.handle
+    description: "Bundle organism source folder into .agent package"
+
   - name: user
     payload_class: tools.UserRequest
     handler: tools.user_channel.handle
@@ -247,6 +259,6 @@ listeners:
 profiles:
   expert:
     linux_user: agentos
-    listeners: [expert-agent, file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, user, llm-pool]
+    listeners: [expert-agent, file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, test-organism, package-organism, user, llm-pool]
     network: [llm-pool]
     journal: retain_forever

@@ -208,6 +208,11 @@ impl AgentPipeline {
         &self.event_tx
     }
 
+    /// Get a clone of the pipeline ingress sender (for dispatch tool).
+    pub fn ingress_tx(&self) -> tokio::sync::mpsc::Sender<Vec<u8>> {
+        self.pipeline.ingress_tx()
+    }
+
     /// Get the security resolver.
     pub fn security(&self) -> &SecurityResolver {
         &self.security

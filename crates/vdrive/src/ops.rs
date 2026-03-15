@@ -86,9 +86,29 @@ impl VDrive {
 
     // ── Write ──
 
+    /// Read raw bytes from a file (no line numbering, no binary check).
+    pub fn read_bytes(&self, path: &str) -> VDriveResult<Vec<u8>> {
+        let resolved = self.resolve(path)?;
+        if resolved.is_dir() {
+            return Err(VDriveError::IsDirectory(path.to_string()));
+        }
+        Ok(fs::read(&resolved)?)
+    }
+
     /// Write content to a file (creates or overwrites).
     /// Creates parent directories as needed.
     pub fn write_file(&self, path: &str, content: &str) -> VDriveResult<()> {
+        let resolved = self.resolve_new(path)?;
+        if let Some(parent) = resolved.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&resolved, content)?;
+        Ok(())
+    }
+
+    /// Write binary content to a file (creates or overwrites).
+    /// Creates parent directories as needed.
+    pub fn write_bytes(&self, path: &str, content: &[u8]) -> VDriveResult<()> {
         let resolved = self.resolve_new(path)?;
         if let Some(parent) = resolved.parent() {
             fs::create_dir_all(parent)?;

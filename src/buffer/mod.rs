@@ -322,6 +322,8 @@ fn register_required_tools(
             "list-dir" => builder.register_tool(name, VDriveListDir::new(drive_slot.clone()))?,
             "bash" => builder.register_tool(name, VDriveCommandExec::new(drive_slot.clone()))?,
             "validate-organism" => builder.register_tool(name, crate::tools::validate_organism::ValidateOrganismTool::new(drive_slot.clone()))?,
+            "test-organism" => builder.register_tool(name, crate::tools::test_organism::TestOrganismTool::new(drive_slot.clone(), None))?,
+            "package-organism" => builder.register_tool(name, crate::tools::package_organism::PackageOrganismTool::new(drive_slot.clone()))?,
             "codebase-index" => {
                 builder = builder.with_code_index()?;
                 continue;
