@@ -53,6 +53,11 @@ prompts:
     3. Say one short line before dispatching: "Connecting you with coder."
     4. Dispatch returns immediately. You're done until the user comes back.
 
+    Before dispatching to coder or plan-expert:
+    - Check if a workspace is mounted: use `list-dir` with path "/". If it fails or is empty,
+      tell the user: "No workspace mounted. Use /vdrive mount <path> to mount your project first."
+      Do NOT dispatch until a workspace is available.
+
     When NOT to dispatch:
     - Simple questions you can answer directly ("what time is it?", "what does X mean?")
     - Math: use calc.
@@ -175,11 +180,9 @@ listeners:
         grep: auto
         codebase-index: auto
         list-agents: auto
-        coder: auto
-        agent-expert: auto
+        list-dir: auto
+        dispatch: auto
         user: auto
-        plan-expert: auto
-        wiki-expert: auto
         calc: auto
     librarian: true
     peers: [file-read, glob, grep, list-dir, codebase-index, list-agents, user, dispatch, calc]
@@ -542,15 +545,16 @@ async fn main() -> Result<()> {
         startup_errors.push(format!("Root thread init failed: {e}"));
     }
 
-    // Wire dispatch tool's deferred handles now that pipeline is built
+    info!("Pipeline ready, starting TUI");
+
+    // Start pipeline — must happen before wiring dispatch handles because
+    // run() creates a new ingress channel (replacing the pre-build one).
+    pipeline.run();
+
+    // Wire dispatch tool's deferred handles now that pipeline is running
     if let Some(handles) = dispatch_handles {
         handles.connect(pipeline.kernel(), pipeline.ingress_tx()).await;
     }
-
-    info!("Pipeline ready, starting TUI");
-
-    // Start pipeline
-    pipeline.run();
 
     // Run TUI (blocks until quit) — always opens, errors shown as messages
     run_tui(&mut pipeline, debug, &yaml, models_config, agents_config, has_pool && build_error.is_none(), drive_slot, auto_mount_msg, startup_errors).await?;

@@ -48,7 +48,7 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                // menu bar
-            Constraint::Length(1),                // tab bar
+            Constraint::Length(2),                // tab bar (folder tab + top border)
             Constraint::Min(5),                  // content area
             Constraint::Length(input_height),     // input (textarea) — hidden on Messages/YAML
             Constraint::Length(2),                // status bar (2 lines)
@@ -163,110 +163,141 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
 }
 
 fn draw_tab_bar(f: &mut Frame, app: &mut TuiApp, area: Rect) {
-    let arrow_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let avail_w = area.width as usize;
+    // Folder-tab design: active tab protrudes above the top border.
+    //
+    //  ┌─^1 Bob─┐
+    //  │        └─ ^2 Coder  ^3 Activity ─────────┐
+    //
+    // Row 1 (area.y):     tab top line
+    // Row 2 (area.y + 1): left wall of tab + connector + inactive tabs + top border
 
-    // Pre-compute label widths: " [^N label]" per tab
-    let labels: Vec<(String, usize)> = app.open_tabs
-        .iter()
-        .enumerate()
-        .map(|(i, tab)| {
-            let label = format!("[^{} {}]", i + 1, tab.label());
-            let w = 1 + label.len(); // " " prefix + label
-            (label, w)
-        })
-        .collect();
+    let border_style = Style::default().fg(Color::Cyan);
+    let active_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(Color::DarkGray);
+    let w = area.width as usize;
 
-    let total_w: usize = labels.iter().map(|(_, w)| w).sum();
-
-    // Auto-scroll so active tab is always visible
-    let active_idx = app.open_tabs.iter().position(|t| *t == app.active_tab).unwrap_or(0);
-
-    // Check if scrolling is needed at all
-    let needs_scroll = total_w > avail_w;
-
-    if needs_scroll {
-        // Ensure active tab is in the visible window.
-        // Reserve 2 chars for each arrow that's showing.
-        let right_arrow_w = 2; // conservative — assume we might need it
-
-        // If active tab is before scroll, scroll left
-        if active_idx < app.tab_scroll {
-            app.tab_scroll = active_idx;
-        }
-
-        // If active tab is after visible range, scroll right
-        loop {
-            let start = app.tab_scroll;
-            let la = if start > 0 { 2 } else { 0 };
-            let mut used = la;
-            let mut last_visible = start;
-            for i in start..labels.len() {
-                let needed = labels[i].1 + if i + 1 < labels.len() { 0 } else { 0 };
-                if used + needed + right_arrow_w > avail_w && i > start {
-                    break;
-                }
-                used += labels[i].1;
-                last_visible = i;
-            }
-            if active_idx <= last_visible {
-                break;
-            }
-            app.tab_scroll += 1;
-            if app.tab_scroll >= labels.len() {
-                break;
-            }
-        }
-    } else {
-        app.tab_scroll = 0;
+    if w < 4 || area.height < 2 {
+        return;
     }
 
-    // Now render with the computed scroll offset
-    let show_left_arrow = needs_scroll && app.tab_scroll > 0;
-    let show_right_arrow; // computed below
+    // Find active tab
+    let active_idx = app.open_tabs.iter().position(|t| *t == app.active_tab).unwrap_or(0);
+    // active_label no longer needed — tabs are rendered in the loop below.
+
+    // ── Row 1: all tabs on same line, active in cyan, inactive in grey ──
+    // "┌─^1 Bob─┐ ┌─^2 Coder─┐ ┌─^3 Activity─┐"
+    // Only the active tab connects to the frame below.
 
     let mut tab_regions = Vec::new();
-    let mut spans: Vec<Span> = Vec::new();
-    let mut x = area.x;
+    let mut row1 = Vec::new();
+    let mut row1_col: usize = 0;
+    // Track where the active tab starts and ends (column positions) for row 2
+    let mut active_tab_start: usize = 0;
+    let mut active_tab_end: usize = 0;
 
-    if show_left_arrow {
-        spans.push(Span::styled("\u{25C0} ", arrow_style)); // ◀
-        x += 2;
-    }
+    for (i, tab) in app.open_tabs.iter().enumerate() {
+        let is_active = i == active_idx;
+        let label = format!("^{} {}", i + 1, tab.label());
+        let tab_w = label.len() + 4; // "┌─" + label + "─┐"
 
-    let mut last_rendered = app.tab_scroll;
-    for i in app.tab_scroll..labels.len() {
-        let (ref label, w) = labels[i];
-        let projected = (x - area.x) as usize + w + if needs_scroll { 2 } else { 0 };
-        if projected > avail_w && i > app.tab_scroll {
-            break;
+        if row1_col + tab_w >= w {
+            break; // no room
         }
 
-        let tab = &app.open_tabs[i];
-        let is_active = *tab == app.active_tab;
-        let style = if is_active {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+        let style = if is_active { border_style } else { inactive_style };
+        let label_style = if is_active { active_style } else { inactive_style };
 
-        let x_start = x + 1; // after space
+        if is_active {
+            active_tab_start = row1_col;
+            active_tab_end = row1_col + tab_w;
+        }
+
+        let x_start = area.x + row1_col as u16 + 2; // after "┌─"
         let x_end = x_start + label.len() as u16;
         tab_regions.push((x_start, x_end, tab.clone()));
 
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(label.clone(), style));
-        x = x_end;
-        last_rendered = i;
+        row1.push(Span::styled("\u{250C}\u{2500}", style));   // "┌─"
+        row1.push(Span::styled(label, label_style));
+        row1.push(Span::styled("\u{2500}\u{2510}", style));   // "─┐"
+        row1_col += tab_w;
+
+        // Space between tabs
+        if row1_col < w {
+            row1.push(Span::raw(" "));
+            row1_col += 1;
+        }
+    }
+    // Fill rest of row 1
+    if row1_col < w {
+        row1.push(Span::raw(" ".repeat(w - row1_col)));
     }
 
-    show_right_arrow = needs_scroll && last_rendered + 1 < labels.len();
-    if show_right_arrow {
-        spans.push(Span::styled(" \u{25B6}", arrow_style)); // ▶
+    // ── Row 2: top border of content frame, with gap under active tab ──
+    //
+    // Active tab at col 0:
+    //   "│        └──────────────────────────┐"
+    //   │ = tab left wall continues as frame left border
+    //   └ = under active tab's ┐
+    //
+    // Active tab at col N:
+    //   "┌──────────┘           └────────────┐"
+    //   ┌ = frame top-left corner
+    //   ┘ = under active tab's ┌ (border turns up into tab)
+    //   └ = under active tab's ┐ (border resumes from tab)
+
+    let mut row2 = Vec::new();
+    #[allow(unused_assignments)]
+    let mut col: usize = 0;
+
+    if active_tab_start == 0 {
+        // Active tab at left edge — its left wall IS the frame left border
+        row2.push(Span::styled("\u{2502}", border_style)); // "│"
+        col = 1;
+        // Spaces under the active tab interior
+        let gap_end = active_tab_end.saturating_sub(1); // └ aligns under ┐
+        if gap_end > col {
+            row2.push(Span::raw(" ".repeat(gap_end - col)));
+            col = gap_end;
+        }
+        // └ under active tab's ┐, then ─ continues as top border
+        row2.push(Span::styled("\u{2514}", border_style));
+        col += 1;
+    } else {
+        // Frame top-left corner
+        row2.push(Span::styled("\u{250C}", border_style)); // "┌"
+        col = 1;
+        // ─ runs from col 1 to just before the active tab
+        if active_tab_start > col {
+            let fill = active_tab_start - col;
+            row2.push(Span::styled("\u{2500}".repeat(fill), border_style));
+            col = active_tab_start;
+        }
+        // ┘ under active tab's ┌ (border turns up into tab)
+        row2.push(Span::styled("\u{2518}", border_style));
+        col += 1;
+        // Spaces under the active tab interior
+        let gap_end = active_tab_end.saturating_sub(1); // └ aligns under ┐
+        if gap_end > col {
+            row2.push(Span::raw(" ".repeat(gap_end - col)));
+            col = gap_end;
+        }
+        // └ under active tab's ┐ (border resumes)
+        row2.push(Span::styled("\u{2514}", border_style));
+        col += 1;
     }
+
+    // ─ fills to the end, ┐ closes the frame top-right
+    if col + 1 < w {
+        let fill = w - col - 1;
+        row2.push(Span::styled("\u{2500}".repeat(fill), border_style));
+    }
+    row2.push(Span::styled("\u{2510}", border_style)); // ┐
 
     app.layout_areas.tab_regions = tab_regions;
 
-    let line = Line::from(spans);
-    f.render_widget(Paragraph::new(line), area);
+    // Render both rows
+    let row1_area = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
+    let row2_area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
+    f.render_widget(Paragraph::new(Line::from(row1)), row1_area);
+    f.render_widget(Paragraph::new(Line::from(row2)), row2_area);
 }

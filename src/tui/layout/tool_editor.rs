@@ -39,9 +39,9 @@ pub(super) fn draw_tool_editor(f: &mut Frame, app: &mut TuiApp, area: Rect) {
             );
         }
     } else {
+        // Top border drawn by folder-tab bar.
         let block = Block::default()
-            .title(format!(" {} ", tool_name))
-            .borders(Borders::ALL)
+            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
             .border_style(Style::default().fg(Color::DarkGray));
         let para = Paragraph::new(Span::styled(
             "Editor not loaded.",

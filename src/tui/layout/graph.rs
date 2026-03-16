@@ -11,9 +11,9 @@ use ratatui::Frame;
 use super::super::app::TuiApp;
 
 pub(super) fn draw_graph(f: &mut Frame, app: &mut TuiApp, area: Rect) {
+    // Top border drawn by folder-tab bar.
     let block = Block::default()
-        .title(" Graph — Organism Topology ")
-        .borders(Borders::ALL)
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
         .border_style(Style::default().fg(Color::Cyan));
 
     let inner_width = area.width.saturating_sub(2) as usize;

@@ -30,9 +30,10 @@ pub(super) fn draw_threads(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     } else {
         Color::DarkGray
     };
+    // Top border drawn by folder-tab bar (first sub-panel loses its top).
     let thread_block = Block::default()
         .title(" Threads ")
-        .borders(Borders::ALL)
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
         .border_style(Style::default().fg(thread_border_color));
 
     let thread_items: Vec<ListItem> = app

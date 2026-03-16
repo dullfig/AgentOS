@@ -22,14 +22,9 @@ pub(super) fn draw_messages(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     // │                                     │  ← 1-line gap
     // │░░> input text_                     ░│  ← shaded, grows up
     // └─────────────────────────────────────┘
-    let title = if let super::super::app::TabId::Agent(ref name) = app.active_tab {
-        format!(" {} ", name)
-    } else {
-        " Messages ".to_string()
-    };
+    // Top border is drawn by the folder-tab bar; we only draw left, right, bottom.
     let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
         .border_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(area);
     f.render_widget(block, area);

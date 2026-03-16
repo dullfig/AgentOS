@@ -64,9 +64,9 @@ pub(super) fn draw_yaml_editor(f: &mut Frame, app: &mut TuiApp, area: Rect) {
             draw_yaml_hover_overlay(f, hover, cursor_pos, area);
         }
     } else {
+        // Top border drawn by folder-tab bar.
         let block = Block::default()
-            .title(" YAML ")
-            .borders(Borders::ALL)
+            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
             .border_style(Style::default().fg(Color::DarkGray));
         let para = Paragraph::new(Span::styled(
             "No organism YAML loaded. Use --organism or load from File menu.",

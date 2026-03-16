@@ -126,7 +126,12 @@ pub async fn run_tui(
     // Clear default tabs and open the first agent
     app.open_tabs.clear();
     app.agent_tabs.clear();
-    let first_agent = app.available_agents.first().cloned().unwrap_or_else(|| "planner".into());
+    // Bob is the concierge — always open his tab first. Fall back to first available.
+    let first_agent = if app.available_agents.contains(&"bob".to_string()) {
+        "bob".to_string()
+    } else {
+        app.available_agents.first().cloned().unwrap_or_else(|| "planner".into())
+    };
     app.open_agent_tab(&first_agent);
     app.rebuild_menu();
 
