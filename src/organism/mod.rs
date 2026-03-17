@@ -191,6 +191,32 @@ pub struct ReloadEvent {
     pub updated: Vec<String>,
 }
 
+// ── Onboarding script types ──
+
+/// A single step in an onboarding script.
+#[derive(Debug, Clone)]
+pub enum OnboardingStep {
+    /// Display text as the host agent (injected into thread as assistant message).
+    Say(String),
+    /// Present numbered choices. Blocks until user picks one.
+    Choice {
+        prompt: String,
+        options: Vec<OnboardingChoice>,
+    },
+    /// Trigger a TUI action (silent — not injected into thread).
+    Open(String),
+    /// Block until a condition is met (silent).
+    Wait(String),
+}
+
+/// A choice option with nested sub-steps.
+#[derive(Debug, Clone)]
+pub struct OnboardingChoice {
+    pub label: String,
+    pub value: String,
+    pub steps: Vec<OnboardingStep>,
+}
+
 /// The organism: single source of truth for configuration.
 #[derive(Debug, Clone)]
 pub struct Organism {
@@ -198,6 +224,8 @@ pub struct Organism {
     listeners: HashMap<String, ListenerDef>,
     profiles: HashMap<String, SecurityProfile>,
     prompts: HashMap<String, String>,
+    /// Onboarding script steps (empty = no onboarding).
+    pub onboarding: Vec<OnboardingStep>,
 }
 
 impl Organism {
@@ -208,6 +236,7 @@ impl Organism {
             listeners: HashMap::new(),
             profiles: HashMap::new(),
             prompts: HashMap::new(),
+            onboarding: Vec::new(),
         }
     }
 

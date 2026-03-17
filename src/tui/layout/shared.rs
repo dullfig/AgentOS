@@ -241,6 +241,7 @@ pub(super) fn draw_wizard_input(f: &mut Frame, app: &mut TuiApp, area: Rect) {
         InputMode::ProviderWizard { provider } => {
             format!(" /provider {provider} ")
         }
+        InputMode::OnboardingChoice { .. } => " Setup ".to_string(),
         InputMode::Normal => return,
     };
     let block = Block::default()
@@ -252,7 +253,16 @@ pub(super) fn draw_wizard_input(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     f.render_widget(block, area);
 
     // Draw the prompt prefix
-    let prompt = "> API key: ";
+    let prompt = match &app.input_mode {
+        InputMode::OnboardingChoice { options, .. } => {
+            if options.len() <= 9 {
+                "Enter 1-9: "
+            } else {
+                "Enter #: "
+            }
+        }
+        _ => "> API key: ",
+    };
     let prompt_width = prompt.len() as u16;
     f.render_widget(
         Paragraph::new(Span::styled(prompt, Style::default().fg(Color::Yellow))),

@@ -34,6 +34,9 @@ struct OrganismYaml {
     /// Named prompt templates for agent identity. Values can be inline text or `file:path`.
     #[serde(default)]
     prompts: std::collections::HashMap<String, String>,
+    /// Onboarding script steps (decision tree run on first launch).
+    #[serde(default)]
+    onboarding: Vec<OnboardingStepYaml>,
 }
 
 /// Organism identity metadata.
@@ -295,6 +298,52 @@ struct JournalDaysSpec {
     retain_days: u16,
 }
 
+// ── Onboarding script YAML types ──
+
+/// A single step in an onboarding script (serde representation).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum OnboardingStepYaml {
+    Say { say: String },
+    Choice { choice: OnboardingChoiceYaml },
+    Open { open: String },
+    Wait { wait: String },
+}
+
+/// A choice block with a prompt and options.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct OnboardingChoiceYaml {
+    prompt: String,
+    options: Vec<OnboardingOptionYaml>,
+}
+
+/// A choice option with nested sub-steps.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct OnboardingOptionYaml {
+    label: String,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    steps: Vec<OnboardingStepYaml>,
+}
+
+/// Convert parsed YAML onboarding steps to domain types.
+fn convert_onboarding_steps(yaml_steps: Vec<OnboardingStepYaml>) -> Vec<super::OnboardingStep> {
+    yaml_steps.into_iter().map(|s| match s {
+        OnboardingStepYaml::Say { say } => super::OnboardingStep::Say(say),
+        OnboardingStepYaml::Open { open } => super::OnboardingStep::Open(open),
+        OnboardingStepYaml::Wait { wait } => super::OnboardingStep::Wait(wait),
+        OnboardingStepYaml::Choice { choice } => super::OnboardingStep::Choice {
+            prompt: choice.prompt,
+            options: choice.options.into_iter().map(|o| super::OnboardingChoice {
+                label: o.label,
+                value: o.value,
+                steps: convert_onboarding_steps(o.steps),
+            }).collect(),
+        },
+    }).collect()
+}
+
 /// Generate the JSON Schema for the organism YAML format.
 pub fn generate_schema() -> serde_json::Value {
     let schema = schemars::schema_for!(OrganismYaml);
@@ -476,6 +525,9 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
             network: p.network,
         })?;
     }
+
+    // Convert onboarding steps
+    org.onboarding = convert_onboarding_steps(raw.onboarding);
 
     Ok(org)
 }

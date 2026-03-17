@@ -272,6 +272,10 @@ pub enum InputMode {
     ProviderWizard {
         provider: String,
     },
+    OnboardingChoice {
+        prompt: String,
+        options: Vec<(String, String)>, // (label, value)
+    },
 }
 
 /// Pending provider wizard completion data (consumed by runner after handle_key).
@@ -532,6 +536,10 @@ pub struct TuiApp {
     pub models_config: Arc<Mutex<ModelsConfig>>,
     /// Pending provider wizard completion (set by wizard Enter, consumed by runner).
     pub pending_provider_completion: Option<ProviderCompletion>,
+    /// Onboarding script engine. Some = script running, None = normal mode.
+    pub onboarding: Option<super::onboarding::OnboardingEngine>,
+    /// Pending onboarding choice (set by input handler, consumed by runner).
+    pub pending_onboarding_choice: Option<usize>,
     /// Currently selected agent name. None = default (first agent).
     pub selected_agent: Option<String>,
     /// Agent favorites config (project-level persistence).
@@ -745,6 +753,8 @@ impl TuiApp {
             input_mode: InputMode::Normal,
             models_config: Arc::new(Mutex::new(ModelsConfig::default())),
             pending_provider_completion: None,
+            onboarding: None,
+            pending_onboarding_choice: None,
             selected_agent: None,
             agents_config: AgentsConfig::default(),
             pending_approval: None,
@@ -1344,7 +1354,10 @@ impl TuiApp {
 
     /// Whether the wizard is active.
     pub fn in_wizard(&self) -> bool {
-        matches!(self.input_mode, InputMode::ProviderWizard { .. })
+        matches!(
+            self.input_mode,
+            InputMode::ProviderWizard { .. } | InputMode::OnboardingChoice { .. }
+        )
     }
 
     /// Generate D2 source from an organism and cache it for the Graph tab.

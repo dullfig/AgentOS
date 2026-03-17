@@ -448,6 +448,36 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         }
     }
 
+    // Onboarding choice mode: user types a number (1..N)
+    if let InputMode::OnboardingChoice { ref options, .. } = app.input_mode.clone() {
+        match key.code {
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                let idx = c.to_digit(10).unwrap_or(0) as usize;
+                if idx >= 1 && idx <= options.len() {
+                    // Inject the user's choice as a chat entry
+                    let label = &options[idx - 1].0;
+                    let entry = ChatEntry::new("user", label.as_str());
+                    if let TabId::Agent(ref name) = app.active_tab {
+                        if let Some(tab) = app.agent_tabs.get_mut(name.as_str()) {
+                            tab.chat_log.push(entry.clone());
+                            tab.message_auto_scroll = true;
+                        }
+                    }
+                    app.chat_log.push(entry);
+                    app.message_auto_scroll = true;
+                    app.pending_onboarding_choice = Some(idx);
+                    app.input_mode = InputMode::Normal;
+                    app.clear_input();
+                }
+            }
+            KeyCode::Esc => {
+                // Can't cancel onboarding — just ignore
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Ctrl+1..9 switch tabs by position (like browser tabs)
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {

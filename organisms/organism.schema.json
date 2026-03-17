@@ -372,6 +372,96 @@
       ],
       "description": "Listeners access spec: `\"all\"` or a list of listener names."
     },
+    "OnboardingChoiceYaml": {
+      "description": "A choice block with a prompt and options.",
+      "properties": {
+        "options": {
+          "items": {
+            "$ref": "#/definitions/OnboardingOptionYaml"
+          },
+          "type": "array"
+        },
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "options",
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "OnboardingOptionYaml": {
+      "description": "A choice option with nested sub-steps.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/definitions/OnboardingStepYaml"
+          },
+          "type": "array"
+        },
+        "value": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "OnboardingStepYaml": {
+      "anyOf": [
+        {
+          "properties": {
+            "say": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "say"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "choice": {
+              "$ref": "#/definitions/OnboardingChoiceYaml"
+            }
+          },
+          "required": [
+            "choice"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "open": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "open"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "wait": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "wait"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "A single step in an onboarding script (serde representation)."
+    },
     "OrganismMeta": {
       "description": "Organism identity metadata.",
       "properties": {
@@ -525,6 +615,13 @@
       "description": "Array of listener definitions — each handles one payload type.",
       "items": {
         "$ref": "#/definitions/ListenerYaml"
+      },
+      "type": "array"
+    },
+    "onboarding": {
+      "description": "Onboarding script steps (decision tree run on first launch).",
+      "items": {
+        "$ref": "#/definitions/OnboardingStepYaml"
       },
       "type": "array"
     },

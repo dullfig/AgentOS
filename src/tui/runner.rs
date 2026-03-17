@@ -159,8 +159,13 @@ pub async fn run_tui(
     let mut approval_rx = pipeline.take_approval_receiver();
     let mut query_rx = pipeline.take_query_receiver();
 
-    // Proactive greeting: Bob introduces himself on startup
-    if has_pool {
+    // Onboarding: if no pool and organism has onboarding steps, start the script engine.
+    // Otherwise, Bob introduces himself via LLM.
+    if !has_pool && !pipeline.organism().onboarding.is_empty() {
+        app.onboarding = super::onboarding::OnboardingEngine::new(
+            pipeline.organism().onboarding.clone(),
+        );
+    } else if has_pool {
         inject_task(pipeline, &kernel, "Briefly introduce yourself in one line. You are starting a new session.", Some(&first_agent)).await;
     }
 
@@ -339,6 +344,75 @@ pub async fn run_tui(
                         &mut app,
                         &format!("Failed to discover models from {}: {e}\nCheck your API key and try again with /provider {}", pc.provider, pc.provider),
                     );
+                }
+            }
+        }
+
+        // Drive onboarding script engine
+        if app.onboarding.is_some() {
+            // Feed pending choice
+            if let Some(choice_idx) = app.pending_onboarding_choice.take() {
+                if let Some(ref mut engine) = app.onboarding {
+                    engine.submit_choice(choice_idx);
+                }
+            }
+
+            let has_pool = app.llm_pool.is_some();
+            let actions = if let Some(ref mut engine) = app.onboarding {
+                engine.advance(has_pool)
+            } else {
+                Vec::new()
+            };
+
+            for action in actions {
+                match action {
+                    super::onboarding::OnboardingAction::InjectChat { role, text } => {
+                        let entry = super::app::ChatEntry::new(&role, &text);
+                        // Inject into Bob's tab (or first agent tab)
+                        if let Some(tab) = app.agent_tabs.get_mut("bob") {
+                            tab.chat_log.push(entry.clone());
+                            tab.message_auto_scroll = true;
+                        }
+                        app.chat_log.push(entry);
+                        app.message_auto_scroll = true;
+                    }
+                    super::onboarding::OnboardingAction::OpenTarget(target) => {
+                        // Map target string to TUI action
+                        if let Some(provider) = target.strip_prefix("providers/add-key/") {
+                            app.input_mode = super::app::InputMode::ProviderWizard {
+                                provider: provider.to_string(),
+                            };
+                        } else if target == "providers" {
+                            // TODO: open provider list panel
+                        }
+                        // Extensible: add more targets as TUI features grow
+                    }
+                    super::onboarding::OnboardingAction::PresentChoice { prompt, options } => {
+                        // Show choice prompt as Bob message
+                        let mut text = format!("{prompt}\n");
+                        for (i, (label, _)) in options.iter().enumerate() {
+                            text.push_str(&format!("  {}. {}\n", i + 1, label));
+                        }
+                        let entry = super::app::ChatEntry::new("agent", &text);
+                        if let Some(tab) = app.agent_tabs.get_mut("bob") {
+                            tab.chat_log.push(entry.clone());
+                            tab.message_auto_scroll = true;
+                        }
+                        app.chat_log.push(entry);
+                        app.message_auto_scroll = true;
+                        app.input_mode = super::app::InputMode::OnboardingChoice { prompt, options };
+                    }
+                    super::onboarding::OnboardingAction::Complete => {
+                        app.onboarding = None;
+                        // Now that provider is configured, trigger Bob's real greeting
+                        if app.llm_pool.is_some() {
+                            inject_task(
+                                pipeline, &kernel,
+                                "The user just completed setup. Briefly welcome them and ask what they'd like to work on.",
+                                Some("bob"),
+                            ).await;
+                        }
+                    }
                 }
             }
         }
