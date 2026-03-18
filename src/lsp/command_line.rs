@@ -209,7 +209,7 @@ impl LanguageService for CommandLineService {
                 items
             }
             InputContext::Subcommand { cmd, prefix } => {
-                cmd.subcommands
+                let mut items: Vec<CompletionItem> = cmd.subcommands
                     .iter()
                     .filter(|sc| sc.name.starts_with(prefix))
                     .map(|sc| CompletionItem {
@@ -223,7 +223,27 @@ impl LanguageService for CommandLineService {
                         }),
                         ..Default::default()
                     })
-                    .collect()
+                    .collect();
+                // Also include direct args (e.g., /provider shows both "remove"
+                // and provider names like "anthropic", "openai", "ollama").
+                if !cmd.args.is_empty() {
+                    if let Some(arg) = cmd.args.first() {
+                        if let ArgKind::Enum(values) = &arg.kind {
+                            for v in *values {
+                                if v.starts_with(prefix) {
+                                    items.push(CompletionItem {
+                                        label: v.to_string(),
+                                        kind: Some(CompletionItemKind::VALUE),
+                                        detail: Some(format!("{}: {}", arg.name, v)),
+                                        insert_text: Some(v.to_string()),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                items
             }
             InputContext::Argument {
                 cmd,
@@ -652,5 +672,27 @@ mod tests {
         let items = svc.completions("/models d", Position::new(0, 9));
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "default");
+    }
+
+    #[test]
+    fn completions_provider_shows_subcommands_and_args() {
+        let svc = CommandLineService::new();
+        let items = svc.completions("/provider ", Position::new(0, 10));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // Should show both subcommand "remove" AND provider names
+        assert!(labels.contains(&"remove"), "missing 'remove': {:?}", labels);
+        assert!(labels.contains(&"anthropic"), "missing 'anthropic': {:?}", labels);
+        assert!(labels.contains(&"openai"), "missing 'openai': {:?}", labels);
+        assert!(labels.contains(&"ollama"), "missing 'ollama': {:?}", labels);
+    }
+
+    #[test]
+    fn completions_provider_prefix_filters() {
+        let svc = CommandLineService::new();
+        let items = svc.completions("/provider a", Position::new(0, 11));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"anthropic"));
+        assert!(!labels.contains(&"remove"));
+        assert!(!labels.contains(&"openai"));
     }
 }
