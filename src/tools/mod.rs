@@ -18,6 +18,9 @@ pub mod glob_tool;
 #[cfg(test)]
 pub mod grep;
 pub mod list_agents;
+pub mod model_download;
+pub mod model_search;
+pub mod model_verify;
 pub mod safe_commands;
 pub mod user_channel;
 pub mod package_organism;

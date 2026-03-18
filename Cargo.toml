@@ -30,7 +30,9 @@ serde_yaml = "0.9"
 schemars = { version = "0.8", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+urlencoding = "2"
+futures-util = "0.3"
 async-trait = "0.1"
 
 # D2 diagram rendering engine
