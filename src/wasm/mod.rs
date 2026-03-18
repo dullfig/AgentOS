@@ -15,6 +15,7 @@
 pub mod capabilities;
 pub mod definitions;
 pub mod error;
+pub mod kv;
 pub mod peer;
 pub mod python_runtime;
 pub mod runtime;

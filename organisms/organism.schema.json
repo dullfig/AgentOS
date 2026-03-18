@@ -251,6 +251,57 @@
       ],
       "description": "Journal retention policy."
     },
+    "KvGrantYaml": {
+      "description": "KV store access grant.",
+      "properties": {
+        "read": {
+          "default": [],
+          "description": "Shared namespaces this tool can read (e.g., `[\"stocks\", \"market\"]`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "write": {
+          "default": [],
+          "description": "Shared namespaces this tool can write (e.g., `[\"market\"]`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "KvStoreYaml": {
+      "description": "KV store YAML value — accepts bool or string.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "Enabled"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ListenerYaml": {
       "description": "A listener definition — handles one payload type via a handler function.",
       "properties": {
@@ -576,6 +627,17 @@
           },
           "type": "array"
         },
+        "kv": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/KvGrantYaml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "KV store grants. When present, the tool gets a private namespace plus any declared read/write access to shared namespaces."
+        },
         "stdio": {
           "default": false,
           "description": "Allow stdio access. Default: `false`.",
@@ -611,6 +673,17 @@
   },
   "description": "Top-level organism YAML configuration.\n\nDefines an organism: its identity, listeners (handlers), security profiles, and named prompt templates.",
   "properties": {
+    "kv-store": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/KvStoreYaml"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "KV store configuration. `true`/`\"yes\"`/`\"memory\"` = in-memory, a path string = on-disk. Omit or `false`/`\"no\"` = no KV store."
+    },
     "listeners": {
       "description": "Array of listener definitions — each handles one payload type.",
       "items": {

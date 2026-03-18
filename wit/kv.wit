@@ -1,0 +1,31 @@
+package agentos:kv@0.1.0;
+
+/// Key-value store — host-provided storage for WASM tools.
+///
+/// Tools see a flat key-value namespace. The host resolves which
+/// physical namespace a tool's keys land in based on organism config:
+///
+///   - tool-private namespace (automatic, always available)
+///   - Named shared namespaces declared in organism YAML, granted per-tool
+///
+/// Tools never see namespace prefixes. They call get("price:AAPL")
+/// and the host prepends the resolved namespace transparently.
+///
+/// No discovery API. The organism declares all sharing.
+
+interface store {
+    /// Get a value by key. Returns none if the key does not exist.
+    get: func(key: string) -> option<string>;
+
+    /// Set a key to a value. Overwrites any existing value.
+    /// Returns an error string on failure (e.g. read-only namespace).
+    put: func(key: string, value: string) -> result<_, string>;
+
+    /// Delete a key. Returns an error string if the key does not exist
+    /// or the namespace is read-only.
+    delete: func(key: string) -> result<_, string>;
+
+    /// List keys matching a prefix. Returns keys relative to the
+    /// tool's view (no namespace prefix exposed).
+    list-keys: func(prefix: string) -> list<string>;
+}

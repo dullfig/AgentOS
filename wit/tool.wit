@@ -16,6 +16,10 @@ world tool {
         payload: string,
     }
 
+    /// Host-provided key-value store. Available when the organism
+    /// grants KV access to this tool (always includes private namespace).
+    import agentos:kv/store;
+
     export get-metadata: func() -> tool-metadata;
     export handle: func(request-xml: string) -> tool-result;
 }

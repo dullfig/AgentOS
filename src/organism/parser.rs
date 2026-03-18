@@ -15,7 +15,7 @@ use super::{
     WasmToolConfig,
 };
 use crate::agent::permissions::{PermissionMap, PermissionTier};
-use crate::wasm::capabilities::{EnvGrant, FsGrant, WasmCapabilities};
+use crate::wasm::capabilities::{EnvGrant, FsGrant, KvGrant, WasmCapabilities};
 
 /// Top-level organism YAML configuration.
 ///
@@ -37,6 +37,60 @@ struct OrganismYaml {
     /// Onboarding script steps (decision tree run on first launch).
     #[serde(default)]
     onboarding: Vec<OnboardingStepYaml>,
+    /// KV store configuration. `true`/`"yes"`/`"memory"` = in-memory,
+    /// a path string = on-disk. Omit or `false`/`"no"` = no KV store.
+    #[serde(default, rename = "kv-store")]
+    kv_store: Option<KvStoreYaml>,
+}
+
+/// KV store YAML value — accepts bool or string.
+#[derive(Debug, JsonSchema)]
+enum KvStoreYaml {
+    Enabled(bool),
+    Value(String),
+}
+
+impl<'de> serde::Deserialize<'de> for KvStoreYaml {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct KvVisitor;
+        impl<'de> serde::de::Visitor<'de> for KvVisitor {
+            type Value = KvStoreYaml;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("bool, \"yes\", \"no\", \"memory\", or a filesystem path")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(KvStoreYaml::Enabled(v))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(KvStoreYaml::Value(v.to_string()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(KvStoreYaml::Value(v))
+            }
+        }
+        deserializer.deserialize_any(KvVisitor)
+    }
+}
+
+impl KvStoreYaml {
+    fn to_config(&self) -> super::KvStoreConfig {
+        match self {
+            KvStoreYaml::Enabled(true) => super::KvStoreConfig::Memory,
+            KvStoreYaml::Enabled(false) => super::KvStoreConfig::None,
+            KvStoreYaml::Value(s) => {
+                let lower = s.to_lowercase();
+                match lower.as_str() {
+                    "yes" | "memory" | "true" => super::KvStoreConfig::Memory,
+                    "no" | "false" | "" => super::KvStoreConfig::None,
+                    _ => super::KvStoreConfig::Disk(s.clone()),
+                }
+            }
+        }
+    }
 }
 
 /// Organism identity metadata.
@@ -147,6 +201,21 @@ struct WasmCapabilitiesYaml {
     /// Allow stdio access. Default: `false`.
     #[serde(default)]
     stdio: bool,
+    /// KV store grants. When present, the tool gets a private namespace
+    /// plus any declared read/write access to shared namespaces.
+    #[serde(default)]
+    kv: Option<KvGrantYaml>,
+}
+
+/// KV store access grant.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct KvGrantYaml {
+    /// Shared namespaces this tool can read (e.g., `["stocks", "market"]`).
+    #[serde(default)]
+    read: Vec<String>,
+    /// Shared namespaces this tool can write (e.g., `["market"]`).
+    #[serde(default)]
+    write: Vec<String>,
 }
 
 /// Filesystem mount grant for WASM sandbox.
@@ -455,6 +524,10 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
                             })
                             .collect(),
                         stdio: c.stdio,
+                        kv: c.kv.map(|k| KvGrant {
+                            read: k.read,
+                            write: k.write,
+                        }),
                     },
                     None => WasmCapabilities::default(),
                 };
@@ -528,6 +601,12 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
 
     // Convert onboarding steps
     org.onboarding = convert_onboarding_steps(raw.onboarding);
+
+    // KV store config
+    org.kv_store = raw.kv_store
+        .as_ref()
+        .map(|k| k.to_config())
+        .unwrap_or(super::KvStoreConfig::None);
 
     Ok(org)
 }
@@ -1661,5 +1740,63 @@ profiles:
             parse_organism(&content)
                 .unwrap_or_else(|e| panic!("{path} failed to parse: {e}"));
         }
+    }
+
+    // ── KV store config parsing ──
+
+    #[test]
+    fn kv_store_bool_true() {
+        let yaml = "organism:\n  name: test\nkv-store: true\n";
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.kv_store, super::super::KvStoreConfig::Memory);
+    }
+
+    #[test]
+    fn kv_store_bool_false() {
+        let yaml = "organism:\n  name: test\nkv-store: false\n";
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.kv_store, super::super::KvStoreConfig::None);
+    }
+
+    #[test]
+    fn kv_store_yes_string() {
+        let yaml = "organism:\n  name: test\nkv-store: yes\n";
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.kv_store, super::super::KvStoreConfig::Memory);
+    }
+
+    #[test]
+    fn kv_store_memory_string() {
+        let yaml = "organism:\n  name: test\nkv-store: memory\n";
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.kv_store, super::super::KvStoreConfig::Memory);
+    }
+
+    #[test]
+    fn kv_store_path_string() {
+        let yaml = "organism:\n  name: test\nkv-store: /data/kv\n";
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.kv_store, super::super::KvStoreConfig::Disk("/data/kv".into()));
+    }
+
+    #[test]
+    fn kv_store_windows_path() {
+        let yaml = "organism:\n  name: test\nkv-store: 'C:\\src\\test'\n";
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.kv_store, super::super::KvStoreConfig::Disk("C:\\src\\test".into()));
+    }
+
+    #[test]
+    fn kv_store_omitted_is_none() {
+        let yaml = "organism:\n  name: test\n";
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.kv_store, super::super::KvStoreConfig::None);
+    }
+
+    #[test]
+    fn kv_store_no_string() {
+        let yaml = "organism:\n  name: test\nkv-store: no\n";
+        let org = parse_organism(yaml).unwrap();
+        assert_eq!(org.kv_store, super::super::KvStoreConfig::None);
     }
 }

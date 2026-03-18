@@ -217,6 +217,17 @@ pub struct OnboardingChoice {
     pub steps: Vec<OnboardingStep>,
 }
 
+/// KV store configuration — where the backing store lives.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KvStoreConfig {
+    /// No KV store.
+    None,
+    /// In-memory only (lost on shutdown).
+    Memory,
+    /// On-disk at the given path (durable across restarts).
+    Disk(String),
+}
+
 /// The organism: single source of truth for configuration.
 #[derive(Debug, Clone)]
 pub struct Organism {
@@ -226,6 +237,8 @@ pub struct Organism {
     prompts: HashMap<String, String>,
     /// Onboarding script steps (empty = no onboarding).
     pub onboarding: Vec<OnboardingStep>,
+    /// KV store configuration.
+    pub kv_store: KvStoreConfig,
 }
 
 impl Organism {
@@ -237,6 +250,7 @@ impl Organism {
             profiles: HashMap::new(),
             prompts: HashMap::new(),
             onboarding: Vec::new(),
+            kv_store: KvStoreConfig::None,
         }
     }
 
