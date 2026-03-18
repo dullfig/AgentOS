@@ -23,6 +23,7 @@ pub mod input;
 pub mod input_line;
 pub mod layout;
 pub mod markdown;
+pub mod menu;
 pub mod mouse;
 pub mod onboarding;
 pub mod render;

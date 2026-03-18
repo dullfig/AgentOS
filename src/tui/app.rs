@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use ratatui::layout::Rect;
 use tokio::sync::Mutex;
-use tui_menu::{MenuItem, MenuState};
+use super::menu::{MenuBarState, MenuDef};
 
 use crate::config::{AgentsConfig, ModelsConfig};
 use crate::kernel::context_store::{ContextInventory, SegmentMeta, SegmentStatus};
@@ -507,7 +507,7 @@ pub struct TuiApp {
     /// Whether debug mode is enabled (--debug flag). Controls Debug tab visibility.
     pub debug_mode: bool,
     /// Menu bar state (tui-menu).
-    pub menu_state: MenuState<MenuAction>,
+    pub menu_state: MenuBarState<MenuAction>,
     /// Whether the menu bar has keyboard focus (dropdowns visible).
     pub menu_active: bool,
     /// Command palette selection index (for `/` popup).
@@ -623,36 +623,36 @@ pub fn build_menu_items(
     debug_mode: bool,
     models_config: Option<&crate::config::ModelsConfig>,
     current_model: Option<&str>,
-) -> Vec<MenuItem<MenuAction>> {
+) -> Vec<MenuDef<MenuAction>> {
     // ── File menu ──
     let file_items = vec![
-        MenuItem::item("New Agent", MenuAction::NewAgent),
-        MenuItem::item("New Tool", MenuAction::NewTool),
-        MenuItem::item("Load...    ", MenuAction::LoadFile),
-        MenuItem::group(
+        MenuDef::item("New Agent", MenuAction::NewAgent),
+        MenuDef::item("New Tool", MenuAction::NewTool),
+        MenuDef::item("Load...    ", MenuAction::LoadFile),
+        MenuDef::group(
             "Virtual Drives",
             vec![
-                MenuItem::item("Mount Folder", MenuAction::VDriveMount),
-                MenuItem::item("Unmount", MenuAction::VDriveUnmount),
-                MenuItem::item("Create Workspace", MenuAction::VDriveCreate),
-                MenuItem::item("Info", MenuAction::VDriveInfo),
+                MenuDef::item("Mount Folder", MenuAction::VDriveMount),
+                MenuDef::item("Unmount", MenuAction::VDriveUnmount),
+                MenuDef::item("Create Workspace", MenuAction::VDriveCreate),
+                MenuDef::item("Info", MenuAction::VDriveInfo),
             ],
         ),
-        MenuItem::item("Save       ^S", MenuAction::Save),
-        MenuItem::item("Close Tab  ^W", MenuAction::CloseTab),
-        MenuItem::item("Quit       ^C", MenuAction::Quit),
+        MenuDef::item("Save       ^S", MenuAction::Save),
+        MenuDef::item("Close Tab  ^W", MenuAction::CloseTab),
+        MenuDef::item("Quit       ^C", MenuAction::Quit),
     ];
 
     // ── View menu: agents (chat + config), utility views ──
-    let mut view_items: Vec<MenuItem<MenuAction>> = Vec::new();
+    let mut view_items: Vec<MenuDef<MenuAction>> = Vec::new();
 
     // Agent entries: each gets a chat tab and a .yaml config tab
     for name in available_agents {
-        view_items.push(MenuItem::item(
+        view_items.push(MenuDef::item(
             name.clone(),
             MenuAction::OpenAgentTab(name.clone()),
         ));
-        view_items.push(MenuItem::item(
+        view_items.push(MenuDef::item(
             format!("{name}.yaml"),
             MenuAction::OpenAgentConfig(name.clone()),
         ));
@@ -660,39 +660,39 @@ pub fn build_menu_items(
 
     // Utility views
     if !view_items.is_empty() {
-        view_items.push(MenuItem::item(
+        view_items.push(MenuDef::item(
             "──────────────",
             MenuAction::SwitchTab(TabId::Threads), // harmless separator
         ));
     }
-    view_items.push(MenuItem::item("Threads    ^T", MenuAction::SwitchTab(TabId::Threads)));
-    view_items.push(MenuItem::item("Graph      ^G", MenuAction::SwitchTab(TabId::Graph)));
-    view_items.push(MenuItem::item("YAML       ^Y", MenuAction::SwitchTab(TabId::Yaml)));
+    view_items.push(MenuDef::item("Threads    ^T", MenuAction::SwitchTab(TabId::Threads)));
+    view_items.push(MenuDef::item("Graph      ^G", MenuAction::SwitchTab(TabId::Graph)));
+    view_items.push(MenuDef::item("YAML       ^Y", MenuAction::SwitchTab(TabId::Yaml)));
 
     // ── Models menu: providers with their models + registration ──
     let models_items = build_models_menu(models_config, current_model);
 
     let mut menus = vec![
-        MenuItem::group("File", file_items),
-        MenuItem::group("View", view_items),
-        MenuItem::group("Models", models_items),
+        MenuDef::group("&File", file_items),
+        MenuDef::group("&View", view_items),
+        MenuDef::group("&Models", models_items),
     ];
 
     if debug_mode {
-        menus.push(MenuItem::group(
-            "Debug",
+        menus.push(MenuDef::group(
+            "&Debug",
             vec![
-                MenuItem::item("/model ...", MenuAction::SetModel),
-                MenuItem::item("Activity  ^A", MenuAction::SwitchTab(TabId::Activity)),
+                MenuDef::item("/model ...", MenuAction::SetModel),
+                MenuDef::item("Activity  ^A", MenuAction::SwitchTab(TabId::Activity)),
             ],
         ));
     }
 
-    menus.push(MenuItem::group(
-        "Help",
+    menus.push(MenuDef::group(
+        "&Help",
         vec![
-            MenuItem::item("About", MenuAction::ShowAbout),
-            MenuItem::item("Shortcuts", MenuAction::ShowShortcuts),
+            MenuDef::item("About", MenuAction::ShowAbout),
+            MenuDef::item("Shortcuts", MenuAction::ShowShortcuts),
         ],
     ));
 
@@ -717,7 +717,7 @@ pub fn build_menu_items(
 fn build_models_menu(
     config: Option<&crate::config::ModelsConfig>,
     current_model: Option<&str>,
-) -> Vec<MenuItem<MenuAction>> {
+) -> Vec<MenuDef<MenuAction>> {
     let mut items = Vec::new();
 
     if let Some(cfg) = config {
@@ -740,7 +740,7 @@ fn build_models_menu(
                 } else {
                     format!("  {alias}")
                 };
-                model_items.push(MenuItem::item(
+                model_items.push(MenuDef::item(
                     label,
                     MenuAction::SelectModel {
                         provider: provider_name.clone(),
@@ -751,7 +751,7 @@ fn build_models_menu(
 
             if model_items.is_empty() {
                 // Provider registered but no models listed
-                model_items.push(MenuItem::item(
+                model_items.push(MenuDef::item(
                     "(no models)",
                     MenuAction::SetModel, // harmless fallback
                 ));
@@ -759,15 +759,15 @@ fn build_models_menu(
 
             // Capitalize provider name for display
             let display_name = capitalize(provider_name);
-            items.push(MenuItem::group(display_name, model_items));
+            items.push(MenuDef::group(display_name, model_items));
         }
     }
 
     // Local models — always present
     // TODO: scan models/ directory for .gguf files
-    items.push(MenuItem::group(
+    items.push(MenuDef::group(
         "Local",
-        vec![MenuItem::item(
+        vec![MenuDef::item(
             "BitNet b1.58-2B",
             MenuAction::SelectModel {
                 provider: "local".into(),
@@ -777,14 +777,14 @@ fn build_models_menu(
     ));
 
     // Separator
-    items.push(MenuItem::item(
+    items.push(MenuDef::item(
         "──────────────",
         MenuAction::SetModel, // harmless separator
     ));
 
     // Registration actions
-    items.push(MenuItem::item("Register API Key...", MenuAction::RegisterApiKey));
-    items.push(MenuItem::item("Add Endpoint...", MenuAction::AddEndpoint));
+    items.push(MenuDef::item("Register API Key...", MenuAction::RegisterApiKey));
+    items.push(MenuDef::item("Add Endpoint...", MenuAction::AddEndpoint));
 
     items
 }
@@ -845,7 +845,7 @@ impl TuiApp {
             messages_focus: MessagesFocus::Input,
             context_tree_state: tui_tree_widget::TreeState::default(),
             debug_mode: false,
-            menu_state: MenuState::new(build_menu_items(&[], false, None, None)),
+            menu_state: MenuBarState::new(build_menu_items(&[], false, None, None)),
             menu_active: false,
             command_popup_index: 0,
             cmd_service: CommandLineService::new(),
@@ -898,7 +898,7 @@ impl TuiApp {
         let models_cfg = self.models_config.try_lock().ok();
         let cfg_ref = models_cfg.as_ref().map(|g| &**g);
         let current_model = self.current_model_alias.as_deref();
-        self.menu_state = MenuState::new(build_menu_items(
+        self.menu_state = MenuBarState::new(build_menu_items(
             &self.available_agents,
             self.debug_mode,
             cfg_ref,

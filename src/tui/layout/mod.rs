@@ -22,11 +22,10 @@ pub(crate) mod wrap;
 mod yaml;
 
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use tui_menu::Menu;
+use super::menu::MenuBar;
 
 use super::app::{TabId, TuiApp};
 
@@ -124,42 +123,8 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
         width: outer[0].width,
         height: outer[0].height + outer[1].height + outer[2].height,
     };
-    let menu_widget = Menu::new()
-        .default_style(Style::default().fg(Color::Black).bg(Color::White))
-        .highlight(
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .dropdown_width(20)
-        .dropdown_style(Style::default().fg(Color::Black).bg(Color::White));
+    let menu_widget = MenuBar::new();
     f.render_stateful_widget(menu_widget, menu_area, &mut app.menu_state);
-
-    // Underline accelerator letters by overwriting specific cells.
-    // Non-debug: File, View, Models, Help — accels F, V, M, H
-    // Debug:     File, View, Models, Debug, Help — accels F, V, M, D, H
-    let accel_style = Style::default()
-        .fg(Color::Black)
-        .bg(Color::White)
-        .add_modifier(Modifier::UNDERLINED);
-    let (names, accels): (&[&str], &[char]) = if app.debug_mode {
-        (&["File", "View", "Models", "Debug", "Help"],
-         &['F', 'V', 'M', 'D', 'H'])
-    } else {
-        (&["File", "View", "Models", "Help"],
-         &['F', 'V', 'M', 'H'])
-    };
-    let mut x = outer[0].x + 1; // skip initial " "
-    for (i, name) in names.iter().enumerate() {
-        x += 1; // leading space of " name "
-        let cell = Rect::new(x, outer[0].y, 1, 1);
-        f.render_widget(
-            Paragraph::new(Span::styled(accels[i].to_string(), accel_style)),
-            cell,
-        );
-        x += name.len() as u16 + 1; // rest of name + trailing space
-    }
 }
 
 fn draw_tab_bar(f: &mut Frame, app: &mut TuiApp, area: Rect) {

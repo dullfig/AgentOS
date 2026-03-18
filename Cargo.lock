@@ -56,7 +56,6 @@ dependencies = [
  "tree-sitter-python 0.25.0",
  "tree-sitter-rust",
  "tui-markdown",
- "tui-menu",
  "tui-tree-widget",
  "unicode-segmentation",
  "unicode-width 0.2.0",
@@ -5349,16 +5348,6 @@ dependencies = [
  "rstest",
  "syntect",
  "tracing",
-]
-
-[[package]]
-name = "tui-menu"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6d7f10ff29b3543148afcaba50642850082840adc4e8169c7f2c9d2bcdba3b6"
-dependencies = [
- "ratatui-core",
- "ratatui-widgets",
 ]
 
 [[package]]

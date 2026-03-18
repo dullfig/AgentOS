@@ -6,7 +6,7 @@
 //! Everything else is forwarded to the textarea widget.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tui_menu::MenuEvent;
+// Menu events handled via app.menu_state.drain_events()
 
 use crate::lsp::LanguageService;
 
@@ -382,27 +382,13 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         return;
     }
 
-    // Alt+letter opens a specific menu group (Windows-style accelerators)
-    // Non-debug: File(0) View(1) Models(2) Help(3)
-    // Debug:     File(0) View(1) Models(2) Debug(3) Help(4)
+    // Alt+letter opens a menu group by accelerator (defined by `&` in label).
     if key.modifiers.contains(KeyModifiers::ALT) {
-        let menu_index = match key.code {
-            KeyCode::Char('f') => Some(0), // File
-            KeyCode::Char('v') => Some(1), // View
-            KeyCode::Char('m') => Some(2), // Models
-            KeyCode::Char('d') if app.debug_mode => Some(3), // Debug (debug only)
-            KeyCode::Char('h') => Some(if app.debug_mode { 4 } else { 3 }), // Help
-            _ => None,
-        };
-        if let Some(index) = menu_index {
-            app.menu_state.reset();
-            app.menu_state.activate(); // highlights first group (File)
-            for _ in 0..index {
-                app.menu_state.right(); // navigate to the target group
+        if let KeyCode::Char(ch) = key.code {
+            if app.menu_state.open_by_accel(ch) {
+                app.menu_active = true;
+                return;
             }
-            app.menu_state.down(); // open the dropdown
-            app.menu_active = true;
-            return;
         }
     }
 
@@ -421,9 +407,7 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
             _ => {}
         }
         // Drain and dispatch any selected menu actions
-        let events: Vec<_> = app.menu_state.drain_events().collect();
-        for event in events {
-            let MenuEvent::Selected(action) = event;
+        for action in app.menu_state.drain_events().collect::<Vec<_>>() {
             dispatch_menu_action(app, action);
         }
         return;
