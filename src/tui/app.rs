@@ -247,6 +247,12 @@ pub enum MenuAction {
     Save,
     Quit,
     SetModel,
+    /// Switch to a specific model by provider + alias (e.g., "anthropic", "sonnet").
+    SelectModel { provider: String, alias: String },
+    /// Open the "Register API Key" wizard for a provider.
+    RegisterApiKey,
+    /// Open the "Add Endpoint" dialog for custom HTTP endpoints.
+    AddEndpoint,
     ShowAbout,
     ShowShortcuts,
     VDriveMount,
@@ -542,6 +548,8 @@ pub struct TuiApp {
     pub pending_onboarding_choice: Option<usize>,
     /// Currently selected agent name. None = default (first agent).
     pub selected_agent: Option<String>,
+    /// Current model alias (for menu checkmark display).
+    pub current_model_alias: Option<String>,
     /// Agent favorites config (project-level persistence).
     pub agents_config: AgentsConfig,
     /// Pending tool approval request from the agent handler.
@@ -608,11 +616,13 @@ const ACTIVITY_LOG_CAPACITY: usize = 512;
 
 /// Build the menu item tree for the menu bar.
 ///
-/// Non-debug: File / View / Help
-/// Debug:     File / View / Debug / Help
+/// Non-debug: File / View / Models / Help
+/// Debug:     File / View / Models / Debug / Help
 pub fn build_menu_items(
     available_agents: &[String],
     debug_mode: bool,
+    models_config: Option<&crate::config::ModelsConfig>,
+    current_model: Option<&str>,
 ) -> Vec<MenuItem<MenuAction>> {
     // ── File menu ──
     let file_items = vec![
@@ -648,23 +658,24 @@ pub fn build_menu_items(
         ));
     }
 
-    // TODO: tool entries will go here once tool loading is wired
-
     // Utility views
     if !view_items.is_empty() {
-        // Separator via a disabled-looking group header
         view_items.push(MenuItem::item(
             "──────────────",
-            MenuAction::SwitchTab(TabId::Threads), // harmless default
+            MenuAction::SwitchTab(TabId::Threads), // harmless separator
         ));
     }
     view_items.push(MenuItem::item("Threads    ^T", MenuAction::SwitchTab(TabId::Threads)));
     view_items.push(MenuItem::item("Graph      ^G", MenuAction::SwitchTab(TabId::Graph)));
     view_items.push(MenuItem::item("YAML       ^Y", MenuAction::SwitchTab(TabId::Yaml)));
 
+    // ── Models menu: providers with their models + registration ──
+    let models_items = build_models_menu(models_config, current_model);
+
     let mut menus = vec![
         MenuItem::group("File", file_items),
         MenuItem::group("View", view_items),
+        MenuItem::group("Models", models_items),
     ];
 
     if debug_mode {
@@ -686,6 +697,105 @@ pub fn build_menu_items(
     ));
 
     menus
+}
+
+/// Build the Models submenu from provider configuration.
+///
+/// Layout:
+/// ```text
+/// Models
+/// ├── Anthropic           (registered providers)
+/// │   ├── ✓ Sonnet
+/// │   ├──   Opus
+/// │   └──   Haiku
+/// ├── Local               (always present)
+/// │   └── BitNet b1.58-2B
+/// ├── ──────────────
+/// ├── Register API Key...
+/// └── Add Endpoint...
+/// ```
+fn build_models_menu(
+    config: Option<&crate::config::ModelsConfig>,
+    current_model: Option<&str>,
+) -> Vec<MenuItem<MenuAction>> {
+    let mut items = Vec::new();
+
+    if let Some(cfg) = config {
+        // Sort provider names for consistent ordering
+        let mut providers: Vec<&String> = cfg.providers.keys().collect();
+        providers.sort();
+
+        for provider_name in providers {
+            let provider = &cfg.providers[provider_name];
+            let mut model_items = Vec::new();
+
+            // Sort model aliases
+            let mut aliases: Vec<&String> = provider.models.keys().collect();
+            aliases.sort();
+
+            for alias in aliases {
+                let is_current = current_model == Some(alias.as_str());
+                let label = if is_current {
+                    format!("✓ {alias}")
+                } else {
+                    format!("  {alias}")
+                };
+                model_items.push(MenuItem::item(
+                    label,
+                    MenuAction::SelectModel {
+                        provider: provider_name.clone(),
+                        alias: alias.clone(),
+                    },
+                ));
+            }
+
+            if model_items.is_empty() {
+                // Provider registered but no models listed
+                model_items.push(MenuItem::item(
+                    "(no models)",
+                    MenuAction::SetModel, // harmless fallback
+                ));
+            }
+
+            // Capitalize provider name for display
+            let display_name = capitalize(provider_name);
+            items.push(MenuItem::group(display_name, model_items));
+        }
+    }
+
+    // Local models — always present
+    // TODO: scan models/ directory for .gguf files
+    items.push(MenuItem::group(
+        "Local",
+        vec![MenuItem::item(
+            "BitNet b1.58-2B",
+            MenuAction::SelectModel {
+                provider: "local".into(),
+                alias: "bitnet".into(),
+            },
+        )],
+    ));
+
+    // Separator
+    items.push(MenuItem::item(
+        "──────────────",
+        MenuAction::SetModel, // harmless separator
+    ));
+
+    // Registration actions
+    items.push(MenuItem::item("Register API Key...", MenuAction::RegisterApiKey));
+    items.push(MenuItem::item("Add Endpoint...", MenuAction::AddEndpoint));
+
+    items
+}
+
+/// Capitalize the first letter of a string.
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    }
 }
 
 impl TuiApp {
@@ -735,7 +845,7 @@ impl TuiApp {
             messages_focus: MessagesFocus::Input,
             context_tree_state: tui_tree_widget::TreeState::default(),
             debug_mode: false,
-            menu_state: MenuState::new(build_menu_items(&[], false)),
+            menu_state: MenuState::new(build_menu_items(&[], false, None, None)),
             menu_active: false,
             command_popup_index: 0,
             cmd_service: CommandLineService::new(),
@@ -756,6 +866,7 @@ impl TuiApp {
             onboarding: None,
             pending_onboarding_choice: None,
             selected_agent: None,
+            current_model_alias: None,
             agents_config: AgentsConfig::default(),
             pending_approval: None,
             pending_query: None,
@@ -784,9 +895,14 @@ impl TuiApp {
 
     /// Rebuild the menu item tree.
     pub fn rebuild_menu(&mut self) {
+        let models_cfg = self.models_config.try_lock().ok();
+        let cfg_ref = models_cfg.as_ref().map(|g| &**g);
+        let current_model = self.current_model_alias.as_deref();
         self.menu_state = MenuState::new(build_menu_items(
             &self.available_agents,
             self.debug_mode,
+            cfg_ref,
+            current_model,
         ));
     }
 

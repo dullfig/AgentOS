@@ -36,9 +36,9 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
         }
         MenuAction::ShowShortcuts => {
             let menu_line = if app.debug_mode {
-                "  Alt+F/V/D/H    Open File/View/Debug/Help menu\n"
+                "  Alt+F/V/M/D/H  Open File/View/Models/Debug/Help menu\n"
             } else {
-                "  Alt+F/V/H      Open File/View/Help menu\n"
+                "  Alt+F/V/M/H    Open File/View/Models/Help menu\n"
             };
             let activity_line = if app.debug_mode {
                 "  Ctrl+Y          YAML      Ctrl+A  Activity\n"
@@ -109,6 +109,17 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             use super::app::{FilePickerPurpose, FilePickerState};
             let start = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             app.file_picker = Some(FilePickerState::new(start, FilePickerPurpose::LoadFile));
+        }
+        MenuAction::SelectModel { provider: _, alias } => {
+            app.current_model_alias = Some(alias.clone());
+            app.pending_command = Some(format!("/model {alias}"));
+            app.rebuild_menu();
+        }
+        MenuAction::RegisterApiKey => {
+            set_input(app, "/provider ");
+        }
+        MenuAction::AddEndpoint => {
+            set_input(app, "/provider custom ");
         }
     }
 }
@@ -1340,17 +1351,54 @@ mod tests {
     fn debug_mode_shows_debug_menu() {
         use super::super::app::build_menu_items;
 
-        let items = build_menu_items(&[], true);
-        // Debug mode: File, View, Debug, Help = 4 groups
-        assert_eq!(items.len(), 4);
+        let items = build_menu_items(&[], true, None, None);
+        // Debug mode: File, View, Models, Debug, Help = 5 groups
+        assert_eq!(items.len(), 5);
     }
 
     #[test]
     fn non_debug_omits_debug_menu() {
         use super::super::app::build_menu_items;
 
-        let items = build_menu_items(&[], false);
-        // Non-debug: File, View, Help = 3 groups
-        assert_eq!(items.len(), 3);
+        let items = build_menu_items(&[], false, None, None);
+        // Non-debug: File, View, Models, Help = 4 groups
+        assert_eq!(items.len(), 4);
+    }
+
+    #[test]
+    fn models_menu_with_provider() {
+        use super::super::app::build_menu_items;
+        use crate::config::{ModelsConfig, ProviderConfig};
+        use std::collections::HashMap;
+
+        let mut providers = HashMap::new();
+        let mut models = HashMap::new();
+        models.insert("sonnet".into(), "claude-sonnet-4-6".into());
+        models.insert("haiku".into(), "claude-haiku-4-5".into());
+        providers.insert(
+            "anthropic".into(),
+            ProviderConfig {
+                api_key: Some("sk-test".into()),
+                base_url: None,
+                models,
+            },
+        );
+        let config = ModelsConfig {
+            providers,
+            default: Some("sonnet".into()),
+        };
+
+        let items = build_menu_items(&[], false, Some(&config), Some("sonnet"));
+        // File, View, Models, Help = 4
+        assert_eq!(items.len(), 4);
+    }
+
+    #[test]
+    fn models_menu_no_config() {
+        use super::super::app::build_menu_items;
+
+        // No providers — Models menu still has Local + Register + Add Endpoint
+        let items = build_menu_items(&[], false, None, None);
+        assert_eq!(items.len(), 4);
     }
 }
