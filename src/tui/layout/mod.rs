@@ -137,18 +137,18 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
     f.render_stateful_widget(menu_widget, menu_area, &mut app.menu_state);
 
     // Underline accelerator letters by overwriting specific cells.
-    // Non-debug: File, View, Help — accels F, V, H
-    // Debug:     File, View, Debug, Help — accels F, V, D, H
+    // Non-debug: File, View, Models, Help — accels F, V, M, H
+    // Debug:     File, View, Models, Debug, Help — accels F, V, M, D, H
     let accel_style = Style::default()
         .fg(Color::Black)
         .bg(Color::White)
         .add_modifier(Modifier::UNDERLINED);
     let (names, accels): (&[&str], &[char]) = if app.debug_mode {
-        (&["File", "View", "Debug", "Help"],
-         &['F', 'V', 'D', 'H'])
+        (&["File", "View", "Models", "Debug", "Help"],
+         &['F', 'V', 'M', 'D', 'H'])
     } else {
-        (&["File", "View", "Help"],
-         &['F', 'V', 'H'])
+        (&["File", "View", "Models", "Help"],
+         &['F', 'V', 'M', 'H'])
     };
     let mut x = outer[0].x + 1; // skip initial " "
     for (i, name) in names.iter().enumerate() {
