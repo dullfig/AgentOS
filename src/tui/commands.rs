@@ -110,13 +110,18 @@ pub static COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/provider",
         aliases: &[],
-        description: "Configure API provider (auto-discovers models)",
+        description: "Configure API provider (add/remove)",
         has_arg: true,
-        args: &[ArgSpec {
-            name: "name",
-            kind: ArgKind::Enum(&["anthropic", "openai", "ollama"]),
-        }],
+        args: &[],
         subcommands: &[
+            SubcommandSpec {
+                name: "add",
+                description: "Add API provider (prompts for API key)",
+                args: &[ArgSpec {
+                    name: "name",
+                    kind: ArgKind::Enum(&["anthropic", "openai", "ollama", "custom"]),
+                }],
+            },
             SubcommandSpec {
                 name: "remove",
                 description: "Remove a provider and all its models",
@@ -833,16 +838,16 @@ async fn execute_models(
 /// Handle `/provider` command.
 async fn execute_provider(
     app: &mut TuiApp,
-    subcommand_or_name: &str,
+    subcommand: &str,
     arg: &str,
 ) -> CommandResult {
-    match subcommand_or_name {
+    match subcommand {
         "" => {
             // /provider — list configured providers
             let config = app.models_config.lock().await;
             if config.providers.is_empty() {
                 return CommandResult {
-                    feedback: Some("No providers configured. Use /provider <name> to add one.\nExample: /provider anthropic".into()),
+                    feedback: Some("No providers configured.\nUse: /provider add anthropic".into()),
                     handled: true,
                 };
             }
@@ -852,8 +857,27 @@ async fn execute_provider(
                 let model_count = provider.models.len();
                 lines.push(format!("  {key_status} {name:<12} ({model_count} models)"));
             }
+            lines.push(String::new());
+            lines.push("Use /provider add <name> or /provider remove <name>".into());
             CommandResult {
                 feedback: Some(lines.join("\n")),
+                handled: true,
+            }
+        }
+        "add" => {
+            if arg.is_empty() {
+                return CommandResult {
+                    feedback: Some("Usage: /provider add <name>\nProviders: anthropic, openai, ollama, custom".into()),
+                    handled: true,
+                };
+            }
+            // Enter wizard to paste API key
+            app.input_mode = InputMode::ProviderWizard {
+                provider: arg.to_string(),
+            };
+            app.clear_input();
+            CommandResult {
+                feedback: None,
                 handled: true,
             }
         }
@@ -884,14 +908,9 @@ async fn execute_provider(
                 }
             }
         }
-        name => {
-            // /provider <name> — enter wizard to paste API key
-            app.input_mode = InputMode::ProviderWizard {
-                provider: name.to_string(),
-            };
-            app.clear_input();
+        other => {
             CommandResult {
-                feedback: None,
+                feedback: Some(format!("Unknown subcommand: {other}\nUse: /provider add <name> or /provider remove <name>")),
                 handled: true,
             }
         }
@@ -1084,9 +1103,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_provider_enters_wizard() {
+    async fn execute_provider_add_enters_wizard() {
         let mut app = TuiApp::new();
-        let result = execute(&mut app, "/provider anthropic", None).await;
+        let result = execute(&mut app, "/provider add anthropic", None).await;
         assert!(result.handled);
         assert!(result.feedback.is_none()); // wizard mode, no immediate feedback
         match &app.input_mode {
@@ -1095,6 +1114,22 @@ mod tests {
             }
             _ => panic!("expected ProviderWizard"),
         }
+    }
+
+    #[tokio::test]
+    async fn execute_provider_add_no_name() {
+        let mut app = TuiApp::new();
+        let result = execute(&mut app, "/provider add", None).await;
+        assert!(result.handled);
+        assert!(result.feedback.unwrap().contains("Usage"));
+    }
+
+    #[tokio::test]
+    async fn execute_provider_unknown_subcommand() {
+        let mut app = TuiApp::new();
+        let result = execute(&mut app, "/provider anthropic", None).await;
+        assert!(result.handled);
+        assert!(result.feedback.unwrap().contains("Unknown subcommand"));
     }
 
     #[tokio::test]

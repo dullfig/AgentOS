@@ -8,7 +8,7 @@ use lsp_types::{
 };
 
 use super::{HoverInfo, LanguageService};
-use crate::tui::commands::{ArgKind, COMMANDS, SlashCommand};
+use crate::tui::commands::{ArgKind, COMMANDS, SlashCommand, SubcommandSpec};
 
 /// Parsed position within a command-line input.
 #[derive(Debug, PartialEq)]
@@ -23,6 +23,13 @@ pub enum InputContext<'a> {
     /// Typing an argument value.
     Argument {
         cmd: &'a SlashCommand,
+        arg_index: usize,
+        prefix: &'a str,
+    },
+    /// Typing an argument value for a subcommand.
+    SubcommandArgument {
+        cmd: &'a SlashCommand,
+        sub: &'a SubcommandSpec,
         arg_index: usize,
         prefix: &'a str,
     },
@@ -90,6 +97,22 @@ pub fn parse_input(input: &str) -> InputContext<'_> {
     // Map to argument spec
     let arg_offset = if !cmd.subcommands.is_empty() { 1 } else { 0 };
     let arg_index = current_pos.saturating_sub(arg_offset);
+
+    // If a subcommand was specified, use its args instead of the command's
+    if !cmd.subcommands.is_empty() && !arg_tokens.is_empty() {
+        let sub_name = arg_tokens[0];
+        if let Some(sub) = cmd.subcommands.iter().find(|s| s.name == sub_name) {
+            if arg_index < sub.args.len() {
+                return InputContext::SubcommandArgument {
+                    cmd,
+                    sub,
+                    arg_index,
+                    prefix: current_prefix,
+                };
+            }
+            return InputContext::Trailing { cmd };
+        }
+    }
 
     if arg_index < cmd.args.len() {
         InputContext::Argument {
@@ -269,6 +292,26 @@ impl LanguageService for CommandLineService {
                     Vec::new()
                 }
             }
+            InputContext::SubcommandArgument { sub, arg_index, prefix, .. } => {
+                if let Some(arg) = sub.args.get(arg_index) {
+                    match &arg.kind {
+                        ArgKind::Enum(values) => values
+                            .iter()
+                            .filter(|v| v.starts_with(prefix))
+                            .map(|v| CompletionItem {
+                                label: v.to_string(),
+                                kind: Some(CompletionItemKind::ENUM_MEMBER),
+                                detail: Some(format!("{}: {}", arg.name, v)),
+                                insert_text: Some(v.to_string()),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ArgKind::Free(_hint) => Vec::new(),
+                    }
+                } else {
+                    Vec::new()
+                }
+            }
             InputContext::Trailing { .. } | InputContext::NotCommand => Vec::new(),
         }
     }
@@ -417,6 +460,28 @@ pub fn ghost_suffix(input: &str) -> Option<String> {
                         values.first().map(|v| v.to_string())
                     } else {
                         // Complete best matching value
+                        values
+                            .iter()
+                            .find(|v| v.starts_with(prefix))
+                            .map(|v| v[prefix.len()..].to_string())
+                    }
+                }
+                ArgKind::Free(hint) => {
+                    if prefix.is_empty() {
+                        Some(hint.to_string())
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+        InputContext::SubcommandArgument { sub, arg_index, prefix, .. } => {
+            let arg = sub.args.get(arg_index)?;
+            match &arg.kind {
+                ArgKind::Enum(values) => {
+                    if prefix.is_empty() {
+                        values.first().map(|v| v.to_string())
+                    } else {
                         values
                             .iter()
                             .find(|v| v.starts_with(prefix))
@@ -675,24 +740,22 @@ mod tests {
     }
 
     #[test]
-    fn completions_provider_shows_subcommands_and_args() {
+    fn completions_provider_shows_subcommands() {
         let svc = CommandLineService::new();
         let items = svc.completions("/provider ", Position::new(0, 10));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        // Should show both subcommand "remove" AND provider names
+        assert!(labels.contains(&"add"), "missing 'add': {:?}", labels);
         assert!(labels.contains(&"remove"), "missing 'remove': {:?}", labels);
-        assert!(labels.contains(&"anthropic"), "missing 'anthropic': {:?}", labels);
-        assert!(labels.contains(&"openai"), "missing 'openai': {:?}", labels);
-        assert!(labels.contains(&"ollama"), "missing 'ollama': {:?}", labels);
     }
 
     #[test]
-    fn completions_provider_prefix_filters() {
+    fn completions_provider_add_shows_names() {
         let svc = CommandLineService::new();
-        let items = svc.completions("/provider a", Position::new(0, 11));
+        let items = svc.completions("/provider add ", Position::new(0, 14));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"anthropic"));
-        assert!(!labels.contains(&"remove"));
-        assert!(!labels.contains(&"openai"));
+        assert!(labels.contains(&"anthropic"), "missing 'anthropic': {:?}", labels);
+        assert!(labels.contains(&"openai"), "missing 'openai': {:?}", labels);
+        assert!(labels.contains(&"ollama"), "missing 'ollama': {:?}", labels);
+        assert!(labels.contains(&"custom"), "missing 'custom': {:?}", labels);
     }
 }

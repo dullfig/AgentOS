@@ -116,10 +116,10 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             app.rebuild_menu();
         }
         MenuAction::RegisterApiKey => {
-            set_input(app, "/provider ");
+            set_input(app, "/provider add ");
         }
         MenuAction::AddEndpoint => {
-            set_input(app, "/provider custom ");
+            set_input(app, "/provider add custom ");
         }
     }
 }
@@ -383,14 +383,15 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
     }
 
     // Alt+letter opens a specific menu group (Windows-style accelerators)
-    // Non-debug: File(0) View(1) Help(2)
-    // Debug:     File(0) View(1) Debug(2) Help(3)
+    // Non-debug: File(0) View(1) Models(2) Help(3)
+    // Debug:     File(0) View(1) Models(2) Debug(3) Help(4)
     if key.modifiers.contains(KeyModifiers::ALT) {
         let menu_index = match key.code {
             KeyCode::Char('f') => Some(0), // File
             KeyCode::Char('v') => Some(1), // View
-            KeyCode::Char('d') if app.debug_mode => Some(2), // Debug (debug only)
-            KeyCode::Char('h') => Some(if app.debug_mode { 3 } else { 2 }), // Help
+            KeyCode::Char('m') => Some(2), // Models
+            KeyCode::Char('d') if app.debug_mode => Some(3), // Debug (debug only)
+            KeyCode::Char('h') => Some(if app.debug_mode { 4 } else { 3 }), // Help
             _ => None,
         };
         if let Some(index) = menu_index {
