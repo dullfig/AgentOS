@@ -321,8 +321,9 @@ impl<T: Clone> StatefulWidget for MenuBar<T> {
             return;
         }
 
-        // Fill bar background
-        buf.set_style(area, self.bar_style);
+        // Fill only the menu bar row (not the full overlay area)
+        let bar_row = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
+        buf.set_style(bar_row, self.bar_style);
 
         let mut x = area.x;
         let y = area.y;
