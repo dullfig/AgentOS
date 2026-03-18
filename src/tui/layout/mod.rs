@@ -23,7 +23,7 @@ mod yaml;
 
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use tui_menu::Menu;
@@ -163,141 +163,28 @@ pub fn draw(f: &mut Frame, app: &mut TuiApp) {
 }
 
 fn draw_tab_bar(f: &mut Frame, app: &mut TuiApp, area: Rect) {
-    // Folder-tab design: active tab protrudes above the top border.
-    //
-    //  ┌─^1 Bob─┐
-    //  │        └─ ^2 Coder  ^3 Activity ─────────┐
-    //
-    // Row 1 (area.y):     tab top line
-    // Row 2 (area.y + 1): left wall of tab + connector + inactive tabs + top border
+    use super::folder_tabs::FolderTabBar;
 
-    let border_style = Style::default().fg(Color::Cyan);
-    let active_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let inactive_style = Style::default().fg(Color::DarkGray);
-    let w = area.width as usize;
-
-    if w < 4 || area.height < 2 {
-        return;
-    }
-
-    // Find active tab
+    let labels: Vec<String> = app.open_tabs.iter().map(|t| t.label().to_string()).collect();
     let active_idx = app.open_tabs.iter().position(|t| *t == app.active_tab).unwrap_or(0);
-    // active_label no longer needed — tabs are rendered in the loop below.
 
-    // ── Row 1: all tabs on same line, active in cyan, inactive in grey ──
-    // "┌─^1 Bob─┐ ┌─^2 Coder─┐ ┌─^3 Activity─┐"
-    // Only the active tab connects to the frame below.
+    // Auto-scroll to keep active tab visible
+    app.tab_scroll = FolderTabBar::scroll_to_visible(
+        &labels,
+        active_idx,
+        app.tab_scroll,
+        area.width as usize,
+        true,
+    );
 
-    let mut tab_regions = Vec::new();
-    let mut row1 = Vec::new();
-    let mut row1_col: usize = 0;
-    // Track where the active tab starts and ends (column positions) for row 2
-    let mut active_tab_start: usize = 0;
-    let mut active_tab_end: usize = 0;
+    let bar = FolderTabBar::new(&labels, active_idx).scroll(app.tab_scroll);
+    let regions = bar.render(f, area);
 
-    for (i, tab) in app.open_tabs.iter().enumerate() {
-        let is_active = i == active_idx;
-        let label = format!("^{} {}", i + 1, tab.label());
-        let tab_w = label.len() + 4; // "┌─" + label + "─┐"
-
-        if row1_col + tab_w >= w {
-            break; // no room
-        }
-
-        let style = if is_active { border_style } else { inactive_style };
-        let label_style = if is_active { active_style } else { inactive_style };
-
-        if is_active {
-            active_tab_start = row1_col;
-            active_tab_end = row1_col + tab_w;
-        }
-
-        let x_start = area.x + row1_col as u16 + 2; // after "┌─"
-        let x_end = x_start + label.len() as u16;
-        tab_regions.push((x_start, x_end, tab.clone()));
-
-        row1.push(Span::styled("\u{250C}\u{2500}", style));   // "┌─"
-        row1.push(Span::styled(label, label_style));
-        row1.push(Span::styled("\u{2500}\u{2510}", style));   // "─┐"
-        row1_col += tab_w;
-
-        // Space between tabs
-        if row1_col < w {
-            row1.push(Span::raw(" "));
-            row1_col += 1;
-        }
-    }
-    // Fill rest of row 1
-    if row1_col < w {
-        row1.push(Span::raw(" ".repeat(w - row1_col)));
-    }
-
-    // ── Row 2: top border of content frame, with gap under active tab ──
-    //
-    // Active tab at col 0:
-    //   "│        └──────────────────────────┐"
-    //   │ = tab left wall continues as frame left border
-    //   └ = under active tab's ┐
-    //
-    // Active tab at col N:
-    //   "┌──────────┘           └────────────┐"
-    //   ┌ = frame top-left corner
-    //   ┘ = under active tab's ┌ (border turns up into tab)
-    //   └ = under active tab's ┐ (border resumes from tab)
-
-    let mut row2 = Vec::new();
-    #[allow(unused_assignments)]
-    let mut col: usize = 0;
-
-    if active_tab_start == 0 {
-        // Active tab at left edge — its left wall IS the frame left border
-        row2.push(Span::styled("\u{2502}", border_style)); // "│"
-        col = 1;
-        // Spaces under the active tab interior
-        let gap_end = active_tab_end.saturating_sub(1); // └ aligns under ┐
-        if gap_end > col {
-            row2.push(Span::raw(" ".repeat(gap_end - col)));
-            col = gap_end;
-        }
-        // └ under active tab's ┐, then ─ continues as top border
-        row2.push(Span::styled("\u{2514}", border_style));
-        col += 1;
-    } else {
-        // Frame top-left corner
-        row2.push(Span::styled("\u{250C}", border_style)); // "┌"
-        col = 1;
-        // ─ runs from col 1 to just before the active tab
-        if active_tab_start > col {
-            let fill = active_tab_start - col;
-            row2.push(Span::styled("\u{2500}".repeat(fill), border_style));
-            col = active_tab_start;
-        }
-        // ┘ under active tab's ┌ (border turns up into tab)
-        row2.push(Span::styled("\u{2518}", border_style));
-        col += 1;
-        // Spaces under the active tab interior
-        let gap_end = active_tab_end.saturating_sub(1); // └ aligns under ┐
-        if gap_end > col {
-            row2.push(Span::raw(" ".repeat(gap_end - col)));
-            col = gap_end;
-        }
-        // └ under active tab's ┐ (border resumes)
-        row2.push(Span::styled("\u{2514}", border_style));
-        col += 1;
-    }
-
-    // ─ fills to the end, ┐ closes the frame top-right
-    if col + 1 < w {
-        let fill = w - col - 1;
-        row2.push(Span::styled("\u{2500}".repeat(fill), border_style));
-    }
-    row2.push(Span::styled("\u{2510}", border_style)); // ┐
-
-    app.layout_areas.tab_regions = tab_regions;
-
-    // Render both rows
-    let row1_area = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
-    let row2_area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
-    f.render_widget(Paragraph::new(Line::from(row1)), row1_area);
-    f.render_widget(Paragraph::new(Line::from(row2)), row2_area);
+    // Map (x_start, x_end, index) back to (x_start, x_end, TabId)
+    app.layout_areas.tab_regions = regions
+        .into_iter()
+        .filter_map(|(x_start, x_end, idx)| {
+            app.open_tabs.get(idx).map(|tab| (x_start, x_end, tab.clone()))
+        })
+        .collect();
 }

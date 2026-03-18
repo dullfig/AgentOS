@@ -18,6 +18,7 @@ pub mod context_tree;
 pub mod dashboard;
 pub mod diagram;
 pub mod event;
+pub mod folder_tabs;
 pub mod input;
 pub mod input_line;
 pub mod layout;
