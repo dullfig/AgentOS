@@ -1,10 +1,18 @@
 //! Rust types for the Anthropic Messages API.
 //!
-//! Serde-serializable to JSON for HTTP calls. Internal types stay Rust-native.
-//! Supports the full tool_use protocol: tool definitions, tool_use content blocks,
-//! and tool_result messages.
+//! Core message types (`Message`, `ContentBlock`, `MessageContent`, `ToolDefinition`,
+//! `ToolResultBlock`) live in `agentos-events` for cross-crate access.
+//! Re-exported here for convenience.
+//!
+//! API-specific types (`MessagesRequest`, `MessagesResponse`, `Usage`) and
+//! model resolution functions stay here.
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
+
+// Re-export shared types from events crate
+pub use agentos_events::{
+    ContentBlock, Message, MessageContent, ToolDefinition, ToolResultBlock,
+};
 
 /// Resolve model aliases to full Anthropic model IDs.
 /// This is the hardcoded fallback — prefer `resolve_model_from_config` when config is available.
@@ -28,198 +36,7 @@ pub fn resolve_model_from_config(config: &crate::config::ModelsConfig, alias: &s
     }
 }
 
-// ── Tool Definitions ──
-
-/// Tool definition sent in the API request.
-/// Describes a tool that Claude can invoke.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub input_schema: serde_json::Value,
-}
-
-// ── Content Blocks ──
-
-/// A content block in a response (or assistant message).
-/// The API returns these as `{"type": "text", ...}` or `{"type": "tool_use", ...}`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum ContentBlock {
-    #[serde(rename = "text")]
-    Text { text: String },
-    #[serde(rename = "tool_use")]
-    ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-    #[serde(rename = "tool_result")]
-    ToolResult {
-        tool_use_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        is_error: Option<bool>,
-    },
-}
-
-// ── Message Content ──
-
-/// Message content that handles the three shapes the API uses:
-/// - Simple string (for user messages in requests)
-/// - Array of ContentBlocks (for assistant responses with tool_use)
-/// - Array of ContentBlocks including ToolResult (for user tool_result messages)
-///
-/// Serializes as a string when it's just text, or as an array of blocks otherwise.
-/// Deserializes from either shape.
-#[derive(Debug, Clone)]
-pub enum MessageContent {
-    /// Plain text content (serializes as a JSON string).
-    Text(String),
-    /// Array of content blocks (serializes as a JSON array).
-    Blocks(Vec<ContentBlock>),
-}
-
-impl MessageContent {
-    /// Get plain text content, concatenating text blocks if needed.
-    pub fn text(&self) -> Option<String> {
-        match self {
-            MessageContent::Text(s) => Some(s.clone()),
-            MessageContent::Blocks(blocks) => {
-                let texts: Vec<&str> = blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                if texts.is_empty() {
-                    None
-                } else {
-                    Some(texts.join(""))
-                }
-            }
-        }
-    }
-
-    /// Check if this content contains any tool_use blocks.
-    pub fn has_tool_use(&self) -> bool {
-        match self {
-            MessageContent::Text(_) => false,
-            MessageContent::Blocks(blocks) => {
-                blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
-            }
-        }
-    }
-
-    /// Extract all tool_use blocks.
-    pub fn tool_use_blocks(&self) -> Vec<&ContentBlock> {
-        match self {
-            MessageContent::Text(_) => vec![],
-            MessageContent::Blocks(blocks) => blocks
-                .iter()
-                .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))
-                .collect(),
-        }
-    }
-}
-
-impl Serialize for MessageContent {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            MessageContent::Text(s) => serializer.serialize_str(s),
-            MessageContent::Blocks(blocks) => blocks.serialize(serializer),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for MessageContent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::String(s) => Ok(MessageContent::Text(s)),
-            serde_json::Value::Array(arr) => {
-                let blocks: Vec<ContentBlock> =
-                    serde_json::from_value(serde_json::Value::Array(arr))
-                        .map_err(serde::de::Error::custom)?;
-                Ok(MessageContent::Blocks(blocks))
-            }
-            other => Err(serde::de::Error::custom(format!(
-                "expected string or array for message content, got: {}",
-                other
-            ))),
-        }
-    }
-}
-
-impl From<&str> for MessageContent {
-    fn from(s: &str) -> Self {
-        MessageContent::Text(s.to_string())
-    }
-}
-
-impl From<String> for MessageContent {
-    fn from(s: String) -> Self {
-        MessageContent::Text(s)
-    }
-}
-
-// ── Messages ──
-
-/// A single message in the conversation.
-///
-/// `content` is polymorphic: plain text for simple messages,
-/// content blocks for tool_use responses and tool_result messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub role: String,
-    pub content: MessageContent,
-}
-
-impl Message {
-    /// Create a simple text message.
-    pub fn text(role: &str, content: &str) -> Self {
-        Self {
-            role: role.to_string(),
-            content: MessageContent::Text(content.to_string()),
-        }
-    }
-
-    /// Create a user message with tool results.
-    pub fn tool_results(results: Vec<ToolResultBlock>) -> Self {
-        let blocks = results
-            .into_iter()
-            .map(|r| ContentBlock::ToolResult {
-                tool_use_id: r.tool_use_id,
-                content: Some(r.content),
-                is_error: if r.is_error { Some(true) } else { None },
-            })
-            .collect();
-        Self {
-            role: "user".to_string(),
-            content: MessageContent::Blocks(blocks),
-        }
-    }
-
-    /// Create an assistant message with content blocks (for conversation replay).
-    pub fn assistant_blocks(blocks: Vec<ContentBlock>) -> Self {
-        Self {
-            role: "assistant".to_string(),
-            content: MessageContent::Blocks(blocks),
-        }
-    }
-}
-
-/// A tool result to be sent back to the API.
-#[derive(Debug, Clone)]
-pub struct ToolResultBlock {
-    pub tool_use_id: String,
-    pub content: String,
-    pub is_error: bool,
-}
-
-// ── Request / Response ──
+// ── Request / Response (API-specific, stays in llm) ──
 
 /// Request body for the Anthropic Messages API.
 #[derive(Debug, Serialize)]
@@ -313,9 +130,7 @@ mod tests {
         assert!(json.contains("\"model\":\"claude-opus-4-20250514\""));
         assert!(json.contains("\"max_tokens\":4096"));
         assert!(json.contains("\"system\":\"You are helpful.\""));
-        // temperature is None → should be skipped
         assert!(!json.contains("temperature"));
-        // tools is None → should be skipped
         assert!(!json.contains("tools"));
     }
 
@@ -414,7 +229,7 @@ mod tests {
         let resp: MessagesResponse = serde_json::from_str(json).unwrap();
         assert!(resp.has_tool_use());
         assert_eq!(resp.tool_use_blocks().len(), 2);
-        assert!(resp.text().is_none()); // no text blocks
+        assert!(resp.text().is_none());
     }
 
     #[test]
@@ -431,7 +246,6 @@ mod tests {
     fn message_text_serializes_as_string() {
         let msg = Message::text("user", "Hello");
         let json = serde_json::to_string(&msg).unwrap();
-        // content should be a plain string, not an array
         assert!(json.contains("\"content\":\"Hello\""));
     }
 
@@ -445,7 +259,6 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"tool_use_id\":\"toolu_123\""));
         assert!(json.contains("\"type\":\"tool_result\""));
-        // is_error is false → should not be serialized
         assert!(!json.contains("is_error"));
     }
 
@@ -494,23 +307,16 @@ mod tests {
 
     #[test]
     fn message_content_text_helper() {
-        // Text variant
         let text_content = MessageContent::Text("hello".into());
         assert_eq!(text_content.text(), Some("hello".into()));
         assert!(!text_content.has_tool_use());
 
-        // Blocks with text
         let blocks_content = MessageContent::Blocks(vec![
-            ContentBlock::Text {
-                text: "part 1 ".into(),
-            },
-            ContentBlock::Text {
-                text: "part 2".into(),
-            },
+            ContentBlock::Text { text: "part 1 ".into() },
+            ContentBlock::Text { text: "part 2".into() },
         ]);
         assert_eq!(blocks_content.text(), Some("part 1 part 2".into()));
 
-        // Blocks with only tool_use
         let tool_only = MessageContent::Blocks(vec![ContentBlock::ToolUse {
             id: "t1".into(),
             name: "calc".into(),
@@ -532,9 +338,7 @@ mod tests {
     #[test]
     fn message_roundtrip_blocks() {
         let msg = Message::assistant_blocks(vec![
-            ContentBlock::Text {
-                text: "I'll help.".into(),
-            },
+            ContentBlock::Text { text: "I'll help.".into() },
             ContentBlock::ToolUse {
                 id: "toolu_abc".into(),
                 name: "file-ops".into(),
@@ -571,9 +375,7 @@ mod tests {
 
     #[test]
     fn content_block_text_roundtrip() {
-        let block = ContentBlock::Text {
-            text: "Hello world".into(),
-        };
+        let block = ContentBlock::Text { text: "Hello world".into() };
         let json = serde_json::to_string(&block).unwrap();
         assert!(json.contains("\"type\":\"text\""));
         let back: ContentBlock = serde_json::from_str(&json).unwrap();
