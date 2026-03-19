@@ -185,7 +185,13 @@ impl ModelsConfig {
             return Some(resolved);
         }
         // Fallback: treat alias as full model ID with first available provider's key
-        let fallback_id = crate::llm::types::resolve_model(alias);
+        let fallback_id = match alias {
+            "opus" => "claude-opus-4-6",
+            "sonnet" => "claude-sonnet-4-6",
+            "sonnet-4.5" => "claude-sonnet-4-5-20250929",
+            "haiku" => "claude-haiku-4-5-20251001",
+            other => other,
+        };
         // Find any anthropic provider for the key
         if let Some(provider) = self.providers.get("anthropic") {
             return Some(ResolvedModel {

@@ -21,9 +21,11 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agentos"
 version = "0.1.0"
 dependencies = [
+ "agentos-config",
  "agentos-embedding",
  "agentos-events",
  "agentos-kernel",
+ "agentos-llm",
  "agentos-organism",
  "agentos-vdrive",
  "agentos-wasm",
@@ -82,6 +84,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentos-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "agentos-embedding"
 version = "0.1.0"
 
@@ -106,6 +116,20 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "agentos-llm"
+version = "0.1.0"
+dependencies = [
+ "agentos-config",
+ "agentos-events",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

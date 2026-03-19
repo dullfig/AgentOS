@@ -28,7 +28,7 @@ pub fn resolve_model(alias: &str) -> &str {
 
 /// Resolve a model alias using the config first, falling back to hardcoded aliases.
 /// Returns the full model ID string.
-pub fn resolve_model_from_config(config: &crate::config::ModelsConfig, alias: &str) -> String {
+pub fn resolve_model_from_config(config: &agentos_config::ModelsConfig, alias: &str) -> String {
     if let Some(resolved) = config.resolve(alias) {
         resolved.model_id
     } else {

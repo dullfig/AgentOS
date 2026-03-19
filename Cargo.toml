@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism", "crates/wasm"]
+members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism", "crates/wasm", "crates/config", "crates/llm"]
 
 [package]
 name = "agentos"
@@ -18,6 +18,8 @@ agentos-vdrive = { path = "crates/vdrive" }
 agentos-embedding = { path = "crates/embedding" }
 agentos-organism = { path = "crates/organism" }
 agentos-wasm = { path = "crates/wasm" }
+agentos-config = { path = "crates/config" }
+agentos-llm = { path = "crates/llm" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

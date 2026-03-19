@@ -174,7 +174,7 @@ impl AnthropicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::types::Message;
+    use crate::types::Message;
 
     #[test]
     fn client_creation() {

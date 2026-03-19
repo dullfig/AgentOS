@@ -5,7 +5,7 @@
 
 pub mod agent;
 pub mod buffer;
-pub mod config;
+pub use agentos_config as config;
 pub use agentos_embedding as embedding;
 pub use agentos_kernel as kernel;
 pub mod librarian;
