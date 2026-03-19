@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet"]
+members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding"]
 
 [package]
 name = "agentos"
@@ -15,6 +15,7 @@ rust-pipeline = { path = "../rust-pipeline" }
 agentos-kernel = { path = "crates/kernel" }
 agentos-events = { path = "crates/events" }
 agentos-vdrive = { path = "crates/vdrive" }
+agentos-embedding = { path = "crates/embedding" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

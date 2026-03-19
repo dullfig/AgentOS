@@ -21,6 +21,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agentos"
 version = "0.1.0"
 dependencies = [
+ "agentos-embedding",
  "agentos-events",
  "agentos-kernel",
  "agentos-vdrive",
@@ -79,8 +80,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentos-events"
+name = "agentos-embedding"
 version = "0.1.0"
+
+[[package]]
+name = "agentos-events"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "agentos-kernel"

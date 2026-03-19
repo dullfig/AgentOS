@@ -1,0 +1,5 @@
+[package]
+name = "agentos-embedding"
+version = "0.1.0"
+edition = "2021"
+description = "Embedding infrastructure for AgentOS — TF-IDF, cosine similarity, semantic index."
