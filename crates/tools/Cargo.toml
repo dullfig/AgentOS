@@ -1,0 +1,32 @@
+[package]
+name = "agentos-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Built-in tools for AgentOS — file ops, shell, model management, organism tools."
+
+[dependencies]
+agentos-events = { path = "../events" }
+agentos-organism = { path = "../organism" }
+agentos-llm = { path = "../llm" }
+agentos-kernel = { path = "../kernel" }
+agentos-vdrive = { path = "../vdrive" }
+agentos-wit = { path = "../wit" }
+similar = "2"
+crc32fast = "1"
+rust-pipeline = { path = "../../../rust-pipeline" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "time", "process", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+urlencoding = "2"
+futures-util = "0.3"
+tracing = "0.1"
+glob = "0.3"
+regex = "1"
+zip = "2"
+imago = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }

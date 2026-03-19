@@ -348,7 +348,7 @@ mod tests {
     fn compile_wasm_metadata() {
         let tool = CompileWasmTool::new(PathBuf::from("/tmp/wit"));
         assert_eq!(tool.name(), "compile-wasm");
-        let iface = crate::wit::parser::parse_wit(tool.wit()).unwrap();
+        let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "compile-wasm");
         assert_eq!(iface.request_tag(), "CompileWasmRequest");
         assert!(iface.request.fields.iter().any(|f| f.name == "source-dir"));

@@ -14,7 +14,7 @@ use zip::ZipWriter;
 
 use super::{extract_tag, ToolPeer, ToolResponse};
 use super::vdrive_tools::DriveSlot;
-use crate::organism::parser::parse_organism;
+use agentos_organism::parser::parse_organism;
 
 /// Manifest embedded in every .agent package.
 #[derive(Debug, Serialize, Deserialize)]

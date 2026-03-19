@@ -24,7 +24,6 @@ pub mod model_verify;
 pub mod safe_commands;
 pub mod user_channel;
 pub mod package_organism;
-pub mod test_organism;
 pub mod validate_organism;
 pub mod vdrive_tools;
 

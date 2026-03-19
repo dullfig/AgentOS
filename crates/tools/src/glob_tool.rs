@@ -211,7 +211,7 @@ mod tests {
     fn glob_metadata() {
         let tool = GlobTool;
         assert_eq!(tool.name(), "glob");
-        let iface = crate::wit::parser::parse_wit(tool.wit()).unwrap();
+        let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "glob");
         assert_eq!(iface.request_tag(), "GlobRequest");
         assert!(iface.request.fields.iter().any(|f| f.name == "pattern"));

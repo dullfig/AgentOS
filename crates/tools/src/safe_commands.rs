@@ -349,7 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_drive_returns_error() {
-        let slot = crate::tools::vdrive_tools::empty_slot();
+        let slot = crate::vdrive_tools::empty_slot();
         let tool = SafeCommandTool::new(&CARGO_CHECK, slot);
         let payload = ValidatedPayload {
             xml: b"<CargoCheckRequest></CargoCheckRequest>".to_vec(),

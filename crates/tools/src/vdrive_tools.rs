@@ -837,7 +837,7 @@ mod tests {
             VDriveGrep::new(slot.clone()).wit(),
             VDriveListDir::new(slot).wit(),
         ] {
-            let iface = crate::wit::parser::parse_wit(tool).unwrap();
+            let iface = agentos_wit::parser::parse_wit(tool).unwrap();
             assert!(!iface.name.is_empty());
         }
     }

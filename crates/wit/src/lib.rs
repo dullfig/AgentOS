@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use rust_pipeline::prelude::*;
 
-use crate::llm::types::ToolDefinition;
+use agentos_events::ToolDefinition;
 
 /// Parsed WIT interface for a tool.
 #[derive(Debug, Clone)]

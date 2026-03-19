@@ -353,7 +353,7 @@ mod tests {
     fn grep_metadata() {
         let tool = GrepTool;
         assert_eq!(tool.name(), "grep");
-        let iface = crate::wit::parser::parse_wit(tool.wit()).unwrap();
+        let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "grep");
         assert_eq!(iface.request_tag(), "GrepRequest");
         assert!(iface.request.fields.iter().any(|f| f.name == "pattern"));

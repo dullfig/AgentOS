@@ -195,7 +195,7 @@ mod tests {
     fn file_write_metadata() {
         let tool = FileWriteTool;
         assert_eq!(tool.name(), "file-write");
-        let iface = crate::wit::parser::parse_wit(tool.wit()).unwrap();
+        let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "file-write");
         assert_eq!(iface.request_tag(), "FileWriteRequest");
         assert!(iface.request.fields.iter().any(|f| f.name == "path"));

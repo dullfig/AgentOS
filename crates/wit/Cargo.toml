@@ -1,0 +1,11 @@
+[package]
+name = "agentos-wit"
+version = "0.1.0"
+edition = "2021"
+description = "WIT interface parser for AgentOS — generates schemas and tool definitions from WIT."
+
+[dependencies]
+agentos-events = { path = "../events" }
+rust-pipeline = { path = "../../../rust-pipeline" }
+serde_json = "1"
+code-llm = { path = "../../../code-llm" }

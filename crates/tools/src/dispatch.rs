@@ -13,7 +13,7 @@ use rust_pipeline::prelude::*;
 use tokio::sync::{broadcast, Mutex};
 
 use super::{extract_tag, ToolPeer, ToolResponse};
-use crate::organism::Organism;
+use agentos_organism::Organism;
 
 /// Cloneable handle for injecting envelopes into the pipeline.
 pub type InjectTx = tokio::sync::mpsc::Sender<Vec<u8>>;
@@ -230,7 +230,7 @@ mod tests {
     }
 
     fn make_test_organism() -> Organism {
-        use crate::organism::parser::parse_organism;
+        use agentos_organism::parser::parse_organism;
         parse_organism(r#"
 organism:
   name: test

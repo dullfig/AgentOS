@@ -335,7 +335,7 @@ mod tests {
     fn command_exec_metadata() {
         let tool = CommandExecTool::new();
         assert_eq!(tool.name(), "bash");
-        let iface = crate::wit::parser::parse_wit(tool.wit()).unwrap();
+        let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "bash");
         assert_eq!(iface.request_tag(), "BashRequest");
         assert!(iface.request.fields.iter().any(|f| f.name == "command"));

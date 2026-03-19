@@ -16,9 +16,14 @@ pub mod pipeline;
 pub mod ports;
 pub use agentos_routing as routing;
 pub mod security;
-pub mod tools;
+pub use agentos_wit as wit;
+
+// Tools: re-export from crate, keep test_organism locally (needs pipeline)
+pub mod tools {
+    pub use agentos_tools::*;
+    pub mod test_organism;
+}
 pub mod treesitter;
 pub mod tui;
 pub mod vdrive;
 pub use agentos_wasm as wasm;
-pub mod wit;

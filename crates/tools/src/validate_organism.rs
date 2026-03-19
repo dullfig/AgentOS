@@ -9,7 +9,7 @@ use rust_pipeline::prelude::*;
 
 use super::{extract_tag, ToolPeer, ToolResponse};
 use super::vdrive_tools::DriveSlot;
-use crate::organism::parser::parse_organism;
+use agentos_organism::parser::parse_organism;
 
 pub struct ValidateOrganismTool {
     slot: DriveSlot,
@@ -247,7 +247,7 @@ profiles:
 "#;
         let xml = format!(
             "<ValidateOrganismRequest><yaml>{}</yaml></ValidateOrganismRequest>",
-            crate::tools::xml_escape(yaml)
+            crate::xml_escape(yaml)
         );
         let result = tool.handle(make_payload(&xml), make_ctx()).await.unwrap();
         match result {
@@ -300,7 +300,7 @@ profiles:
 "#;
         let xml = format!(
             "<ValidateOrganismRequest><yaml>{}</yaml></ValidateOrganismRequest>",
-            crate::tools::xml_escape(yaml)
+            crate::xml_escape(yaml)
         );
         let result = tool.handle(make_payload(&xml), make_ctx()).await.unwrap();
         match result {
@@ -332,7 +332,7 @@ profiles:
 "#;
         let xml = format!(
             "<ValidateOrganismRequest><yaml>{}</yaml></ValidateOrganismRequest>",
-            crate::tools::xml_escape(yaml)
+            crate::xml_escape(yaml)
         );
         let result = tool.handle(make_payload(&xml), make_ctx()).await.unwrap();
         match result {

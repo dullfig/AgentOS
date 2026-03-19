@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use rust_pipeline::prelude::*;
 
 use super::{ToolPeer, ToolResponse};
-use crate::organism::Organism;
+use agentos_organism::Organism;
 
 /// A read-only tool that lists registered agents and their capabilities.
 ///
@@ -86,8 +86,8 @@ interface list-agents {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::organism::Organism;
-    use crate::organism::{ListenerDef, BufferConfig, CallableParam};
+    use agentos_organism::Organism;
+    use agentos_organism::{ListenerDef, BufferConfig, CallableParam};
 
     fn make_ctx() -> HandlerContext {
         HandlerContext {
