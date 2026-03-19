@@ -10,15 +10,15 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::kernel::Kernel;
-use crate::llm::types::Message;
-use crate::llm::LlmPool;
+use agentos_kernel::Kernel;
+use agentos_events::Message;
+use agentos_llm::LlmPool;
 
 /// Errors from librarian operations.
 #[derive(Debug, thiserror::Error)]
 pub enum LibrarianError {
     #[error("kernel error: {0}")]
-    Kernel(#[from] crate::kernel::error::KernelError),
+    Kernel(#[from] agentos_kernel::error::KernelError),
 
     #[error("LLM error: {0}")]
     Llm(String),

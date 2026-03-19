@@ -35,12 +35,12 @@ use async_trait::async_trait;
 use rust_pipeline::prelude::*;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::librarian::Librarian;
-use crate::llm::types::{ContentBlock, ToolDefinition, ToolResultBlock};
-use crate::llm::LlmPool;
-use crate::organism::AgentConfig;
-use crate::pipeline::events::{ConversationEntry, PipelineEvent};
-use crate::routing::{RouteDecision, SemanticRouter};
+use agentos_librarian::Librarian;
+use agentos_events::{ContentBlock, ToolDefinition, ToolResultBlock};
+use agentos_llm::LlmPool;
+use agentos_organism::AgentConfig;
+use agentos_events::{ConversationEntry, PipelineEvent};
+use agentos_routing::{RouteDecision, SemanticRouter};
 
 use super::state::{AgentState, AgentThread, PendingToolCall};
 use super::translate;
@@ -279,12 +279,12 @@ impl CodingAgentHandler {
     async fn call_opus(
         &self,
         thread: &AgentThread,
-    ) -> Result<crate::llm::types::MessagesResponse, String> {
+    ) -> Result<agentos_llm::types::MessagesResponse, String> {
         // Optional: curate context before the API call
         let mut system = format!(
             "{}{}",
             self.system_prompt,
-            crate::agent::middleware::injection_guard::QUARANTINE_SYSTEM_PROMPT,
+            crate::middleware::injection_guard::QUARANTINE_SYSTEM_PROMPT,
         );
         if let Some(ref librarian) = self.librarian {
             let lib = librarian.lock().await;
@@ -314,7 +314,7 @@ impl CodingAgentHandler {
     /// Process an Opus response: extract tool calls or final text.
     fn process_response(
         &self,
-        response: &crate::llm::types::MessagesResponse,
+        response: &agentos_llm::types::MessagesResponse,
     ) -> ResponseAction {
         let stop_reason = response.stop_reason.as_deref().unwrap_or("unknown");
 
@@ -725,8 +725,8 @@ impl Handler for CodingAgentHandler {
 }
 
 /// Convert a slice of Messages into ConversationEntry items for TUI display.
-pub fn build_conversation_entries(messages: &[crate::llm::types::Message]) -> Vec<ConversationEntry> {
-    use crate::llm::types::{ContentBlock, MessageContent};
+pub fn build_conversation_entries(messages: &[agentos_events::Message]) -> Vec<ConversationEntry> {
+    use agentos_events::{ContentBlock, MessageContent};
     use std::collections::HashSet;
     let mut entries = Vec::new();
     // Track tool_use IDs for the `user` tool so we can suppress their tool_results too
@@ -904,7 +904,7 @@ mod tests {
     }
 
     fn sample_tool_defs() -> Vec<ToolDefinition> {
-        crate::agent::tools::build_tool_definitions(&["file-read", "bash"])
+        crate::tools::build_tool_definitions(&["file-read", "bash"])
     }
 
     #[test]
@@ -920,7 +920,7 @@ mod tests {
     fn handler_with_librarian_creation() {
         let pool = mock_pool();
         let kernel =
-            crate::kernel::Kernel::open(&tempfile::TempDir::new().unwrap().path().join("data"))
+            agentos_kernel::Kernel::open(&tempfile::TempDir::new().unwrap().path().join("data"))
                 .unwrap();
         let kernel_arc = Arc::new(Mutex::new(kernel));
         let lib = Arc::new(Mutex::new(Librarian::new(pool.clone(), kernel_arc)));
@@ -952,14 +952,14 @@ mod tests {
     fn process_response_end_turn() {
         let pool = mock_pool();
         let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
-        let response = crate::llm::types::MessagesResponse {
+        let response = agentos_llm::types::MessagesResponse {
             id: "msg_1".into(),
             model: "test".into(),
             content: vec![ContentBlock::Text {
                 text: "Done!".into(),
             }],
             stop_reason: Some("end_turn".into()),
-            usage: crate::llm::types::Usage {
+            usage: agentos_llm::types::Usage {
                 input_tokens: 10,
                 output_tokens: 5,
             },
@@ -975,7 +975,7 @@ mod tests {
     fn process_response_tool_use() {
         let pool = mock_pool();
         let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
-        let response = crate::llm::types::MessagesResponse {
+        let response = agentos_llm::types::MessagesResponse {
             id: "msg_2".into(),
             model: "test".into(),
             content: vec![
@@ -989,7 +989,7 @@ mod tests {
                 },
             ],
             stop_reason: Some("tool_use".into()),
-            usage: crate::llm::types::Usage {
+            usage: agentos_llm::types::Usage {
                 input_tokens: 20,
                 output_tokens: 15,
             },
@@ -1009,7 +1009,7 @@ mod tests {
     fn process_response_multiple_tool_calls() {
         let pool = mock_pool();
         let handler = CodingAgentHandler::new("test-agent".into(), pool, sample_tool_defs(), "test".into());
-        let response = crate::llm::types::MessagesResponse {
+        let response = agentos_llm::types::MessagesResponse {
             id: "msg_3".into(),
             model: "test".into(),
             content: vec![
@@ -1025,7 +1025,7 @@ mod tests {
                 },
             ],
             stop_reason: Some("tool_use".into()),
-            usage: crate::llm::types::Usage {
+            usage: agentos_llm::types::Usage {
                 input_tokens: 30,
                 output_tokens: 25,
             },
@@ -1166,11 +1166,11 @@ mod tests {
 
     // ── Semantic Routing Integration Tests ──
 
-    fn build_test_router() -> crate::routing::SemanticRouter {
-        use crate::embedding::tfidf::TfIdfProvider;
-        use crate::embedding::{EmbeddingIndex, EmbeddingProvider};
-        use crate::routing::form_filler::CloudFormFiller;
-        use crate::routing::ToolMetadata;
+    fn build_test_router() -> agentos_routing::SemanticRouter {
+        use agentos_embedding::tfidf::TfIdfProvider;
+        use agentos_embedding::{EmbeddingIndex, EmbeddingProvider};
+        use agentos_routing::form_filler::CloudFormFiller;
+        use agentos_routing::ToolMetadata;
         use std::collections::HashMap as StdHashMap;
 
         let descriptions = vec![
@@ -1203,7 +1203,7 @@ mod tests {
             },
         );
 
-        crate::routing::SemanticRouter::new(Box::new(provider), index, Box::new(filler), metadata)
+        agentos_routing::SemanticRouter::new(Box::new(provider), index, Box::new(filler), metadata)
     }
 
     #[test]
@@ -1419,7 +1419,7 @@ mod tests {
     fn builder_attach_librarian() {
         let pool = mock_pool();
         let kernel =
-            crate::kernel::Kernel::open(&tempfile::TempDir::new().unwrap().path().join("data"))
+            agentos_kernel::Kernel::open(&tempfile::TempDir::new().unwrap().path().join("data"))
                 .unwrap();
         let kernel_arc = Arc::new(Mutex::new(kernel));
         let lib = Arc::new(Mutex::new(Librarian::new(pool.clone(), kernel_arc)));
@@ -1443,7 +1443,7 @@ mod tests {
 
     #[test]
     fn conversation_entry_from_user_message() {
-        use crate::llm::types::Message;
+        use agentos_events::Message;
         let messages = vec![Message::text("user", "Read the README")];
         let entries = build_conversation_entries(&messages);
         assert_eq!(entries.len(), 1);
@@ -1455,7 +1455,7 @@ mod tests {
 
     #[test]
     fn conversation_entry_from_assistant_text() {
-        use crate::llm::types::Message;
+        use agentos_events::Message;
         let messages = vec![Message::assistant_blocks(vec![ContentBlock::Text {
             text: "Here's the README contents.".into(),
         }])];
@@ -1468,7 +1468,7 @@ mod tests {
 
     #[test]
     fn conversation_entry_from_tool_use() {
-        use crate::llm::types::Message;
+        use agentos_events::Message;
         let messages = vec![Message::assistant_blocks(vec![ContentBlock::ToolUse {
             id: "toolu_1".into(),
             name: "file-read".into(),
@@ -1485,7 +1485,7 @@ mod tests {
 
     #[test]
     fn conversation_entry_from_tool_result() {
-        use crate::llm::types::{Message, ToolResultBlock};
+        use agentos_events::{Message, ToolResultBlock};
         let messages = vec![Message::tool_results(vec![ToolResultBlock {
             tool_use_id: "toolu_1".into(),
             content: "fn main() {}".into(),
@@ -1500,7 +1500,7 @@ mod tests {
 
     #[test]
     fn conversation_entry_full_conversation() {
-        use crate::llm::types::{Message, ToolResultBlock};
+        use agentos_events::{Message, ToolResultBlock};
         let messages = vec![
             Message::text("user", "Read foo.rs"),
             Message::assistant_blocks(vec![

@@ -3,8 +3,8 @@
 //! Builds structured prompts for Haiku to decide what to page in/out.
 //! Responses are XML-structured for reliable parsing.
 
-use crate::kernel::context_store::{ContextInventory, SegmentStatus};
-use crate::llm::types::Message;
+use agentos_kernel::context_store::{ContextInventory, SegmentStatus};
+use agentos_events::Message;
 
 /// System prompt for curation requests.
 pub const CURATION_SYSTEM: &str = "\
@@ -210,7 +210,7 @@ fn truncate(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::context_store::SegmentMeta;
+    use agentos_kernel::context_store::SegmentMeta;
 
     fn sample_inventory() -> ContextInventory {
         ContextInventory {

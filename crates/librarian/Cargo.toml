@@ -1,0 +1,15 @@
+[package]
+name = "agentos-librarian"
+version = "0.1.0"
+edition = "2021"
+description = "Context curator for AgentOS — manages LLM context windows with three-tier VMM."
+
+[dependencies]
+agentos-events = { path = "../events" }
+agentos-kernel = { path = "../kernel" }
+agentos-llm = { path = "../llm" }
+rust-pipeline = { path = "../../../rust-pipeline" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+thiserror = "2"

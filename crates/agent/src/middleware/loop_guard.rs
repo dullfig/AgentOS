@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 
 use rust_pipeline::prelude::*;
 
-use crate::agent::translate::xml_escape_text;
+use crate::translate::xml_escape_text;
 
 /// LoopGuard middleware — limits agentic iterations per thread per agent.
 pub struct LoopGuard {

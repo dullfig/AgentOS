@@ -18,9 +18,9 @@ use tokio::sync::{broadcast, mpsc};
 
 use rust_pipeline::prelude::*;
 
-use crate::agent::permissions::{ApprovalVerdict, ToolApprovalRequest};
-use crate::pipeline::events::PipelineEvent;
-use crate::tools::{extract_tag, xml_escape};
+use crate::permissions::{ApprovalVerdict, ToolApprovalRequest};
+use agentos_events::PipelineEvent;
+use agentos_events::{extract_tag, xml_escape};
 
 /// InjectionGuard wraps tool responses headed to agents in quarantine fences.
 /// On suspected injection, prompts the user for approval before allowing through.

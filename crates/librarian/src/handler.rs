@@ -9,7 +9,7 @@ use rust_pipeline::prelude::*;
 use tokio::sync::Mutex;
 
 use super::Librarian;
-use crate::llm::types::Message;
+use agentos_events::Message;
 
 /// Pipeline handler wrapping a Librarian.
 pub struct LibrarianHandler {
@@ -84,9 +84,9 @@ impl Handler for LibrarianHandler {
                             .iter()
                             .map(|s| {
                                 let status = match s.status {
-                                    crate::kernel::context_store::SegmentStatus::Active => "active",
-                                    crate::kernel::context_store::SegmentStatus::Shelved => "shelved",
-                                    crate::kernel::context_store::SegmentStatus::Folded => "folded",
+                                    agentos_kernel::context_store::SegmentStatus::Active => "active",
+                                    agentos_kernel::context_store::SegmentStatus::Shelved => "shelved",
+                                    agentos_kernel::context_store::SegmentStatus::Folded => "folded",
                                 };
                                 format!(
                                     "<segment id=\"{}\" tag=\"{}\" size=\"{}\" status=\"{}\" relevance=\"{:.2}\"/>",
@@ -174,8 +174,8 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::Kernel;
-    use crate::llm::LlmPool;
+    use agentos_kernel::Kernel;
+    use agentos_llm::LlmPool;
 
     #[tokio::test]
     async fn handler_inventory_on_empty() {

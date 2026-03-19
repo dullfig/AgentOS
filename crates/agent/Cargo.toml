@@ -1,0 +1,24 @@
+[package]
+name = "agentos-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Cognitive core for AgentOS — agent handler, state machine, middleware."
+
+[dependencies]
+agentos-events = { path = "../events" }
+agentos-embedding = { path = "../embedding" }
+agentos-organism = { path = "../organism" }
+agentos-llm = { path = "../llm" }
+agentos-kernel = { path = "../kernel" }
+agentos-librarian = { path = "../librarian" }
+agentos-routing = { path = "../routing" }
+agentos-wasm = { path = "../wasm" }
+rust-pipeline = { path = "../../../rust-pipeline" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }

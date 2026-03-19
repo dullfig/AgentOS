@@ -15,8 +15,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use rust_pipeline::prelude::*;
 
-use crate::agent::permissions::{ApprovalVerdict, ToolApprovalRequest};
-use crate::pipeline::events::PipelineEvent;
+use crate::permissions::{ApprovalVerdict, ToolApprovalRequest};
+use agentos_events::PipelineEvent;
 
 /// DebugGate middleware — pre-dispatch gating for debug sessions.
 pub struct DebugGate {

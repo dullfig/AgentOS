@@ -7,7 +7,7 @@
 //! memory growth. The first message (original task) is pinned, and a
 //! synthetic summary is injected when older messages are pruned.
 
-use crate::llm::types::{ContentBlock, Message, ToolResultBlock};
+use agentos_events::{ContentBlock, Message, ToolResultBlock};
 
 /// Default maximum number of messages to retain in a thread.
 /// ~30 agentic turns (each turn ≈ 2-3 messages: user/assistant/tool_result).

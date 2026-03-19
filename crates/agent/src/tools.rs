@@ -4,8 +4,8 @@
 //! Hand-written schemas for the core tool set.
 //! WASM tools auto-generate from WIT definitions.
 
-use crate::llm::types::ToolDefinition;
-use crate::wasm::definitions::WasmToolRegistry;
+use agentos_events::ToolDefinition;
+use agentos_wasm::definitions::WasmToolRegistry;
 
 /// Build a ToolDefinition for the file-read tool.
 pub fn file_read_definition() -> ToolDefinition {
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn build_with_wasm_fallback() {
         let mut reg = WasmToolRegistry::new();
-        reg.register(&crate::wasm::runtime::ToolMetadata {
+        reg.register(&agentos_wasm::runtime::ToolMetadata {
             name: "echo".into(),
             description: "Echo tool".into(),
             semantic_description: "Echoes".into(),
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn build_wasm_only() {
         let mut reg = WasmToolRegistry::new();
-        reg.register(&crate::wasm::runtime::ToolMetadata {
+        reg.register(&agentos_wasm::runtime::ToolMetadata {
             name: "echo".into(),
             description: "Echo tool".into(),
             semantic_description: "Echoes".into(),
@@ -409,7 +409,7 @@ mod tests {
                 .into(),
         })
         .unwrap();
-        reg.register(&crate::wasm::runtime::ToolMetadata {
+        reg.register(&agentos_wasm::runtime::ToolMetadata {
             name: "reverse".into(),
             description: "Reverse tool".into(),
             semantic_description: "Reverses".into(),

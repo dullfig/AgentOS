@@ -16,10 +16,10 @@ use tokio::sync::{broadcast, mpsc};
 
 use rust_pipeline::prelude::*;
 
-use crate::agent::permissions::{
+use crate::permissions::{
     ApprovalVerdict, PermissionMap, PermissionTier, ToolApprovalRequest, resolve_tier,
 };
-use crate::pipeline::events::PipelineEvent;
+use agentos_events::PipelineEvent;
 
 /// PermissionGate middleware — post-dispatch permission enforcement.
 pub struct PermissionGate {

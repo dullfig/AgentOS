@@ -3,12 +3,12 @@
 //! Builds on rust-pipeline to add durable state (WAL + mmap),
 //! security profiles, and organism configuration.
 
-pub mod agent;
+pub use agentos_agent as agent;
 pub mod buffer;
 pub use agentos_config as config;
 pub use agentos_embedding as embedding;
 pub use agentos_kernel as kernel;
-pub mod librarian;
+pub use agentos_librarian as librarian;
 pub mod lsp;
 pub mod llm;
 pub use agentos_organism as organism;
