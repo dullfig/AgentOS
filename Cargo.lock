@@ -27,6 +27,7 @@ dependencies = [
  "agentos-kernel",
  "agentos-llm",
  "agentos-organism",
+ "agentos-routing",
  "agentos-vdrive",
  "agentos-wasm",
  "anyhow",
@@ -142,6 +143,22 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+]
+
+[[package]]
+name = "agentos-routing"
+version = "0.1.0"
+dependencies = [
+ "agentos-embedding",
+ "agentos-events",
+ "agentos-llm",
+ "agentos-organism",
+ "async-trait",
+ "code-llm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

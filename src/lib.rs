@@ -14,7 +14,7 @@ pub mod llm;
 pub use agentos_organism as organism;
 pub mod pipeline;
 pub mod ports;
-pub mod routing;
+pub use agentos_routing as routing;
 pub mod security;
 pub mod tools;
 pub mod treesitter;

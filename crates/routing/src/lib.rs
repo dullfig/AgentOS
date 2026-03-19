@@ -9,8 +9,8 @@ pub mod local_engine;
 
 use std::collections::HashMap;
 
-use crate::embedding::{EmbeddingIndex, EmbeddingProvider};
-use crate::organism::Organism;
+use agentos_embedding::{EmbeddingIndex, EmbeddingProvider};
+use agentos_organism::Organism;
 
 use form_filler::{FormFillResult, FormFillStrategy};
 
@@ -156,10 +156,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::sync::Mutex;
-    use crate::embedding::tfidf::TfIdfProvider;
-    use crate::embedding::EmbeddingIndex;
-    use crate::llm::LlmPool;
-    use crate::organism::parser::parse_organism;
+    use agentos_embedding::tfidf::TfIdfProvider;
+    use agentos_embedding::EmbeddingIndex;
+    use agentos_llm::LlmPool;
+    use agentos_organism::parser::parse_organism;
     use form_filler::CloudFormFiller;
 
     fn routing_organism() -> Organism {

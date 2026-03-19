@@ -13,8 +13,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::llm::types::Message;
-use crate::llm::LlmPool;
+use agentos_events::Message;
+use agentos_llm::LlmPool;
 
 use super::local_engine::SharedEngine;
 
