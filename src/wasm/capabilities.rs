@@ -3,92 +3,59 @@
 //! Default = nothing. No filesystem, no env, no stdio.
 //! Capabilities are granted via organism.yaml and enforced structurally
 //! by building the WasiCtx with only the granted imports.
+//!
+//! Data types live in `agentos-events` for cross-crate access.
+//! The WasiCtx builder stays here (depends on wasmtime).
 
 use wasmtime_wasi::filesystem::{DirPerms, FilePerms};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder};
 
 use super::error::WasmError;
 
-/// Capability grants for a WASM tool component.
+// Re-export shared types from events crate
+pub use agentos_events::{EnvGrant, FsGrant, KvGrant, WasmCapabilities};
+
+/// Build a WasiCtx from capability grants.
 ///
-/// Default is empty — no access to anything.
-#[derive(Debug, Clone, Default)]
-pub struct WasmCapabilities {
-    pub filesystem: Vec<FsGrant>,
-    pub env_vars: Vec<EnvGrant>,
-    pub stdio: bool,
-    /// KV store grants. None = no KV access. Some = private namespace
-    /// plus any additional read/write grants to shared namespaces.
-    pub kv: Option<KvGrant>,
-}
+/// Only the explicitly granted capabilities are wired in.
+/// Missing capability = WASI import doesn't exist = structural impossibility.
+pub fn build_wasi_ctx(caps: &WasmCapabilities) -> Result<WasiCtx, WasmError> {
+    let mut builder = WasiCtxBuilder::new();
 
-/// KV store access grant for a WASM tool.
-#[derive(Debug, Clone)]
-pub struct KvGrant {
-    /// Shared namespaces this tool can read (in addition to its own private namespace).
-    pub read: Vec<String>,
-    /// Shared namespaces this tool can write (in addition to its own private namespace).
-    pub write: Vec<String>,
-}
-
-/// A filesystem access grant.
-#[derive(Debug, Clone)]
-pub struct FsGrant {
-    pub host_path: String,
-    pub guest_path: String,
-    pub read_only: bool,
-}
-
-/// An environment variable grant.
-#[derive(Debug, Clone)]
-pub struct EnvGrant {
-    pub key: String,
-    pub value: String,
-}
-
-impl WasmCapabilities {
-    /// Build a WasiCtx from these capability grants.
-    ///
-    /// Only the explicitly granted capabilities are wired in.
-    /// Missing capability = WASI import doesn't exist = structural impossibility.
-    pub fn build_wasi_ctx(&self) -> Result<WasiCtx, WasmError> {
-        let mut builder = WasiCtxBuilder::new();
-
-        if self.stdio {
-            builder.inherit_stdio();
-        }
-
-        for env in &self.env_vars {
-            builder.env(&env.key, &env.value);
-        }
-
-        for fs in &self.filesystem {
-            let host = std::path::Path::new(&fs.host_path);
-            if !host.exists() {
-                return Err(WasmError::Capability(format!(
-                    "host path does not exist: {}",
-                    fs.host_path
-                )));
-            }
-
-            let (dir_perms, file_perms) = if fs.read_only {
-                (DirPerms::READ, FilePerms::READ)
-            } else {
-                (DirPerms::all(), FilePerms::all())
-            };
-
-            builder
-                .preopened_dir(&fs.host_path, &fs.guest_path, dir_perms, file_perms)
-                .map_err(|e| {
-                    WasmError::Capability(format!(
-                        "failed to preopen '{}' → '{}': {e}",
-                        fs.host_path, fs.guest_path
-                    ))
-                })?;
-        }
-
-        Ok(builder.build())
+    if caps.stdio {
+        builder.inherit_stdio();
     }
+
+    for env in &caps.env_vars {
+        builder.env(&env.key, &env.value);
+    }
+
+    for fs in &caps.filesystem {
+        let host = std::path::Path::new(&fs.host_path);
+        if !host.exists() {
+            return Err(WasmError::Capability(format!(
+                "host path does not exist: {}",
+                fs.host_path
+            )));
+        }
+
+        let (dir_perms, file_perms) = if fs.read_only {
+            (DirPerms::READ, FilePerms::READ)
+        } else {
+            (DirPerms::all(), FilePerms::all())
+        };
+
+        builder
+            .preopened_dir(&fs.host_path, &fs.guest_path, dir_perms, file_perms)
+            .map_err(|e| {
+                WasmError::Capability(format!(
+                    "failed to preopen '{}' → '{}': {e}",
+                    fs.host_path, fs.guest_path
+                ))
+            })?;
+    }
+
+    Ok(builder.build())
 }
 
 #[cfg(test)]
@@ -106,7 +73,7 @@ mod tests {
     #[test]
     fn build_wasi_ctx_empty() {
         let caps = WasmCapabilities::default();
-        let result = caps.build_wasi_ctx();
+        let result = build_wasi_ctx(&caps);
         assert!(result.is_ok(), "empty caps should build: {:?}", result.err());
     }
 
@@ -116,7 +83,7 @@ mod tests {
             stdio: true,
             ..Default::default()
         };
-        let result = caps.build_wasi_ctx();
+        let result = build_wasi_ctx(&caps);
         assert!(result.is_ok());
     }
 
@@ -135,7 +102,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let result = caps.build_wasi_ctx();
+        let result = build_wasi_ctx(&caps);
         assert!(result.is_ok());
     }
 
@@ -150,7 +117,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let result = caps.build_wasi_ctx();
+        let result = build_wasi_ctx(&caps);
         assert!(result.is_ok(), "read-only fs grant failed: {:?}", result.err());
     }
 
@@ -165,7 +132,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let result = caps.build_wasi_ctx();
+        let result = build_wasi_ctx(&caps);
         assert!(result.is_ok(), "read-write fs grant failed: {:?}", result.err());
     }
 
@@ -179,7 +146,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let result = caps.build_wasi_ctx();
+        let result = build_wasi_ctx(&caps);
         assert!(result.is_err());
         let err = result.err().unwrap();
         match err {

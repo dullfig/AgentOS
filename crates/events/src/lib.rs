@@ -379,3 +379,42 @@ pub struct ToolResultBlock {
     pub content: String,
     pub is_error: bool,
 }
+
+// ── WASM Capability Types ──
+
+/// Capability grants for a WASM tool component.
+///
+/// Default is empty — no access to anything.
+#[derive(Debug, Clone, Default)]
+pub struct WasmCapabilities {
+    pub filesystem: Vec<FsGrant>,
+    pub env_vars: Vec<EnvGrant>,
+    pub stdio: bool,
+    /// KV store grants. None = no KV access. Some = private namespace
+    /// plus any additional read/write grants to shared namespaces.
+    pub kv: Option<KvGrant>,
+}
+
+/// KV store access grant for a WASM tool.
+#[derive(Debug, Clone)]
+pub struct KvGrant {
+    /// Shared namespaces this tool can read (in addition to its own private namespace).
+    pub read: Vec<String>,
+    /// Shared namespaces this tool can write (in addition to its own private namespace).
+    pub write: Vec<String>,
+}
+
+/// A filesystem access grant.
+#[derive(Debug, Clone)]
+pub struct FsGrant {
+    pub host_path: String,
+    pub guest_path: String,
+    pub read_only: bool,
+}
+
+/// An environment variable grant.
+#[derive(Debug, Clone)]
+pub struct EnvGrant {
+    pub key: String,
+    pub value: String,
+}

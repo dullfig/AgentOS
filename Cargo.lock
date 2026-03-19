@@ -24,6 +24,7 @@ dependencies = [
  "agentos-embedding",
  "agentos-events",
  "agentos-kernel",
+ "agentos-organism",
  "agentos-vdrive",
  "anyhow",
  "arboard",
@@ -102,6 +103,18 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "agentos-organism"
+version = "0.1.0"
+dependencies = [
+ "agentos-events",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
 ]
 
 [[package]]

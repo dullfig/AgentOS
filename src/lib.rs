@@ -11,7 +11,7 @@ pub use agentos_kernel as kernel;
 pub mod librarian;
 pub mod lsp;
 pub mod llm;
-pub mod organism;
+pub use agentos_organism as organism;
 pub mod pipeline;
 pub mod ports;
 pub mod routing;

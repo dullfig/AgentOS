@@ -8,9 +8,7 @@ pub mod profile;
 
 use std::collections::HashMap;
 
-use crate::agent::permissions::PermissionMap;
-use crate::llm::types::ToolDefinition;
-use crate::wasm::capabilities::WasmCapabilities;
+use agentos_events::{PermissionMap, ToolDefinition, WasmCapabilities};
 use profile::{DispatchTable, SecurityProfile};
 
 /// WASM tool configuration on a listener.
@@ -662,7 +660,7 @@ mod tests {
             max_routing_iterations: 10,
             max_agentic_iterations: 30,
             model: Some("haiku".into()),
-            permissions: crate::agent::permissions::PermissionMap::new(),
+            permissions: agentos_events::PermissionMap::new(),
         });
 
         let cfg = def.agent_config.as_ref().unwrap();

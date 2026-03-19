@@ -14,8 +14,7 @@ use super::{
     AgentConfig, BufferConfig, CallableParam, ListenerDef, Organism, PortDef, PythonToolConfig,
     WasmToolConfig,
 };
-use crate::agent::permissions::{PermissionMap, PermissionTier};
-use crate::wasm::capabilities::{EnvGrant, FsGrant, KvGrant, WasmCapabilities};
+use agentos_events::{EnvGrant, FsGrant, KvGrant, PermissionMap, PermissionTier, WasmCapabilities};
 
 /// Top-level organism YAML configuration.
 ///
@@ -436,7 +435,8 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
     // Register prompts (resolve file: prefixes)
     for (name, value) in raw.prompts {
         if let Some(path) = value.strip_prefix("file:") {
-            let content = crate::agent::prompts::load_prompt_file(Path::new(path.trim()))?;
+            let content = std::fs::read_to_string(Path::new(path.trim()))
+                .map_err(|e| format!("failed to load prompt file '{}': {e}", path.trim()))?;
             org.register_prompt(name, content);
         } else {
             org.register_prompt(name, value);
@@ -1633,7 +1633,7 @@ profiles:
         let agent = org.get_listener("coding-agent").unwrap();
         let cfg = agent.agent_config.as_ref().unwrap();
 
-        use crate::agent::permissions::PermissionTier;
+        use agentos_events::PermissionTier;
         assert_eq!(cfg.permissions.get("file-read"), Some(&PermissionTier::Auto));
         assert_eq!(cfg.permissions.get("glob"), Some(&PermissionTier::Auto));
         assert_eq!(cfg.permissions.get("file-write"), Some(&PermissionTier::Prompt));
@@ -1711,11 +1711,21 @@ profiles:
             "Schema should have standard JSON Schema keys");
     }
 
+    /// Workspace root — two levels up from this crate's Cargo.toml.
+    fn workspace_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent() // crates/
+            .and_then(|p| p.parent()) // workspace root
+            .expect("can't find workspace root")
+            .to_path_buf()
+    }
+
     #[test]
     fn schema_stays_in_sync() {
         let generated = serde_json::to_string_pretty(&generate_schema()).unwrap();
-        let committed = std::fs::read_to_string("organisms/organism.schema.json")
-            .expect("organisms/organism.schema.json must exist — run: cargo test generate_schema_file -- --ignored");
+        let schema_path = workspace_root().join("organisms/organism.schema.json");
+        let committed = std::fs::read_to_string(&schema_path)
+            .unwrap_or_else(|e| panic!("{}: {e}\nRun: cargo test generate_schema_file -- --ignored", schema_path.display()));
         assert_eq!(
             generated.trim(),
             committed.trim(),
@@ -1728,17 +1738,20 @@ profiles:
     fn generate_schema_file() {
         let schema = generate_schema();
         let pretty = serde_json::to_string_pretty(&schema).unwrap();
-        std::fs::write("organisms/organism.schema.json", format!("{pretty}\n")).unwrap();
-        println!("Wrote organisms/organism.schema.json");
+        let schema_path = workspace_root().join("organisms/organism.schema.json");
+        std::fs::write(&schema_path, format!("{pretty}\n")).unwrap();
+        println!("Wrote {}", schema_path.display());
     }
 
     #[test]
     fn existing_organisms_parse() {
-        for path in &["organisms/default.yaml", "organisms/coder.yaml", "organisms/coder-v2.yaml", "organisms/organism-builder.yaml", "organisms/agent-expert.yaml", "organisms/wiki-expert.yaml", "organisms/plan-expert.yaml"] {
-            let content = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let root = workspace_root();
+        for name in &["default.yaml", "coder.yaml", "coder-v2.yaml", "organism-builder.yaml", "agent-expert.yaml", "wiki-expert.yaml", "plan-expert.yaml"] {
+            let path = root.join("organisms").join(name);
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
             parse_organism(&content)
-                .unwrap_or_else(|e| panic!("{path} failed to parse: {e}"));
+                .unwrap_or_else(|e| panic!("{name} failed to parse: {e}"));
         }
     }
 

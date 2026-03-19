@@ -131,7 +131,7 @@ fn execute_wasm_tool(
     {
         ToolState::minimal()
     } else {
-        ToolState::with_ctx(capabilities.build_wasi_ctx()?)
+        ToolState::with_ctx(super::capabilities::build_wasi_ctx(capabilities)?)
     };
     let mut store = Store::new(runtime.engine(), state);
 

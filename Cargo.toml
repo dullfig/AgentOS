@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding"]
+members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism"]
 
 [package]
 name = "agentos"
@@ -16,6 +16,7 @@ agentos-kernel = { path = "crates/kernel" }
 agentos-events = { path = "crates/events" }
 agentos-vdrive = { path = "crates/vdrive" }
 agentos-embedding = { path = "crates/embedding" }
+agentos-organism = { path = "crates/organism" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
