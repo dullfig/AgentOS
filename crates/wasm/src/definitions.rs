@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::llm::types::ToolDefinition;
+use agentos_events::ToolDefinition;
 
 use super::error::WasmError;
 use super::runtime::ToolMetadata;

@@ -5,6 +5,8 @@
 //! agent, llm, librarian, organism, tui, pipeline, and tools.
 
 use std::collections::HashMap;
+use async_trait::async_trait;
+use rust_pipeline::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 // ── Pipeline Events ──
@@ -417,4 +419,73 @@ pub struct FsGrant {
 pub struct EnvGrant {
     pub key: String,
     pub value: String,
+}
+
+// ── Tool Framework Types ──
+
+/// Marker trait for tool-peers. All tool-peers are Handlers,
+/// but this trait adds tool-specific metadata for self-documentation.
+///
+/// Each tool declares its interface as a WIT string. The pipeline
+/// builder parses it once at registration time to generate
+/// PayloadSchema, ToolDefinition, and XML tag mapping.
+#[async_trait]
+pub trait ToolPeer: Handler {
+    /// Tool name (used in routing).
+    fn name(&self) -> &str;
+
+    /// WIT interface definition for this tool.
+    fn wit(&self) -> &str;
+}
+
+/// Standard tool response envelope.
+pub struct ToolResponse;
+
+impl ToolResponse {
+    /// Build a success response as XML bytes.
+    pub fn ok(result: &str) -> Vec<u8> {
+        format!(
+            "<ToolResponse><success>true</success><result>{}</result></ToolResponse>",
+            xml_escape(result)
+        )
+        .into_bytes()
+    }
+
+    /// Build an error response as XML bytes.
+    pub fn err(error: &str) -> Vec<u8> {
+        format!(
+            "<ToolResponse><success>false</success><error>{}</error></ToolResponse>",
+            xml_escape(error)
+        )
+        .into_bytes()
+    }
+}
+
+/// Basic XML escaping.
+pub fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Extract text content between `<tag>` and `</tag>`.
+pub fn extract_tag(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml.find(&close)?;
+    if start <= end {
+        Some(xml_unescape(&xml[start..end]))
+    } else {
+        None
+    }
+}
+
+/// Unescape XML entities.
+pub fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
 }

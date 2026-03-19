@@ -15,7 +15,7 @@ use wasmtime::Store;
 use super::capabilities::WasmCapabilities;
 use super::error::WasmError;
 use super::runtime::{ToolMetadata, ToolState, WasmComponent, WasmRuntime};
-use crate::tools::{ToolPeer, ToolResponse};
+use agentos_events::{ToolPeer, ToolResponse};
 
 /// Timeout for WASM tool execution (5 minutes).
 /// Prevents hung tools from blocking the agent thread indefinitely.
@@ -190,7 +190,7 @@ mod tests {
     fn load_echo_peer() -> (Arc<WasmRuntime>, WasmToolPeer) {
         let runtime = Arc::new(WasmRuntime::new().unwrap());
         let bytes = std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            crate::workspace_root()
                 .join("tests")
                 .join("fixtures")
                 .join("echo.wasm"),
@@ -370,7 +370,7 @@ mod tests {
 
     fn load_echo_py_peer() -> (Arc<WasmRuntime>, WasmToolPeer) {
         let runtime = Arc::new(WasmRuntime::new().unwrap());
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let path = crate::workspace_root()
             .join("tests")
             .join("fixtures")
             .join("echo-py.wasm");

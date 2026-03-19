@@ -26,6 +26,7 @@ dependencies = [
  "agentos-kernel",
  "agentos-organism",
  "agentos-vdrive",
+ "agentos-wasm",
  "anyhow",
  "arboard",
  "async-trait",
@@ -88,6 +89,8 @@ version = "0.1.0"
 name = "agentos-events"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
+ "rust-pipeline",
  "serde",
  "serde_json",
 ]
@@ -126,6 +129,23 @@ dependencies = [
  "similar",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "agentos-wasm"
+version = "0.1.0"
+dependencies = [
+ "agentos-events",
+ "async-trait",
+ "futures-util",
+ "rust-pipeline",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
 ]
 
 [[package]]

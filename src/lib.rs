@@ -20,5 +20,5 @@ pub mod tools;
 pub mod treesitter;
 pub mod tui;
 pub mod vdrive;
-pub mod wasm;
+pub use agentos_wasm as wasm;
 pub mod wit;

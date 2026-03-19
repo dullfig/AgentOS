@@ -19,3 +19,13 @@ pub mod kv;
 pub mod peer;
 pub mod python_runtime;
 pub mod runtime;
+
+/// Workspace root for test fixtures — two levels up from this crate.
+#[cfg(test)]
+pub(crate) fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("can't find workspace root")
+        .to_path_buf()
+}

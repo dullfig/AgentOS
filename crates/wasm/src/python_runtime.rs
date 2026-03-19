@@ -18,7 +18,7 @@ use wasmtime::component::{Component, Val};
 
 use super::error::WasmError;
 use super::runtime::{ToolMetadata, ToolState, WasmRuntime};
-use crate::tools::{ToolPeer, ToolResponse};
+use agentos_events::{ToolPeer, ToolResponse};
 
 /// Timeout for Python tool execution (5 minutes).
 const PYTHON_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
@@ -243,7 +243,7 @@ mod tests {
     use super::*;
 
     fn runtime_wasm_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        crate::workspace_root()
             .join("tests")
             .join("fixtures")
             .join("python-runtime.wasm")
@@ -251,7 +251,7 @@ mod tests {
 
     fn sample_tool_source() -> String {
         std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            crate::workspace_root()
                 .join("tools")
                 .join("samples")
                 .join("echo_tool.py"),
@@ -347,7 +347,7 @@ mod tests {
     #[tokio::test]
     async fn python_peer_from_file() {
         let py_rt = load_python_runtime();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let path = crate::workspace_root()
             .join("tools")
             .join("samples")
             .join("echo_tool.py");
@@ -359,7 +359,7 @@ mod tests {
 
     fn decorated_tool_source() -> String {
         std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            crate::workspace_root()
                 .join("tools")
                 .join("samples")
                 .join("echo_decorated.py"),

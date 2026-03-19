@@ -30,28 +30,10 @@ pub mod vdrive_tools;
 
 use std::collections::HashMap;
 
-use async_trait::async_trait;
 use rust_pipeline::prelude::*;
 
-/// Marker trait for tool-peers. All tool-peers are Handlers,
-/// but this trait adds tool-specific metadata for self-documentation.
-///
-/// Each tool declares its interface as a WIT string. The pipeline
-/// builder parses it once at registration time to generate
-/// PayloadSchema, ToolDefinition, and XML tag mapping.
-#[async_trait]
-pub trait ToolPeer: Handler {
-    /// Tool name (used in routing).
-    fn name(&self) -> &str;
-
-    /// WIT interface definition for this tool.
-    ///
-    /// The pipeline builder parses this at registration time to derive:
-    /// - PayloadSchema for pipeline validation
-    /// - ToolDefinition (JSON Schema) for the LLM
-    /// - XML request tag for routing
-    fn wit(&self) -> &str;
-}
+// Re-export shared tool types from events crate
+pub use agentos_events::{ToolPeer, ToolResponse, extract_tag, xml_escape, xml_unescape};
 
 /// Schema for the shared ToolResponse envelope.
 /// Registered at pipeline build time so validate_stage enforces it on re-entry.
@@ -79,58 +61,6 @@ pub fn agent_response_schema() -> PayloadSchema {
         fields: HashMap::new(),
         strict: false, // allows <result> or <error> child
     }
-}
-
-/// Standard tool response envelope.
-pub struct ToolResponse;
-
-impl ToolResponse {
-    /// Build a success response as XML bytes.
-    pub fn ok(result: &str) -> Vec<u8> {
-        format!(
-            "<ToolResponse><success>true</success><result>{}</result></ToolResponse>",
-            xml_escape(result)
-        )
-        .into_bytes()
-    }
-
-    /// Build an error response as XML bytes.
-    pub fn err(error: &str) -> Vec<u8> {
-        format!(
-            "<ToolResponse><success>false</success><error>{}</error></ToolResponse>",
-            xml_escape(error)
-        )
-        .into_bytes()
-    }
-}
-
-/// Basic XML escaping.
-pub fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-/// Extract text content between `<tag>` and `</tag>`.
-pub fn extract_tag(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = xml.find(&open)? + open.len();
-    let end = xml.find(&close)?;
-    if start <= end {
-        Some(xml_unescape(&xml[start..end]))
-    } else {
-        None
-    }
-}
-
-/// Unescape XML entities.
-pub fn xml_unescape(s: &str) -> String {
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&amp;", "&")
 }
 
 #[cfg(test)]

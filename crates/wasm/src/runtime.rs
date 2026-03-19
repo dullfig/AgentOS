@@ -194,7 +194,7 @@ mod tests {
 
     fn echo_wasm_bytes() -> Vec<u8> {
         std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            crate::workspace_root()
                 .join("tests")
                 .join("fixtures")
                 .join("echo.wasm"),
@@ -203,7 +203,7 @@ mod tests {
     }
 
     fn echo_wasm_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        crate::workspace_root()
             .join("tests")
             .join("fixtures")
             .join("echo.wasm")
@@ -300,7 +300,7 @@ mod tests {
     // ── Python WASM component tests ──
 
     fn echo_py_wasm_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        crate::workspace_root()
             .join("tests")
             .join("fixtures")
             .join("echo-py.wasm")
