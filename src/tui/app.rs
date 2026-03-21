@@ -100,6 +100,8 @@ pub struct ToolEditorState {
     pub editor: ratatui_code_editor::editor::Editor,
     pub file_path: Option<PathBuf>,
     pub modified: bool,
+    /// Python language service for completions, diagnostics, hover.
+    pub lang_service: crate::lsp::python::PythonLanguageService,
 }
 
 /// Which sub-pane has focus within the Threads tab.
@@ -1032,6 +1034,7 @@ impl TuiApp {
                         editor,
                         file_path,
                         modified: false,
+                        lang_service: crate::lsp::python::PythonLanguageService::new(),
                     });
                 }
                 Err(e) => {

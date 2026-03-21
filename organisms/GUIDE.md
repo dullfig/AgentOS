@@ -33,7 +33,7 @@ Omit `organism` from a buffer block to clone the current organism. The agent can
   handler: agent.handle
   agent:
     prompt: "research_base"
-  peers: [file-read, researcher]     # lists itself as peer
+  tools: [file-read, researcher]     # lists itself as peer
   buffer:
     description: "Research a sub-topic in parallel"
     parameters:
@@ -46,7 +46,7 @@ Omit `organism` from a buffer block to clone the current organism. The agent can
 
 **Read-only explorer** — agent with only read tools, no write access:
 ```yaml
-peers: [file-read, glob, grep, codebase-index]
+tools: [file-read, glob, grep, codebase-index]
 permissions:
   file-read: auto
   glob: auto
@@ -56,13 +56,13 @@ permissions:
 
 **Plan-then-execute** — planner calls coder as buffer:
 ```yaml
-peers: [file-read, glob, grep, codebase-index, coder]
+tools: [file-read, glob, grep, codebase-index, coder]
 # coder is a buffer node with write tools in its child organism
 ```
 
 **Parallel researcher** — self-referential buffer for divide-and-conquer:
 ```yaml
-peers: [file-read, researcher]
+tools: [file-read, researcher]
 buffer:
   description: "Research sub-topic"
   parameters:
@@ -90,7 +90,7 @@ These are provided by the runtime. Include them when your agent needs LLM infere
   payload_class: librarian.LibrarianRequest
   handler: librarian.handle
   description: "Context curator"
-  peers: [llm-pool]
+  tools: [llm-pool]
 
 - name: codebase-index
   payload_class: treesitter.CodeIndexRequest

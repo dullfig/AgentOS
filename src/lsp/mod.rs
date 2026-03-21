@@ -10,6 +10,7 @@
 
 pub mod command_line;
 pub mod organism;
+pub mod python;
 
 use lsp_types::{CompletionItem, Diagnostic, Position};
 

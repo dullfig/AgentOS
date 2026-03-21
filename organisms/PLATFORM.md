@@ -18,12 +18,12 @@ needed to run.
 ### Listener
 The fundamental unit. Every component is a listener — agents, tools, LLM pools,
 the librarian. A listener has a name, handles one payload type, and may call other
-listeners listed in its `peers`.
+listeners listed in its `tools`.
 
 ### Agent
 A listener with `agent: true` (or an agent config block). Agents have:
 - A **system prompt** (composed from named templates in `prompts:`)
-- **Tools** — other listeners listed in `peers` that the LLM can call
+- **Tools** — other listeners listed in `tools` that the LLM can call (or `tools: auto` for auto-discovery)
 - **Permissions** — per-tool approval tiers: `auto`, `prompt`, or `deny`
 - An **agentic loop** — the agent calls tools, reads results, and iterates
 
@@ -170,7 +170,7 @@ A good default: read tools on `auto`, write tools on `prompt`.
 - **No dynamic tool registration** — tools are fixed at startup.
 - **One agent per child organism** — buffer children have exactly one agent listener.
 - **No prompt inheritance** — child organisms must declare their own prompts.
-- **Peers must exist** — every name in `peers` must be a declared listener.
+- **Tools must exist** — every name in `tools` must be a declared listener (unless `tools: auto`).
 
 ## Template: Minimal Agent
 
@@ -200,7 +200,7 @@ listeners:
         file-read: auto
         glob: auto
         grep: auto
-    peers: [file-read, glob, grep]
+    tools: [file-read, glob, grep]
 
   - name: llm-pool
     payload_class: llm.LlmRequest
@@ -265,7 +265,7 @@ listeners:
         glob: auto
         grep: auto
         coder: prompt
-    peers: [file-read, glob, grep, coder]
+    tools: [file-read, glob, grep, coder]
 
   - name: coder
     payload_class: buffer.CoderRequest

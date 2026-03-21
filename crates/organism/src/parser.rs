@@ -4,7 +4,7 @@
 //! imperative API (register_listener, add_profile, etc.).
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -40,6 +40,10 @@ struct OrganismYaml {
     /// a path string = on-disk. Omit or `false`/`"no"` = no KV store.
     #[serde(default, rename = "kv-store")]
     kv_store: Option<KvStoreYaml>,
+    /// Organism files to import (paths relative to this file's directory).
+    /// Listeners and prompts are merged; profiles/onboarding/kv-store are root-only.
+    #[serde(default)]
+    imports: Vec<String>,
 }
 
 /// KV store YAML value — accepts bool or string.
@@ -113,9 +117,9 @@ struct ListenerYaml {
     /// Agent config. `true` for defaults, or block: `{ prompt, max_tokens, ... }`. Alias: `is_agent`.
     #[serde(default, alias = "is_agent")]
     agent: AgentFieldYaml,
-    /// Listeners this one may call (dispatch table entries).
+    /// Tools and agents this listener may call. A list of names, or `"auto"` to discover all.
     #[serde(default)]
-    peers: Vec<String>,
+    tools: ToolsSpec,
     /// LLM model override — `opus`, `sonnet`, or `haiku`. Default: pool default.
     #[serde(default)]
     model: Option<String>,
@@ -333,6 +337,22 @@ struct ProfileYaml {
     network: Vec<String>,
 }
 
+/// Tools spec: `"auto"` for auto-discovery, or a list of listener names.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum ToolsSpec {
+    /// Auto-discover all available tools and agents at pipeline build time.
+    Auto(String),
+    /// Explicit list of tool/agent names this listener may call.
+    List(Vec<String>),
+}
+
+impl Default for ToolsSpec {
+    fn default() -> Self {
+        ToolsSpec::List(vec![])
+    }
+}
+
 /// Listeners access spec: `"all"` or a list of listener names.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
@@ -418,25 +438,100 @@ pub fn generate_schema() -> serde_json::Value {
     serde_json::to_value(schema).expect("schema serialization cannot fail")
 }
 
-/// Load an organism from a YAML file.
+/// Load an organism from a YAML file, resolving imports recursively.
+///
+/// Imports are loaded depth-first. Listeners and prompts from imported files
+/// are merged into the root organism. Duplicate listeners with matching
+/// handler and payload_class are silently deduplicated; conflicts are errors.
+/// Circular imports are detected and reported with the full import chain.
+/// Diamond imports (A→B→D, A→C→D) are handled correctly — D is loaded once.
 pub fn load_organism(path: &Path) -> Result<Organism, String> {
+    let mut loading = Vec::new();
+    let mut loaded = HashSet::new();
+    load_organism_recursive(path, &mut loading, &mut loaded)
+}
+
+fn load_organism_recursive(
+    path: &Path,
+    loading: &mut Vec<PathBuf>,
+    loaded: &mut HashSet<PathBuf>,
+) -> Result<Organism, String> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("failed to resolve {}: {e}", path.display()))?;
+
+    // Diamond: already fully loaded via another import path → return empty
+    if loaded.contains(&canonical) {
+        return Ok(Organism::new("_diamond_skip"));
+    }
+
+    // Circular: currently in the loading chain → error with full cycle
+    if let Some(pos) = loading.iter().position(|p| p == &canonical) {
+        let cycle: Vec<String> = loading[pos..]
+            .iter()
+            .chain(std::iter::once(&canonical))
+            .map(|p| p.display().to_string())
+            .collect();
+        return Err(format!("circular import: {}", cycle.join(" → ")));
+    }
+
+    loading.push(canonical.clone());
+
     let contents = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    parse_organism(&contents)
+    let raw: OrganismYaml = serde_yaml::from_str(&contents)
+        .map_err(|e| format!("YAML parse error in {}: {e}", path.display()))?;
+
+    let base_dir = path.parent().unwrap_or(Path::new("."));
+    let imports = raw.imports.clone();
+
+    // Build this file's own organism
+    let mut org = build_organism(raw, Some(base_dir))?;
+
+    // Recursively load and merge imports
+    for import_path in &imports {
+        let resolved = base_dir.join(import_path);
+        let imported = load_organism_recursive(&resolved, loading, loaded)?;
+        org.merge_from(imported)
+            .map_err(|e| format!("importing '{}': {e}", import_path))?;
+    }
+
+    // Validate profiles now that all listeners (local + imported) are registered
+    org.validate_profiles()?;
+
+    loading.pop();
+    loaded.insert(canonical);
+    Ok(org)
 }
 
 /// Parse an organism from a YAML string.
+///
+/// This parses a single YAML document without resolving imports.
+/// Use [`load_organism`] to load from a file with import resolution.
 pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
     let raw: OrganismYaml =
         serde_yaml::from_str(yaml).map_err(|e| format!("YAML parse error: {e}"))?;
+    let org = build_organism(raw, None)?;
+    org.validate_profiles()?;
+    Ok(org)
+}
 
+/// Build an Organism from a parsed YAML struct.
+///
+/// `base_dir` is used to resolve `file:` prompt references. If `None`,
+/// paths are resolved relative to the current working directory.
+fn build_organism(raw: OrganismYaml, base_dir: Option<&Path>) -> Result<Organism, String> {
     let mut org = Organism::new(&raw.organism.name);
 
     // Register prompts (resolve file: prefixes)
     for (name, value) in raw.prompts {
-        if let Some(path) = value.strip_prefix("file:") {
-            let content = std::fs::read_to_string(Path::new(path.trim()))
-                .map_err(|e| format!("failed to load prompt file '{}': {e}", path.trim()))?;
+        if let Some(file_path) = value.strip_prefix("file:") {
+            let resolved = if let Some(dir) = base_dir {
+                dir.join(file_path.trim())
+            } else {
+                PathBuf::from(file_path.trim())
+            };
+            let content = std::fs::read_to_string(&resolved)
+                .map_err(|e| format!("failed to load prompt file '{}': {e}", resolved.display()))?;
             org.register_prompt(name, content);
         } else {
             org.register_prompt(name, value);
@@ -491,13 +586,63 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
             }
         };
 
+        // Resolve buffer: use explicit declaration, or auto-generate default for agents
+        let buffer = l.buffer.map(|b| {
+            let parameters = b
+                .parameters
+                .into_iter()
+                .map(|(name, p)| CallableParam {
+                    name,
+                    param_type: p.param_type,
+                    description: p.description,
+                    enum_values: p.enum_values,
+                })
+                .collect();
+            BufferConfig {
+                description: b.description,
+                parameters,
+                required: b.required,
+                requires: b.requires,
+                organism: b.organism,
+                max_concurrency: b.max_concurrency,
+                timeout_secs: b.timeout_secs,
+                context_visible: b.context_visible || b.interactive,
+                interactive: b.interactive,
+            }
+        }).or_else(|| {
+            if is_agent {
+                Some(BufferConfig {
+                    description: l.description.clone(),
+                    parameters: vec![CallableParam {
+                        name: "task".into(),
+                        param_type: "string".into(),
+                        description: Some("What you want this agent to do".into()),
+                        enum_values: None,
+                    }],
+                    required: vec!["task".into()],
+                    requires: vec![],
+                    organism: None,
+                    max_concurrency: 1,
+                    timeout_secs: 300,
+                    context_visible: false,
+                    interactive: false,
+                })
+            } else {
+                None
+            }
+        });
+
         org.register_listener(ListenerDef {
             name: l.name,
             payload_tag,
             handler: l.handler,
             description: l.description,
             is_agent,
-            peers: l.peers,
+            tools: match &l.tools {
+                ToolsSpec::Auto(_) => vec![],
+                ToolsSpec::List(list) => list.clone(),
+            },
+            tools_auto: matches!(&l.tools, ToolsSpec::Auto(s) if s == "auto"),
             model: l.model,
             ports,
             librarian: l.librarian,
@@ -536,29 +681,7 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
                     capabilities: caps,
                 }
             }),
-            buffer: l.buffer.map(|b| {
-                let parameters = b
-                    .parameters
-                    .into_iter()
-                    .map(|(name, p)| CallableParam {
-                        name,
-                        param_type: p.param_type,
-                        description: p.description,
-                        enum_values: p.enum_values,
-                    })
-                    .collect();
-                BufferConfig {
-                    description: b.description,
-                    parameters,
-                    required: b.required,
-                    requires: b.requires,
-                    organism: b.organism,
-                    max_concurrency: b.max_concurrency,
-                    timeout_secs: b.timeout_secs,
-                    context_visible: b.context_visible || b.interactive,
-                    interactive: b.interactive,
-                }
-            }),
+            buffer,
             python: l.python.map(|p| PythonToolConfig {
                 source: p.source,
             }),
@@ -589,14 +712,14 @@ pub fn parse_organism(yaml: &str) -> Result<Organism, String> {
             JournalSpec::WithDays(spec) => RetentionPolicy::RetainDays(spec.retain_days),
         };
 
-        org.add_profile(SecurityProfile {
+        org.add_profile_deferred(SecurityProfile {
             name,
             linux_user: p.linux_user,
             allowed_listeners,
             allow_all,
             journal_retention,
             network: p.network,
-        })?;
+        });
     }
 
     // Convert onboarding steps
@@ -627,7 +750,7 @@ listeners:
     handler: handlers.code.handle
     description: "Opus coding agent"
     agent: true
-    peers: [file-ops, shell]
+    tools: [file-ops, shell]
     model: opus
 
   - name: file-ops
@@ -704,7 +827,7 @@ listeners:
     payload_class: llm.LlmRequest
     handler: llm.handle
     description: "LLM inference pool"
-    peers: [coding-agent]
+    tools: [coding-agent]
     ports:
       - port: 443
         direction: outbound
@@ -1147,7 +1270,7 @@ listeners:
       max_tokens: 8192
       max_iterations: 10
       model: haiku
-    peers: [file-read]
+    tools: [file-read]
 
 profiles:
   admin:
@@ -1179,7 +1302,7 @@ listeners:
     handler: agent.handle
     description: "Coding agent"
     agent: true
-    peers: [file-read]
+    tools: [file-read]
 
 profiles:
   admin:
@@ -1212,7 +1335,7 @@ listeners:
     handler: agent.handle
     description: "Coding agent"
     is_agent: true
-    peers: [file-read]
+    tools: [file-read]
 
 profiles:
   admin:
@@ -1435,7 +1558,7 @@ listeners:
     agent:
       prompt: "research_base"
       max_agentic_iterations: 25
-    peers: [file-read, researcher]
+    tools: [file-read, researcher]
     buffer:
       description: "Research a sub-topic"
       parameters:
@@ -1597,7 +1720,7 @@ listeners:
         file-write: prompt
         file-edit: prompt
         command-exec: deny
-    peers: [file-read, file-write, file-edit, glob, grep, command-exec]
+    tools: [file-read, file-write, file-edit, glob, grep, command-exec]
   - name: file-read
     payload_class: tools.FileRead
     handler: tools.file_read
@@ -1655,7 +1778,7 @@ listeners:
     description: "Coding agent"
     agent:
       prompt: "coding_base"
-    peers: [file-read]
+    tools: [file-read]
   - name: file-read
     payload_class: tools.FileRead
     handler: tools.file_read
@@ -1746,13 +1869,35 @@ profiles:
     #[test]
     fn existing_organisms_parse() {
         let root = workspace_root();
-        for name in &["default.yaml", "coder.yaml", "coder-v2.yaml", "organism-builder.yaml", "agent-expert.yaml", "wiki-expert.yaml", "plan-expert.yaml"] {
+        for name in &["default.yaml", "infrastructure.yaml", "coder.yaml", "coder-v2.yaml", "organism-builder.yaml", "agent-expert.yaml", "wiki-expert.yaml", "plan-expert.yaml"] {
             let path = root.join("organisms").join(name);
             let content = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
             parse_organism(&content)
                 .unwrap_or_else(|e| panic!("{name} failed to parse: {e}"));
         }
+    }
+
+    #[test]
+    fn default_organism_loads_with_imports() {
+        let root = workspace_root();
+        let path = root.join("organisms").join("default.yaml");
+        let org = load_organism(&path)
+            .unwrap_or_else(|e| panic!("default.yaml failed to load: {e}"));
+        assert_eq!(org.name, "bob");
+        // Bob exists and has tools: auto
+        let bob = org.get_listener("bob").expect("bob listener should exist");
+        assert!(bob.tools_auto);
+        assert!(bob.is_agent);
+        // Infrastructure imported
+        assert!(org.get_listener("file-read").is_some());
+        assert!(org.get_listener("llm-pool").is_some());
+        assert!(org.get_listener("grep").is_some());
+        // Specialists declared locally
+        assert!(org.get_listener("coder").is_some());
+        assert!(org.get_listener("organism-builder").is_some());
+        // Bob has auto-generated buffer (since we didn't declare one explicitly)
+        assert!(bob.buffer.is_some());
     }
 
     // ── KV store config parsing ──
@@ -1811,5 +1956,479 @@ profiles:
         let yaml = "organism:\n  name: test\nkv-store: no\n";
         let org = parse_organism(yaml).unwrap();
         assert_eq!(org.kv_store, super::super::KvStoreConfig::None);
+    }
+
+    // ── Import resolution tests ──
+
+    /// Helper: write a YAML file and return its path.
+    fn write_yaml(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn load_with_imports() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        write_yaml(dir.path(), "tools.yaml", r#"
+organism:
+  name: tools
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep search"
+prompts:
+  safety: "Be safe."
+"#);
+
+        let root = write_yaml(dir.path(), "root.yaml", r#"
+organism:
+  name: my-agent
+imports:
+  - tools.yaml
+listeners:
+  - name: planner
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Planner"
+    agent: true
+    tools: [file-read, grep]
+prompts:
+  planner_base: "You are a planner."
+profiles:
+  admin:
+    linux_user: agentos
+    listeners: all
+    journal: retain_forever
+"#);
+
+        let org = load_organism(&root).unwrap();
+        assert_eq!(org.name, "my-agent");
+        // 3 listeners: planner (local) + file-read + grep (imported)
+        assert_eq!(org.listener_names().len(), 3);
+        assert!(org.get_listener("planner").is_some());
+        assert!(org.get_listener("file-read").is_some());
+        assert!(org.get_listener("grep").is_some());
+        // 2 prompts: planner_base (local) + safety (imported)
+        assert_eq!(org.prompts().len(), 2);
+        assert!(org.get_prompt("planner_base").is_some());
+        assert!(org.get_prompt("safety").is_some());
+    }
+
+    #[test]
+    fn load_circular_import_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        write_yaml(dir.path(), "a.yaml", r#"
+organism:
+  name: a
+imports:
+  - b.yaml
+"#);
+        write_yaml(dir.path(), "b.yaml", r#"
+organism:
+  name: b
+imports:
+  - a.yaml
+"#);
+
+        let err = load_organism(&dir.path().join("a.yaml")).unwrap_err();
+        assert!(err.contains("circular import"), "expected circular import error, got: {err}");
+    }
+
+    #[test]
+    fn load_diamond_import_deduplicates() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // D: shared tools
+        write_yaml(dir.path(), "d.yaml", r#"
+organism:
+  name: shared-tools
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+"#);
+
+        // B imports D
+        write_yaml(dir.path(), "b.yaml", r#"
+organism:
+  name: b
+imports:
+  - d.yaml
+listeners:
+  - name: coder
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Coder"
+    agent: true
+"#);
+
+        // C imports D
+        write_yaml(dir.path(), "c.yaml", r#"
+organism:
+  name: c
+imports:
+  - d.yaml
+listeners:
+  - name: wiki
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Wiki"
+    agent: true
+"#);
+
+        // A imports B and C (diamond via D)
+        let root = write_yaml(dir.path(), "a.yaml", r#"
+organism:
+  name: root
+imports:
+  - b.yaml
+  - c.yaml
+"#);
+
+        let org = load_organism(&root).unwrap();
+        // file-read (from D, once), coder (from B), wiki (from C)
+        assert_eq!(org.listener_names().len(), 3);
+        assert!(org.get_listener("file-read").is_some());
+        assert!(org.get_listener("coder").is_some());
+        assert!(org.get_listener("wiki").is_some());
+    }
+
+    #[test]
+    fn load_import_listener_conflict() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        write_yaml(dir.path(), "tools.yaml", r#"
+organism:
+  name: tools
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: OTHER.handler
+    description: "Different handler"
+"#);
+
+        let root = write_yaml(dir.path(), "root.yaml", r#"
+organism:
+  name: root
+imports:
+  - tools.yaml
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+"#);
+
+        let err = load_organism(&root).unwrap_err();
+        assert!(err.contains("conflict"), "expected conflict error, got: {err}");
+    }
+
+    #[test]
+    fn load_import_dedup_identical_listeners() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        write_yaml(dir.path(), "tools.yaml", r#"
+organism:
+  name: tools
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+"#);
+
+        let root = write_yaml(dir.path(), "root.yaml", r#"
+organism:
+  name: root
+imports:
+  - tools.yaml
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+"#);
+
+        let org = load_organism(&root).unwrap();
+        assert_eq!(org.listener_names().len(), 1);
+    }
+
+    #[test]
+    fn load_no_imports_works() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let root = write_yaml(dir.path(), "root.yaml", r#"
+organism:
+  name: simple
+listeners:
+  - name: echo
+    payload_class: tools.EchoRequest
+    handler: tools.echo.handle
+    description: "Echo"
+"#);
+
+        let org = load_organism(&root).unwrap();
+        assert_eq!(org.name, "simple");
+        assert_eq!(org.listener_names().len(), 1);
+    }
+
+    #[test]
+    fn load_nested_imports() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        write_yaml(dir.path(), "base-tools.yaml", r#"
+organism:
+  name: base
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+"#);
+
+        write_yaml(dir.path(), "extended-tools.yaml", r#"
+organism:
+  name: extended
+imports:
+  - base-tools.yaml
+listeners:
+  - name: grep
+    payload_class: tools.GrepRequest
+    handler: tools.grep.handle
+    description: "Grep"
+"#);
+
+        let root = write_yaml(dir.path(), "root.yaml", r#"
+organism:
+  name: root
+imports:
+  - extended-tools.yaml
+listeners:
+  - name: planner
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Planner"
+    agent: true
+"#);
+
+        let org = load_organism(&root).unwrap();
+        // planner (local) + grep (extended-tools) + file-read (base-tools, nested)
+        assert_eq!(org.listener_names().len(), 3);
+        assert!(org.get_listener("planner").is_some());
+        assert!(org.get_listener("grep").is_some());
+        assert!(org.get_listener("file-read").is_some());
+    }
+
+    #[test]
+    fn load_import_prompts_merged() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        write_yaml(dir.path(), "shared.yaml", r#"
+organism:
+  name: shared
+prompts:
+  safety: "Be safe."
+  bounded: "Stay bounded."
+"#);
+
+        let root = write_yaml(dir.path(), "root.yaml", r#"
+organism:
+  name: root
+imports:
+  - shared.yaml
+prompts:
+  my_prompt: "You are an agent."
+"#);
+
+        let org = load_organism(&root).unwrap();
+        assert_eq!(org.prompts().len(), 3);
+        assert_eq!(org.get_prompt("safety"), Some("Be safe."));
+        assert_eq!(org.get_prompt("bounded"), Some("Stay bounded."));
+        assert_eq!(org.get_prompt("my_prompt"), Some("You are an agent."));
+    }
+
+    #[test]
+    fn load_import_profiles_not_imported() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        write_yaml(dir.path(), "tools.yaml", r#"
+organism:
+  name: tools
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+profiles:
+  imported-profile:
+    linux_user: someone
+    listeners: [file-read]
+    journal: retain_forever
+"#);
+
+        let root = write_yaml(dir.path(), "root.yaml", r#"
+organism:
+  name: root
+imports:
+  - tools.yaml
+listeners:
+  - name: planner
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Planner"
+    agent: true
+profiles:
+  admin:
+    linux_user: agentos
+    listeners: [file-read, planner]
+    journal: retain_forever
+"#);
+
+        let org = load_organism(&root).unwrap();
+        // Only the root's profile, not the imported one
+        assert!(org.get_profile("admin").is_some());
+        assert!(org.get_profile("imported-profile").is_none());
+    }
+
+    // ── tools: auto parsing ──
+
+    #[test]
+    fn parse_tools_auto() {
+        let yaml = r#"
+organism:
+  name: test-auto
+listeners:
+  - name: bob
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Bob"
+    agent: true
+    tools: auto
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let bob = org.get_listener("bob").unwrap();
+        assert!(bob.tools_auto, "tools_auto should be true");
+        assert!(bob.tools.is_empty(), "tools list should be empty (resolved at build time)");
+    }
+
+    #[test]
+    fn parse_tools_explicit_list() {
+        let yaml = r#"
+organism:
+  name: test-explicit
+listeners:
+  - name: coder
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Coder"
+    agent: true
+    tools: [file-read, grep]
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let coder = org.get_listener("coder").unwrap();
+        assert!(!coder.tools_auto);
+        assert_eq!(coder.tools, vec!["file-read", "grep"]);
+    }
+
+    #[test]
+    fn parse_tools_default_empty() {
+        let yaml = r#"
+organism:
+  name: test-default
+listeners:
+  - name: tool
+    payload_class: tools.Request
+    handler: tools.handle
+    description: "A tool"
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let tool = org.get_listener("tool").unwrap();
+        assert!(!tool.tools_auto);
+        assert!(tool.tools.is_empty());
+    }
+
+    // ── Auto-generated default buffer for agents ──
+
+    #[test]
+    fn agent_without_buffer_gets_default() {
+        let yaml = r#"
+organism:
+  name: test-default-buffer
+listeners:
+  - name: my-agent
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "My agent"
+    agent: true
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let agent = org.get_listener("my-agent").unwrap();
+        assert!(agent.is_agent);
+
+        // Should have auto-generated buffer
+        let buf = agent.buffer.as_ref().expect("agent should have auto-generated buffer");
+        assert_eq!(buf.description, "My agent");
+        assert_eq!(buf.parameters.len(), 1);
+        assert_eq!(buf.parameters[0].name, "task");
+        assert_eq!(buf.parameters[0].param_type, "string");
+        assert_eq!(buf.required, vec!["task"]);
+        assert_eq!(buf.max_concurrency, 1);
+        assert_eq!(buf.timeout_secs, 300);
+    }
+
+    #[test]
+    fn agent_with_explicit_buffer_keeps_it() {
+        let yaml = r#"
+organism:
+  name: test-explicit-buffer
+listeners:
+  - name: coder
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Coder"
+    agent: true
+    buffer:
+      description: "Write code"
+      parameters:
+        plan: { type: string, description: "Implementation plan" }
+      required: [plan]
+      organism: coder.yaml
+      max_concurrency: 3
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let coder = org.get_listener("coder").unwrap();
+        let buf = coder.buffer.as_ref().unwrap();
+        // Explicit values preserved
+        assert_eq!(buf.description, "Write code");
+        assert_eq!(buf.parameters.len(), 1);
+        assert_eq!(buf.parameters[0].name, "plan");
+        assert_eq!(buf.organism.as_deref(), Some("coder.yaml"));
+        assert_eq!(buf.max_concurrency, 3);
+    }
+
+    #[test]
+    fn non_agent_without_buffer_stays_none() {
+        let yaml = r#"
+organism:
+  name: test-tool-no-buffer
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let tool = org.get_listener("file-read").unwrap();
+        assert!(!tool.is_agent);
+        assert!(tool.buffer.is_none(), "non-agent should not get auto buffer");
     }
 }

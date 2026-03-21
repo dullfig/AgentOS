@@ -87,8 +87,10 @@ impl Handler for ValidateOrganismTool {
                     if def.python.is_some() {
                         desc.push_str(" [python]");
                     }
-                    if !def.peers.is_empty() {
-                        desc.push_str(&format!(" peers: [{}]", def.peers.join(", ")));
+                    if def.tools_auto {
+                        desc.push_str(" tools: auto");
+                    } else if !def.tools.is_empty() {
+                        desc.push_str(&format!(" tools: [{}]", def.tools.join(", ")));
                     }
                     report.push(desc);
                 }
@@ -103,13 +105,13 @@ impl Handler for ValidateOrganismTool {
                 // Cross-reference checks
                 let mut warnings = Vec::new();
 
-                // Check: peers reference existing listeners
+                // Check: tools reference existing listeners
                 for (name, def) in listeners {
-                    for peer in &def.peers {
-                        if !listeners.contains_key(peer.as_str()) {
+                    for tool in &def.tools {
+                        if !listeners.contains_key(tool.as_str()) {
                             warnings.push(format!(
-                                "listener '{}' references peer '{}' which is not declared",
-                                name, peer
+                                "listener '{}' references tool '{}' which is not declared",
+                                name, tool
                             ));
                         }
                     }
@@ -234,7 +236,7 @@ listeners:
     handler: agent.handle
     description: "Test agent"
     agent: true
-    peers: [llm-pool]
+    tools: [llm-pool]
   - name: llm-pool
     payload_class: llm.LlmRequest
     handler: llm.handle
@@ -287,7 +289,7 @@ listeners:
     handler: agent.handle
     description: "Test agent"
     agent: true
-    peers: [nonexistent-tool]
+    tools: [nonexistent-tool]
   - name: llm-pool
     payload_class: llm.LlmRequest
     handler: llm.handle

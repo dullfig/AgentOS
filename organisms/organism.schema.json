@@ -353,14 +353,6 @@
           "description": "Fully qualified payload class (e.g., `agent.AgentTask`). Last component becomes payload tag.",
           "type": "string"
         },
-        "peers": {
-          "default": [],
-          "description": "Listeners this one may call (dispatch table entries).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "ports": {
           "description": "Network port declarations.",
           "items": {
@@ -386,6 +378,14 @@
             "string",
             "null"
           ]
+        },
+        "tools": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ToolsSpec"
+            }
+          ],
+          "description": "Tools and agents this listener may call. A list of names, or `\"auto\"` to discover all."
         },
         "wasm": {
           "anyOf": [
@@ -610,6 +610,22 @@
       ],
       "type": "object"
     },
+    "ToolsSpec": {
+      "anyOf": [
+        {
+          "description": "Auto-discover all available tools and agents at pipeline build time.",
+          "type": "string"
+        },
+        {
+          "description": "Explicit list of tool/agent names this listener may call.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "Tools spec: `\"auto\"` for auto-discovery, or a list of listener names."
+    },
     "WasmCapabilitiesYaml": {
       "description": "WASM sandbox capabilities — filesystem, environment, and stdio grants.",
       "properties": {
@@ -673,6 +689,14 @@
   },
   "description": "Top-level organism YAML configuration.\n\nDefines an organism: its identity, listeners (handlers), security profiles, and named prompt templates.",
   "properties": {
+    "imports": {
+      "default": [],
+      "description": "Organism files to import (paths relative to this file's directory). Listeners and prompts are merged; profiles/onboarding/kv-store are root-only.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "kv-store": {
       "anyOf": [
         {

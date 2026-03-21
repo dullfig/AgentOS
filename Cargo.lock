@@ -4051,7 +4051,7 @@ dependencies = [
 [[package]]
 name = "ratatui-code-editor"
 version = "0.0.1"
-source = "git+https://github.com/dullfig/ratatui-code-editor?branch=ratatui-0.30#873972e47664c626c51d3b2e649af96d3a1e2680"
+source = "git+https://github.com/dullfig/ratatui-code-editor?branch=ratatui-0.30#6a89abf55cb500ab9857ae7291137e7b2a40b98a"
 dependencies = [
  "anyhow",
  "arboard",

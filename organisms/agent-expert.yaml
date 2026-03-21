@@ -109,17 +109,17 @@ prompts:
 
     Read-only explorer:
     ```yaml
-    peers: [file-read, glob, grep, codebase-index]
+    tools: [file-read, glob, grep, codebase-index]
     ```
 
     Plan-then-execute (planner calls coder buffer):
     ```yaml
-    peers: [file-read, glob, grep, codebase-index, coder]
+    tools: [file-read, glob, grep, codebase-index, coder]
     ```
 
     Self-referential buffer (parallel divide-and-conquer):
     ```yaml
-    peers: [file-read, researcher]
+    tools: [file-read, researcher]
     buffer:
       description: "Research sub-topic"
       parameters:
@@ -149,7 +149,7 @@ prompts:
           prompt: "safety & task"
           max_tokens: 4096
           max_agentic_iterations: 20
-        peers: [file-read, glob, grep, list-dir]
+        tools: [file-read, glob, grep, list-dir]
 
       - name: llm-pool
         payload_class: llm.LlmRequest
@@ -194,7 +194,7 @@ listeners:
       prompt: "no_paperclipper & agent_expert_base"
       max_tokens: 4096
       max_agentic_iterations: 25
-    peers: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, test-organism, package-organism, user]
+    tools: [file-read, file-write, file-edit, glob, grep, list-dir, validate-organism, test-organism, package-organism, user]
 
   - name: llm-pool
     payload_class: llm.LlmRequest

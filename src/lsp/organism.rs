@@ -119,7 +119,7 @@ impl LanguageService for OrganismYamlService {
                 complete_keys(
                     &[
                         "name", "payload_class", "handler", "description", "agent",
-                        "peers", "model", "ports", "librarian", "wasm",
+                        "tools", "model", "ports", "librarian", "wasm",
                         "semantic_description", "buffer",
                     ],
                     trimmed,
@@ -318,7 +318,7 @@ fn validate_listeners(
         // Unknown fields
         let valid_fields = [
             "name", "payload_class", "handler", "description", "agent", "is_agent",
-            "peers", "model", "ports", "librarian", "wasm", "semantic_description",
+            "tools", "model", "ports", "librarian", "wasm", "semantic_description",
             "buffer",
         ];
         for (key, _) in map {
@@ -347,12 +347,12 @@ fn validate_listeners(
         }
 
         // Peer cross-references
-        if let Some(peers) = map.get("peers") {
+        if let Some(peers) = map.get("tools") {
             if let Some(peer_list) = peers.as_sequence() {
                 for peer in peer_list {
                     if let Some(peer_name) = peer.as_str() {
                         if !all_names.contains(&peer_name.to_string()) {
-                            let line = find_key_line(content, "peers", 4);
+                            let line = find_key_line(content, "tools", 4);
                             diags.push(make_diag(
                                 line, 0,
                                 &format!(
@@ -698,7 +698,7 @@ fn complete_value(
     if let Some(doc) = doc {
         if let Some(root) = doc.as_mapping() {
             match field {
-                "peers" | "listeners" | "network" => {
+                "tools" | "listeners" | "network" => {
                     let names = collect_listener_names(root);
                     for name in names {
                         if prefix.is_empty() || name.starts_with(prefix) {
@@ -744,7 +744,7 @@ fn hover_for_key(key: &str) -> Option<HoverInfo> {
         "description" => "Human-readable description of this listener's purpose.",
         "agent" => "Agent configuration block — `true` for defaults, or `{ prompt, max_tokens, max_iterations, model }`.",
         "is_agent" => "Alias for `agent`. Boolean or configuration block.",
-        "peers" => "List of listener names this listener may call (dispatch table entries).",
+        "tools" => "Tools/agents this listener may call. A list of names, or `auto` to discover all at build time.",
         "model" => "LLM model override — `opus`, `sonnet`, or `haiku`. Default: pool default.",
         "ports" => "Network port declarations — `{ port, direction, protocol, hosts }`.",
         "librarian" => "`true` to auto-curate context via Haiku librarian. Default: `false`.",
@@ -884,7 +884,7 @@ listeners:
     payload_class: agent.AgentTask
     handler: agent.handle
     description: "Agent"
-    peers: [nonexistent]
+    tools: [nonexistent]
 "#;
         let diags = svc().diagnostics(yaml);
         assert!(diags.iter().any(|d| d.message.contains("nonexistent")));

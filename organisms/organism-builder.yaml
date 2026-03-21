@@ -42,7 +42,7 @@ listeners:
       prompt: "no_paperclipper & organism_builder_base"
       max_tokens: 4096
       max_agentic_iterations: 25
-    peers: [file-read, file-write, file-edit, glob, grep]
+    tools: [file-read, file-write, file-edit, glob, grep]
 
   - name: llm-pool
     payload_class: llm.LlmRequest

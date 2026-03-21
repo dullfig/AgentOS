@@ -38,7 +38,7 @@ listeners:
       prompt: "no_paperclipper & coder_base"
       max_tokens: 4096
       max_agentic_iterations: 25
-    peers: [file-read, file-write, file-edit, glob, grep, list-dir, bash, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, codebase-index]
+    tools: [file-read, file-write, file-edit, glob, grep, list-dir, bash, cargo-test, cargo-build, cargo-check, cargo-clippy, git-status, git-diff, git-log, git-add, git-commit, git-push, codebase-index]
 
   - name: llm-pool
     payload_class: llm.LlmRequest

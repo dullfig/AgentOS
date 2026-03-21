@@ -163,7 +163,11 @@ pub struct ListenerDef {
     pub handler: String,
     pub description: String,
     pub is_agent: bool,
-    pub peers: Vec<String>,
+    /// Tools and agents this listener can call. Empty = none.
+    /// When `tools_auto` is true, this is populated at pipeline build time.
+    pub tools: Vec<String>,
+    /// True when YAML declared `tools: auto` — resolved at pipeline build time.
+    pub tools_auto: bool,
     pub model: Option<String>,
     pub ports: Vec<PortDef>,
     /// Whether this LLM listener auto-curates via the librarian before API calls.
@@ -305,6 +309,30 @@ impl Organism {
         Ok(())
     }
 
+    /// Add a security profile without validating listener references.
+    /// Use when listeners may be added later (e.g., via imports).
+    /// Call [`validate_profiles`] after all listeners are registered.
+    pub fn add_profile_deferred(&mut self, profile: SecurityProfile) {
+        self.profiles.insert(profile.name.clone(), profile);
+    }
+
+    /// Validate that all profiles reference only registered listeners.
+    pub fn validate_profiles(&self) -> Result<(), String> {
+        for profile in self.profiles.values() {
+            if !profile.allow_all {
+                for name in &profile.allowed_listeners {
+                    if !self.listeners.contains_key(name) {
+                        return Err(format!(
+                            "profile '{}' references unknown listener '{name}'",
+                            profile.name
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Get a security profile by name.
     pub fn get_profile(&self, name: &str) -> Option<&SecurityProfile> {
         self.profiles.get(name)
@@ -330,6 +358,50 @@ impl Organism {
     /// Get all prompts.
     pub fn prompts(&self) -> &HashMap<String, String> {
         &self.prompts
+    }
+
+    // ── Import merging ──
+
+    /// Merge a listener, deduplicating silently if identical (same name + handler + payload_tag).
+    /// Returns error if name matches but handler or payload_tag differs.
+    pub fn merge_listener(&mut self, def: ListenerDef) -> Result<(), String> {
+        if let Some(existing) = self.listeners.get(&def.name) {
+            if existing.handler == def.handler && existing.payload_tag == def.payload_tag {
+                return Ok(()); // silently deduplicate
+            }
+            return Err(format!(
+                "listener '{}' conflict: existing handler '{}' / payload '{}', \
+                 import has '{}' / '{}'",
+                def.name, existing.handler, existing.payload_tag, def.handler, def.payload_tag
+            ));
+        }
+        self.listeners.insert(def.name.clone(), def);
+        Ok(())
+    }
+
+    /// Merge a prompt, deduplicating silently if content is identical.
+    /// Returns error if name matches but content differs.
+    pub fn merge_prompt(&mut self, name: String, content: String) -> Result<(), String> {
+        if let Some(existing) = self.prompts.get(&name) {
+            if *existing == content {
+                return Ok(());
+            }
+            return Err(format!("prompt '{}' conflict: different content in import", name));
+        }
+        self.prompts.insert(name, content);
+        Ok(())
+    }
+
+    /// Merge all listeners and prompts from another organism.
+    /// Profiles, onboarding, and kv_store are NOT imported — they belong to the root organism.
+    pub fn merge_from(&mut self, other: Organism) -> Result<(), String> {
+        for (_, listener) in other.listeners {
+            self.merge_listener(listener)?;
+        }
+        for (name, content) in other.prompts {
+            self.merge_prompt(name, content)?;
+        }
+        Ok(())
     }
 
     /// Get all listeners that are agents.
@@ -424,7 +496,8 @@ mod tests {
             handler: format!("handlers.{name}.handle"),
             description: format!("{name} handler"),
             is_agent: false,
-            peers: vec![],
+            tools: vec![],
+            tools_auto: false,
             model: None,
             ports: vec![],
             librarian: false,
@@ -551,7 +624,8 @@ mod tests {
             handler: "wasm".into(),
             description: "Echo WASM tool".into(),
             is_agent: false,
-            peers: vec![],
+            tools: vec![],
+            tools_auto: false,
             model: None,
             ports: vec![],
             librarian: false,
@@ -579,7 +653,8 @@ mod tests {
             handler: "wasm".into(),
             description: "My WASM tool".into(),
             is_agent: false,
-            peers: vec![],
+            tools: vec![],
+            tools_auto: false,
             model: None,
             ports: vec![],
             librarian: false,
@@ -694,5 +769,114 @@ mod tests {
         org.apply_config(new_org);
         assert_eq!(org.get_prompt("p1"), None); // replaced wholesale
         assert_eq!(org.get_prompt("p2"), Some("world"));
+    }
+
+    // ── Import merge tests ──
+
+    #[test]
+    fn merge_listener_dedup_identical() {
+        let mut org = Organism::new("test");
+        org.register_listener(sample_listener("file-read")).unwrap();
+
+        // Same name + handler + payload_tag → silent dedup
+        let dup = sample_listener("file-read");
+        assert!(org.merge_listener(dup).is_ok());
+        assert_eq!(org.listener_names().len(), 1);
+    }
+
+    #[test]
+    fn merge_listener_conflict() {
+        let mut org = Organism::new("test");
+        org.register_listener(sample_listener("file-read")).unwrap();
+
+        // Same name but different handler → conflict
+        let mut conflict = sample_listener("file-read");
+        conflict.handler = "different.handler".into();
+        let err = org.merge_listener(conflict).unwrap_err();
+        assert!(err.contains("conflict"));
+        assert!(err.contains("file-read"));
+    }
+
+    #[test]
+    fn merge_listener_new() {
+        let mut org = Organism::new("test");
+        org.register_listener(sample_listener("a")).unwrap();
+        org.merge_listener(sample_listener("b")).unwrap();
+        assert_eq!(org.listener_names().len(), 2);
+    }
+
+    #[test]
+    fn merge_prompt_dedup_identical() {
+        let mut org = Organism::new("test");
+        org.register_prompt("safety".into(), "Be safe.".into());
+
+        // Same content → silent dedup
+        assert!(org.merge_prompt("safety".into(), "Be safe.".into()).is_ok());
+        assert_eq!(org.prompts().len(), 1);
+    }
+
+    #[test]
+    fn merge_prompt_conflict() {
+        let mut org = Organism::new("test");
+        org.register_prompt("safety".into(), "Be safe.".into());
+
+        let err = org.merge_prompt("safety".into(), "Different content.".into()).unwrap_err();
+        assert!(err.contains("conflict"));
+        assert!(err.contains("safety"));
+    }
+
+    #[test]
+    fn merge_prompt_new() {
+        let mut org = Organism::new("test");
+        org.register_prompt("a".into(), "A".into());
+        org.merge_prompt("b".into(), "B".into()).unwrap();
+        assert_eq!(org.prompts().len(), 2);
+    }
+
+    #[test]
+    fn merge_from_combines_organisms() {
+        let mut org = Organism::new("root");
+        org.register_listener(sample_listener("planner")).unwrap();
+        org.register_prompt("base".into(), "You are a planner.".into());
+
+        let mut imported = Organism::new("tools");
+        imported.register_listener(sample_listener("file-read")).unwrap();
+        imported.register_listener(sample_listener("grep")).unwrap();
+        imported.register_prompt("safety".into(), "Be safe.".into());
+
+        org.merge_from(imported).unwrap();
+        assert_eq!(org.listener_names().len(), 3);
+        assert_eq!(org.prompts().len(), 2);
+        assert!(org.get_listener("file-read").is_some());
+        assert!(org.get_listener("grep").is_some());
+        assert!(org.get_prompt("safety").is_some());
+    }
+
+    #[test]
+    fn merge_from_dedup_shared_tools() {
+        let mut org = Organism::new("root");
+        org.register_listener(sample_listener("file-read")).unwrap();
+
+        let mut imported = Organism::new("tools");
+        imported.register_listener(sample_listener("file-read")).unwrap();
+        imported.register_listener(sample_listener("grep")).unwrap();
+
+        // file-read deduplicates, grep is new
+        org.merge_from(imported).unwrap();
+        assert_eq!(org.listener_names().len(), 2);
+    }
+
+    #[test]
+    fn merge_from_conflict_propagates() {
+        let mut org = Organism::new("root");
+        org.register_listener(sample_listener("tool")).unwrap();
+
+        let mut imported = Organism::new("other");
+        let mut conflicting = sample_listener("tool");
+        conflicting.handler = "other.handler".into();
+        imported.register_listener(conflicting).unwrap();
+
+        let err = org.merge_from(imported).unwrap_err();
+        assert!(err.contains("conflict"));
     }
 }

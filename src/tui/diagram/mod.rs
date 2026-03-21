@@ -59,14 +59,14 @@ pub fn organism_to_d2(org: &Organism) -> String {
         }
     }
 
-    // Edge declarations (agents → peers)
+    // Edge declarations (agents → tools)
     for name in &names {
         if let Some(def) = org.get_listener(name) {
             if def.is_agent {
-                let mut peers: Vec<&str> = def.peers.iter().map(|s| s.as_str()).collect();
-                peers.sort();
-                for peer in peers {
-                    lines.push(format!("{name} -> {peer}"));
+                let mut tools: Vec<&str> = def.tools.iter().map(|s| s.as_str()).collect();
+                tools.sort();
+                for tool in tools {
+                    lines.push(format!("{name} -> {tool}"));
                 }
             }
         }
@@ -88,7 +88,8 @@ mod organism_tests {
             handler: format!("handlers.{name}.handle"),
             description: format!("{name} handler"),
             is_agent: false,
-            peers: vec![],
+            tools: vec![],
+            tools_auto: false,
             model: None,
             ports: vec![],
             librarian: false,
@@ -169,7 +170,7 @@ mod organism_tests {
         let mut agent = sample_listener("agent-1");
         agent.is_agent = true;
         agent.agent_config = Some(AgentConfig::default());
-        agent.peers = vec!["file-read".into(), "command-exec".into()];
+        agent.tools = vec!["file-read".into(), "command-exec".into()];
         org.register_listener(agent).unwrap();
         org.register_listener(sample_listener("file-read")).unwrap();
         org.register_listener(sample_listener("command-exec")).unwrap();
@@ -185,7 +186,7 @@ mod organism_tests {
         let mut agent = sample_listener("agent");
         agent.is_agent = true;
         agent.agent_config = Some(AgentConfig::default());
-        agent.peers = vec!["tool".into()];
+        agent.tools = vec!["tool".into()];
         org.register_listener(agent).unwrap();
         org.register_listener(sample_listener("tool")).unwrap();
 

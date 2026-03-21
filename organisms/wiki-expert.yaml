@@ -57,7 +57,7 @@ listeners:
       prompt: "no_paperclipper & wiki_base"
       max_tokens: 4096
       max_agentic_iterations: 30
-    peers: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user]
+    tools: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user]
 
   - name: llm-pool
     payload_class: llm.LlmRequest

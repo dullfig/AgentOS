@@ -534,13 +534,43 @@ pub fn handle_key(app: &mut TuiApp, key: KeyEvent) {
         if let Some(state) = app.tool_editors.get_mut(&name) {
             match key.code {
                 KeyCode::Esc => {
-                    // Could dismiss overlays later; for now just clear input
-                    app.clear_input();
+                    // Dismiss ghost text first, then clear input
+                    if state.editor.ghost_text().is_some() {
+                        state.editor.set_ghost_text(None);
+                    } else {
+                        app.clear_input();
+                    }
+                }
+                KeyCode::Tab if state.editor.ghost_text().is_some() => {
+                    // Accept ghost text completion
+                    state.editor.accept_ghost_text();
+                    state.modified = true;
                 }
                 _ => {
+                    // Clear ghost text on any edit
+                    state.editor.set_ghost_text(None);
                     let area = app.tool_editor_area;
                     let _ = state.editor.input(key, &area);
                     state.modified = true;
+
+                    // Trigger ghost text completion after typing
+                    let content = state.editor.get_content();
+                    let cursor = state.editor.get_cursor();
+                    let code = state.editor.code_ref();
+                    let (row, col) = code.point(cursor);
+                    let pos = lsp_types::Position::new(row as u32, col as u32);
+
+                    let items = state.lang_service.completions(&content, pos);
+                    if let Some(first) = items.first() {
+                        // Ghost text = the remaining suffix after the typed prefix
+                        let prefix = crate::lsp::python::PythonLanguageService::word_at_cursor_pub(&content, pos);
+                        if let Some(prefix) = prefix {
+                            let suffix = &first.label[prefix.len()..];
+                            if !suffix.is_empty() {
+                                state.editor.set_ghost_text(Some(suffix.to_string()));
+                            }
+                        }
+                    }
                 }
             }
             return;

@@ -366,7 +366,7 @@ impl AgentPipelineBuilder {
             &def.payload_tag,
             tool,
             def.is_agent,
-            def.peers.clone(),
+            def.tools.clone(),
             &def.description,
             Some(schema),
         );
@@ -387,7 +387,7 @@ impl AgentPipelineBuilder {
             &def.payload_tag,
             handler,
             def.is_agent,
-            def.peers.clone(),
+            def.tools.clone(),
             &def.description,
             None, // Schema registration deferred
         );
@@ -895,19 +895,55 @@ impl AgentPipelineBuilder {
         let mut router_opt = self.semantic_router.take();
 
         for def in &agent_defs {
+            // Resolve tools: auto — collect all available tool names
+            let resolved_tools: Vec<String> = if def.tools_auto {
+                let mut names: Vec<String> = Vec::new();
+                // All WIT-registered tools
+                for name in self.tool_interfaces.keys() {
+                    if name != &def.name {
+                        names.push(name.clone());
+                    }
+                }
+                // All hand-written tool definitions
+                for name in agent_tools::all_peer_names() {
+                    let name_s = name.to_string();
+                    if name_s != def.name && !names.contains(&name_s) {
+                        names.push(name_s);
+                    }
+                }
+                // All WASM tools
+                if let Some(ref reg) = self.wasm_registry {
+                    for name in reg.tool_names() {
+                        let name_s = name.to_string();
+                        if name_s != def.name && !names.contains(&name_s) {
+                            names.push(name_s);
+                        }
+                    }
+                }
+                // All buffer nodes
+                for buf_def in &self.buffer_tool_definitions {
+                    if buf_def.name != def.name && !names.contains(&buf_def.name) {
+                        names.push(buf_def.name.clone());
+                    }
+                }
+                names
+            } else {
+                def.tools.clone()
+            };
+
             // Build tool definitions from WIT interfaces (registered via register_tool),
             // with hand-written fallback for tools without WIT, then WASM registry fallback
             let mut tool_definitions = Vec::new();
-            for peer_name in &def.peers {
-                if let Some(iface) = self.tool_interfaces.get(peer_name.as_str()) {
+            for tool_name in &resolved_tools {
+                if let Some(iface) = self.tool_interfaces.get(tool_name.as_str()) {
                     // WIT-derived definition — single source of truth
                     tool_definitions.push(iface.to_tool_definition());
-                } else if let Some(hand_def) = agent_tools::definition_for_peer(peer_name) {
+                } else if let Some(hand_def) = agent_tools::definition_for_peer(tool_name) {
                     // Fallback to hand-written definition (backward compat)
                     tool_definitions.push(hand_def);
                 } else if let Some(ref reg) = self.wasm_registry {
                     // WASM registry fallback
-                    if let Some(wasm_def) = reg.definition_for(peer_name) {
+                    if let Some(wasm_def) = reg.definition_for(tool_name) {
                         tool_definitions.push(wasm_def.clone());
                     }
                 }
@@ -915,9 +951,12 @@ impl AgentPipelineBuilder {
 
             // Append buffer node tool definitions (callable organisms appear as tools)
             for buf_def in &self.buffer_tool_definitions {
-                // Only add if the agent lists this buffer node as a peer
-                if def.peers.contains(&buf_def.name) {
-                    tool_definitions.push(buf_def.clone());
+                // Only add if agent has auto-discovery OR explicitly lists this buffer
+                if def.tools_auto || resolved_tools.contains(&buf_def.name) {
+                    // Avoid duplicates (auto already added buffer names above)
+                    if !tool_definitions.iter().any(|d| d.name == buf_def.name) {
+                        tool_definitions.push(buf_def.clone());
+                    }
                 }
             }
 
@@ -970,11 +1009,12 @@ impl AgentPipelineBuilder {
             self = self.register(&def.name, handler)?;
 
             // Register ToolResponse route so tool replies route back
+            // Use resolved_tools so auto-discovered tools route correctly
             self.registry.routing.register(
                 &def.name,
                 "ToolResponse",
                 def.is_agent,
-                def.peers.clone(),
+                resolved_tools.clone(),
                 &def.description,
             );
         }
@@ -1124,7 +1164,7 @@ listeners:
     payload_class: handlers.echo.Greeting
     handler: handlers.echo.handle
     description: "Echo handler"
-    peers: []
+    tools: []
 
   - name: sink
     payload_class: handlers.sink.SinkRequest
@@ -1338,7 +1378,7 @@ listeners:
     payload_class: llm.LlmRequest
     handler: llm.handle
     description: "LLM inference pool"
-    peers: []
+    tools: []
     ports:
       - port: 443
         direction: outbound
@@ -1690,7 +1730,7 @@ listeners:
     payload_class: librarian.LibrarianRequest
     handler: librarian.handle
     description: "Context curator"
-    peers: [llm-pool]
+    tools: [llm-pool]
 
   - name: codebase-index
     payload_class: treesitter.CodeIndexRequest
@@ -1994,7 +2034,7 @@ listeners:
     payload_class: librarian.LibrarianRequest
     handler: librarian.handle
     description: "Context curator"
-    peers: [llm-pool]
+    tools: [llm-pool]
 
   - name: codebase-index
     payload_class: treesitter.CodeIndexRequest
@@ -2037,7 +2077,7 @@ listeners:
     description: "Opus coding agent"
     is_agent: true
     librarian: true
-    peers: [file-read, file-write, file-edit, glob, grep, bash, codebase-index]
+    tools: [file-read, file-write, file-edit, glob, grep, bash, codebase-index]
 
 profiles:
   coding:
@@ -2326,7 +2366,7 @@ profiles:
 
         // Verify that the coding-agent's peers produce tool definitions
         let def = org.get_listener("coding-agent").unwrap();
-        let peer_names: Vec<&str> = def.peers.iter().map(|s| s.as_str()).collect();
+        let peer_names: Vec<&str> = def.tools.iter().map(|s| s.as_str()).collect();
         let tool_defs = crate::agent::tools::build_tool_definitions(&peer_names);
 
         // Should have definitions for all six tools + codebase-index
@@ -2917,7 +2957,7 @@ listeners:
     handler: agent.handle
     description: "Opus coding agent"
     agent: true
-    peers: [file-read, file-write, file-edit, glob, grep, bash]
+    tools: [file-read, file-write, file-edit, glob, grep, bash]
 
 profiles:
   coding:
@@ -3045,7 +3085,7 @@ listeners:
     agent:
       prompt: "safety & coding_base"
       max_tokens: 4096
-    peers: [file-read, file-write, file-edit, glob, grep, bash]
+    tools: [file-read, file-write, file-edit, glob, grep, bash]
 
   - name: diagnostics
     payload_class: agent.DiagnosticsTask
@@ -3054,7 +3094,7 @@ listeners:
     agent:
       prompt: "safety & diag_base"
       model: haiku
-    peers: [file-read, glob, grep]
+    tools: [file-read, glob, grep]
 
 profiles:
   coding:
@@ -3136,7 +3176,7 @@ listeners:
     description: "Agent"
     agent:
       prompt: "nonexistent_label"
-    peers: []
+    tools: []
 
   - name: llm-pool
     payload_class: llm.LlmRequest

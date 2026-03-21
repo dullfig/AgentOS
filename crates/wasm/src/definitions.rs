@@ -52,6 +52,11 @@ impl WasmToolRegistry {
         self.tools.get(name)
     }
 
+    /// Return all registered tool names (for `tools: auto` resolution).
+    pub fn tool_names(&self) -> Vec<&str> {
+        self.tools.keys().map(|s| s.as_str()).collect()
+    }
+
     /// Get the XML request tag for a named tool.
     pub fn request_tag_for(&self, name: &str) -> Option<&str> {
         self.tag_map.get(name).map(|s| s.as_str())

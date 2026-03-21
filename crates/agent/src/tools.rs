@@ -218,6 +218,11 @@ pub fn definition_for_peer(name: &str) -> Option<ToolDefinition> {
     }
 }
 
+/// Return all known hand-written tool names (for `tools: auto` resolution).
+pub fn all_peer_names() -> &'static [&'static str] {
+    &["file-read", "file-write", "file-edit", "glob", "grep", "bash", "codebase-index"]
+}
+
 /// Build tool definitions with WASM registry fallback.
 ///
 /// Built-in tools checked first, then WASM registry fallback for unknown peers.

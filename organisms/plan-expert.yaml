@@ -83,7 +83,7 @@ listeners:
       prompt: "no_paperclipper & plan_base"
       max_tokens: 4096
       max_agentic_iterations: 35
-    peers: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user, coder]
+    tools: [file-read, file-write, file-edit, glob, grep, list-dir, codebase-index, user, coder]
 
   - name: coder
     payload_class: buffer.CoderRequest
