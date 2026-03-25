@@ -110,6 +110,14 @@ fn dispatch_menu_action(app: &mut TuiApp, action: MenuAction) {
             let start = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             app.file_picker = Some(FilePickerState::new(start, FilePickerPurpose::LoadFile));
         }
+        MenuAction::OpenFile => {
+            use super::app::{FilePickerPurpose, FilePickerState};
+            // Start from VDrive root if mounted, otherwise current dir
+            let start = app.drive_slot.try_read().ok()
+                .and_then(|guard| guard.as_ref().map(|d| d.root().to_path_buf()))
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+            app.file_picker = Some(FilePickerState::new(start, FilePickerPurpose::OpenFile));
+        }
         MenuAction::SelectModel { provider: _, alias } => {
             app.current_model_alias = Some(alias.clone());
             app.pending_command = Some(format!("/model {alias}"));
@@ -233,6 +241,43 @@ fn handle_file_picker_key(app: &mut TuiApp, key: KeyEvent) {
                                 let display = path.display().to_string();
                                 push_feedback(app, &format!("Loading: {display}"));
                                 app.pending_command = Some(format!("/load {}", display));
+                            }
+                        }
+                    }
+                    FilePickerPurpose::OpenFile => {
+                        if is_dir {
+                            let picker = app.file_picker.as_mut().unwrap();
+                            picker.current_dir = path;
+                            picker.refresh_entries();
+                        } else {
+                            let name = entry.name.clone();
+                            app.file_picker = None;
+
+                            if name.ends_with(".py") {
+                                match std::fs::read_to_string(&path) {
+                                    Ok(content) => {
+                                        app.open_tool_editor(&name, &content, Some(path));
+                                    }
+                                    Err(e) => {
+                                        push_feedback(app, &format!("Error reading {name}: {e}"));
+                                    }
+                                }
+                            } else if name.ends_with(".yaml") || name.ends_with(".yml") {
+                                match std::fs::read_to_string(&path) {
+                                    Ok(content) => {
+                                        app.load_yaml_editor(&content);
+                                        if !app.open_tabs.contains(&super::app::TabId::Yaml) {
+                                            app.open_tabs.push(super::app::TabId::Yaml);
+                                        }
+                                        app.active_tab = super::app::TabId::Yaml;
+                                        push_feedback(app, &format!("Opened: {name}"));
+                                    }
+                                    Err(e) => {
+                                        push_feedback(app, &format!("Error reading {name}: {e}"));
+                                    }
+                                }
+                            } else {
+                                push_feedback(app, &format!("Unsupported file type: {name}"));
                             }
                         }
                     }

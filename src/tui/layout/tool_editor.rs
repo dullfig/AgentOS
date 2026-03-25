@@ -15,17 +15,26 @@ pub(super) fn draw_tool_editor(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     };
 
     if let Some(state) = app.tool_editors.get(&tool_name) {
-        app.tool_editor_area = area;
-        f.render_widget(&state.editor, area);
+        // Draw border with filename as title
+        let title = format!(" {} ", tool_name);
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::Cyan));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        app.tool_editor_area = inner;
+        f.render_widget(&state.editor, inner);
         // Position cursor
-        if let Some((x, y)) = state.editor.get_visible_cursor(&area) {
+        if let Some((x, y)) = state.editor.get_visible_cursor(&inner) {
             f.set_cursor_position(Position::new(x, y));
         }
 
         // Modified indicator in bottom-left
         if state.modified {
             let indicator_area = Rect::new(
-                area.x + 1,
+                inner.x,
                 area.y + area.height.saturating_sub(1),
                 12,
                 1,

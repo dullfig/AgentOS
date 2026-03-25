@@ -143,6 +143,7 @@ pub struct FilePickerState {
 pub enum FilePickerPurpose {
     LoadFile,
     MountDrive,
+    OpenFile,
 }
 
 impl FilePickerState {
@@ -262,6 +263,8 @@ pub enum MenuAction {
     VDriveCreate,
     VDriveInfo,
     LoadFile,
+    /// Open a file from the mounted workspace (VDrive).
+    OpenFile,
 }
 
 /// Agent processing status.
@@ -631,6 +634,7 @@ pub fn build_menu_items(
         MenuDef::item("New Agent", MenuAction::NewAgent),
         MenuDef::item("New Tool", MenuAction::NewTool),
         MenuDef::item("Load...    ", MenuAction::LoadFile),
+        MenuDef::item("Open...    ", MenuAction::OpenFile),
         MenuDef::group(
             "Virtual Drives",
             vec![

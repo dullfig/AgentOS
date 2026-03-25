@@ -177,7 +177,8 @@ pub(super) fn draw_file_picker(f: &mut Frame, app: &TuiApp, content_area: Rect) 
     // Help line at bottom
     let help_area = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
     let help_text = match picker.purpose {
-        super::super::app::FilePickerPurpose::LoadFile =>
+        super::super::app::FilePickerPurpose::LoadFile |
+        super::super::app::FilePickerPurpose::OpenFile =>
             " Enter:open  \u{2190}\u{2192}:navigate  Backspace:up  Esc:cancel",
         super::super::app::FilePickerPurpose::MountDrive =>
             " Enter:select folder  \u{2192}:open  Backspace:up  Esc:cancel",
