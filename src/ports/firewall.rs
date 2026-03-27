@@ -154,6 +154,7 @@ mod tests {
             agent_config: None,
             buffer: None,
             python: None,
+            trigger: None,
         })
         .unwrap();
         org.register_listener(ListenerDef {
@@ -172,6 +173,7 @@ mod tests {
             agent_config: None,
             buffer: None,
             python: None,
+            trigger: None,
         })
         .unwrap();
 

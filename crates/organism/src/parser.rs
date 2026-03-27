@@ -12,7 +12,7 @@ use serde::Deserialize;
 use super::profile::{RetentionPolicy, SecurityProfile};
 use super::{
     AgentConfig, BufferConfig, CallableParam, ListenerDef, Organism, PortDef, PythonToolConfig,
-    WasmToolConfig,
+    TriggerConfig, TriggerSource, WasmToolConfig,
 };
 use agentos_events::{EnvGrant, FsGrant, KvGrant, PermissionMap, PermissionTier, WasmCapabilities};
 
@@ -141,6 +141,9 @@ struct ListenerYaml {
     /// Python tool configuration (handler == "python").
     #[serde(default)]
     python: Option<PythonYaml>,
+    /// Trigger configuration (handler == "trigger").
+    #[serde(default)]
+    trigger: Option<TriggerYaml>,
 }
 
 /// Agent field: `true` for defaults, or a configuration block. Untagged for YAML flexibility.
@@ -306,6 +309,40 @@ fn default_timeout_secs() -> u64 {
 struct PythonYaml {
     /// Path to the .py source file (relative to organism base dir).
     source: String,
+}
+
+/// Trigger configuration — makes a listener fire messages rather than handle them.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TriggerYaml {
+    /// Trigger type: `file_watch`, `timer`, `cron`, `event`, `webhook`, `custom`.
+    #[serde(rename = "type")]
+    trigger_type: String,
+    /// Target listener to send generated messages to.
+    target: String,
+    /// File glob pattern (for `file_watch`).
+    #[serde(default)]
+    pattern: Option<String>,
+    /// Debounce in milliseconds (for `file_watch`). Default: 500.
+    #[serde(default)]
+    debounce_ms: Option<u64>,
+    /// Interval in seconds (for `timer`).
+    #[serde(default)]
+    interval_secs: Option<u64>,
+    /// Cron expression (for `cron`).
+    #[serde(default)]
+    cron: Option<String>,
+    /// Event name (for `event`).
+    #[serde(default)]
+    event: Option<String>,
+    /// Source listener filter (for `event`).
+    #[serde(default)]
+    from: Option<String>,
+    /// URL path (for `webhook`).
+    #[serde(default)]
+    path: Option<String>,
+    /// Poll interval in seconds (for `custom`).
+    #[serde(default)]
+    poll_secs: Option<u64>,
 }
 
 /// Network port declaration for a listener.
@@ -684,6 +721,34 @@ fn build_organism(raw: OrganismYaml, base_dir: Option<&Path>) -> Result<Organism
             buffer,
             python: l.python.map(|p| PythonToolConfig {
                 source: p.source,
+            }),
+            trigger: l.trigger.map(|t| {
+                let source = match t.trigger_type.as_str() {
+                    "file_watch" => TriggerSource::FileWatch {
+                        pattern: t.pattern.unwrap_or_default(),
+                        debounce_ms: t.debounce_ms.unwrap_or(500),
+                    },
+                    "timer" => TriggerSource::Timer {
+                        interval_secs: t.interval_secs.unwrap_or(60),
+                    },
+                    "cron" => TriggerSource::Cron {
+                        expression: t.cron.unwrap_or_default(),
+                    },
+                    "event" => TriggerSource::Event {
+                        event_name: t.event.unwrap_or_default(),
+                        from: t.from,
+                    },
+                    "webhook" => TriggerSource::Webhook {
+                        path: t.path.unwrap_or_else(|| "/".to_string()),
+                    },
+                    "custom" | _ => TriggerSource::Custom {
+                        poll_secs: t.poll_secs.unwrap_or(60),
+                    },
+                };
+                TriggerConfig {
+                    source,
+                    target: t.target,
+                }
             }),
         })?;
     }
@@ -2430,5 +2495,161 @@ listeners:
         let tool = org.get_listener("file-read").unwrap();
         assert!(!tool.is_agent);
         assert!(tool.buffer.is_none(), "non-agent should not get auto buffer");
+    }
+
+    // ── Trigger parsing ──
+
+    #[test]
+    fn parse_file_watch_trigger() {
+        let yaml = r#"
+organism:
+  name: test-trigger
+listeners:
+  - name: yaml-watcher
+    payload_class: trigger.FileWatchEvent
+    handler: trigger
+    description: "Watch YAML files"
+    trigger:
+      type: file_watch
+      pattern: "organisms/*.yaml"
+      debounce_ms: 300
+      target: watchdog-agent
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let watcher = org.get_listener("yaml-watcher").unwrap();
+        let trigger = watcher.trigger.as_ref().expect("should have trigger config");
+        assert_eq!(trigger.target, "watchdog-agent");
+        match &trigger.source {
+            super::super::TriggerSource::FileWatch { pattern, debounce_ms } => {
+                assert_eq!(pattern, "organisms/*.yaml");
+                assert_eq!(*debounce_ms, 300);
+            }
+            other => panic!("expected FileWatch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_timer_trigger() {
+        let yaml = r#"
+organism:
+  name: test-timer
+listeners:
+  - name: health-check
+    payload_class: trigger.TimerEvent
+    handler: trigger
+    description: "Periodic health check"
+    trigger:
+      type: timer
+      interval_secs: 300
+      target: monitor-agent
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let trigger = org.get_listener("health-check").unwrap()
+            .trigger.as_ref().unwrap();
+        assert_eq!(trigger.target, "monitor-agent");
+        match &trigger.source {
+            super::super::TriggerSource::Timer { interval_secs } => {
+                assert_eq!(*interval_secs, 300);
+            }
+            other => panic!("expected Timer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_cron_trigger() {
+        let yaml = r#"
+organism:
+  name: test-cron
+listeners:
+  - name: nightly-cleanup
+    payload_class: trigger.CronEvent
+    handler: trigger
+    description: "Nightly cleanup"
+    trigger:
+      type: cron
+      cron: "0 0 * * *"
+      target: cleanup-agent
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let trigger = org.get_listener("nightly-cleanup").unwrap()
+            .trigger.as_ref().unwrap();
+        match &trigger.source {
+            super::super::TriggerSource::Cron { expression } => {
+                assert_eq!(expression, "0 0 * * *");
+            }
+            other => panic!("expected Cron, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_event_trigger() {
+        let yaml = r#"
+organism:
+  name: test-event
+listeners:
+  - name: on-complete
+    payload_class: trigger.EventTrigger
+    handler: trigger
+    description: "Run after agent completes"
+    trigger:
+      type: event
+      event: AgentComplete
+      from: coder
+      target: summarizer
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let trigger = org.get_listener("on-complete").unwrap()
+            .trigger.as_ref().unwrap();
+        assert_eq!(trigger.target, "summarizer");
+        match &trigger.source {
+            super::super::TriggerSource::Event { event_name, from } => {
+                assert_eq!(event_name, "AgentComplete");
+                assert_eq!(from.as_deref(), Some("coder"));
+            }
+            other => panic!("expected Event, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_webhook_trigger() {
+        let yaml = r#"
+organism:
+  name: test-webhook
+listeners:
+  - name: notify-endpoint
+    payload_class: trigger.WebhookEvent
+    handler: trigger
+    description: "External notification"
+    trigger:
+      type: webhook
+      path: /api/notify
+      target: dispatcher
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let trigger = org.get_listener("notify-endpoint").unwrap()
+            .trigger.as_ref().unwrap();
+        assert_eq!(trigger.target, "dispatcher");
+        match &trigger.source {
+            super::super::TriggerSource::Webhook { path } => {
+                assert_eq!(path, "/api/notify");
+            }
+            other => panic!("expected Webhook, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_no_trigger() {
+        let yaml = r#"
+organism:
+  name: test-no-trigger
+listeners:
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let tool = org.get_listener("file-read").unwrap();
+        assert!(tool.trigger.is_none());
     }
 }

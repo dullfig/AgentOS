@@ -146,6 +146,56 @@ impl BufferConfig {
     }
 }
 
+// ── Trigger configuration ──
+
+/// Trigger source type — what condition causes the trigger to fire.
+#[derive(Debug, Clone)]
+pub enum TriggerSource {
+    /// Fire when files matching a glob pattern change.
+    FileWatch {
+        pattern: String,
+        /// Debounce period in milliseconds (default 500).
+        debounce_ms: u64,
+    },
+    /// Fire on a fixed interval.
+    Timer {
+        /// Interval in seconds.
+        interval_secs: u64,
+    },
+    /// Fire on a cron schedule.
+    Cron {
+        /// Cron expression (e.g., "0 */5 * * *").
+        expression: String,
+    },
+    /// Fire when a specific pipeline event occurs.
+    Event {
+        /// Event name to watch for (e.g., "AgentComplete", "ErrorEvent").
+        event_name: String,
+        /// Optional: only fire if the event is from this source listener.
+        from: Option<String>,
+    },
+    /// Fire on incoming HTTP request (requires web server).
+    Webhook {
+        /// URL path (e.g., "/api/notify").
+        path: String,
+    },
+    /// User-defined trigger (Python or WASM). The runtime calls check()
+    /// on the configured schedule; if it returns a value, the trigger fires.
+    Custom {
+        /// Polling interval in seconds.
+        poll_secs: u64,
+    },
+}
+
+/// Trigger configuration on a listener — makes it fire rather than handle.
+#[derive(Debug, Clone)]
+pub struct TriggerConfig {
+    /// What condition causes this trigger to fire.
+    pub source: TriggerSource,
+    /// Which listener receives the generated message.
+    pub target: String,
+}
+
 /// Port declaration on a listener (from organism config).
 #[derive(Debug, Clone)]
 pub struct PortDef {
@@ -183,6 +233,9 @@ pub struct ListenerDef {
     pub agent_config: Option<AgentConfig>,
     /// Buffer node config (ephemeral child pipeline + callable tool interface).
     pub buffer: Option<BufferConfig>,
+    /// Trigger config (present when handler == "trigger"). Makes this listener
+    /// fire messages rather than handle them.
+    pub trigger: Option<TriggerConfig>,
 }
 
 /// Result of a hot-reload diff.
@@ -506,6 +559,7 @@ mod tests {
             agent_config: None,
             buffer: None,
             python: None,
+            trigger: None,
         }
     }
 
@@ -637,6 +691,7 @@ mod tests {
             agent_config: None,
             buffer: None,
             python: None,
+            trigger: None,
         })
         .unwrap();
 
@@ -669,6 +724,7 @@ mod tests {
             agent_config: None,
             buffer: None,
             python: None,
+            trigger: None,
         })
         .unwrap();
 

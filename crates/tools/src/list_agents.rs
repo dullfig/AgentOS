@@ -120,6 +120,7 @@ mod tests {
             librarian: false,
             wasm: None,
             python: None,
+            trigger: None,
             semantic_description: None,
             agent_config: None,
             buffer: None,
@@ -137,6 +138,7 @@ mod tests {
             librarian: false,
             wasm: None,
             python: None,
+            trigger: None,
             semantic_description: None,
             agent_config: None,
             buffer: Some(BufferConfig {

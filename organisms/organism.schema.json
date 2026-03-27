@@ -387,6 +387,17 @@
           ],
           "description": "Tools and agents this listener may call. A list of names, or `\"auto\"` to discover all."
         },
+        "trigger": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TriggerYaml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Trigger configuration (handler == \"trigger\")."
+        },
         "wasm": {
           "anyOf": [
             {
@@ -625,6 +636,94 @@
         }
       ],
       "description": "Tools spec: `\"auto\"` for auto-discovery, or a list of listener names."
+    },
+    "TriggerYaml": {
+      "description": "Trigger configuration — makes a listener fire messages rather than handle them.",
+      "properties": {
+        "cron": {
+          "default": null,
+          "description": "Cron expression (for `cron`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "debounce_ms": {
+          "default": null,
+          "description": "Debounce in milliseconds (for `file_watch`). Default: 500.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "event": {
+          "default": null,
+          "description": "Event name (for `event`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "default": null,
+          "description": "Source listener filter (for `event`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "default": null,
+          "description": "Interval in seconds (for `timer`).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "default": null,
+          "description": "URL path (for `webhook`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pattern": {
+          "default": null,
+          "description": "File glob pattern (for `file_watch`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "poll_secs": {
+          "default": null,
+          "description": "Poll interval in seconds (for `custom`).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "Target listener to send generated messages to.",
+          "type": "string"
+        },
+        "type": {
+          "description": "Trigger type: `file_watch`, `timer`, `cron`, `event`, `webhook`, `custom`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "type"
+      ],
+      "type": "object"
     },
     "WasmCapabilitiesYaml": {
       "description": "WASM sandbox capabilities — filesystem, environment, and stdio grants.",

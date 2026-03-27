@@ -98,6 +98,7 @@ mod organism_tests {
             agent_config: None,
             buffer: None,
             python: None,
+            trigger: None,
         }
     }
 
