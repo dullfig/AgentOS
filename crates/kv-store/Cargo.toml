@@ -1,0 +1,20 @@
+[package]
+name = "agentos-kv-store"
+version = "0.1.0"
+edition = "2021"
+description = "Per-user KV cache persistence for multi-tenant inference. Bridges pipeline dispatch to engram's memory engine."
+
+[dependencies]
+# Embedded key-value store — append-optimized, concurrent, pure Rust
+sled = "0.34"
+
+# Serialization for cache entries
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
