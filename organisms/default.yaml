@@ -70,6 +70,23 @@ listeners:
       max_concurrency: 1
       timeout_secs: 600
 
+  # Cloud GPU specialist — provisions and manages inference endpoints
+  - name: cloud-expert
+    payload_class: buffer.CloudRequest
+    handler: buffer
+    description: "Cloud GPU specialist — provisions and manages inference endpoints"
+    buffer:
+      description: "Search, provision, monitor, and tear down cloud GPU instances for inference"
+      parameters:
+        task:
+          type: string
+          description: "What to do — e.g., 'Find cheapest A100 and deploy cortex with Qwen-30B'"
+      required: [task]
+      requires: [cloud-search, cloud-provision, cloud-status, cloud-teardown, cloud-register]
+      organism: organisms/cloud-expert.yaml
+      max_concurrency: 1
+      timeout_secs: 300
+
   # Organism builder — creates/modifies organism YAML configs
   - name: organism-builder
     payload_class: buffer.OrganismBuilderRequest

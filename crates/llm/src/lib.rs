@@ -1,32 +1,83 @@
-//! LLM Pool — model routing and connection management for Anthropic API.
+//! LLM Pool — model routing and connection management.
 //!
-//! Wraps AnthropicClient with model aliasing and default model selection.
+//! Supports both Anthropic Messages API and OpenAI-compatible endpoints.
 //! The `llm-pool` listener in the pipeline uses this for inference.
+//! Provider selection is based on config — cortex, vLLM, llama.cpp etc.
+//! all work through the OpenAI-compatible client.
 
 pub mod client;
+pub mod openai;
 pub mod types;
 
 pub use client::{AnthropicClient, LlmError, ModelInfo};
+pub use openai::OpenAiClient;
 use types::{resolve_model, Message, MessagesRequest, MessagesResponse};
+
+/// Which wire protocol a provider speaks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireProtocol {
+    /// Anthropic Messages API (/v1/messages)
+    Anthropic,
+    /// OpenAI-compatible (/v1/chat/completions) — cortex, vLLM, llama.cpp, etc.
+    OpenAi,
+}
+
+/// Active LLM client — either Anthropic or OpenAI wire format.
+#[derive(Debug)]
+enum LlmClient {
+    Anthropic(AnthropicClient),
+    OpenAi(OpenAiClient),
+}
 
 /// LLM connection pool with model routing.
 #[derive(Debug)]
 pub struct LlmPool {
-    client: AnthropicClient,
+    client: LlmClient,
     default_model: String,
 }
 
+/// Known OpenAI-compatible provider names.
+/// When a provider name matches one of these, we use the OpenAI wire format.
+const OPENAI_PROVIDERS: &[&str] = &["openai", "cortex", "vllm", "ollama", "local"];
+
+/// Detect wire protocol from provider name.
+fn detect_protocol(provider: &str) -> WireProtocol {
+    if OPENAI_PROVIDERS.iter().any(|p| provider.to_lowercase().contains(p)) {
+        WireProtocol::OpenAi
+    } else {
+        WireProtocol::Anthropic
+    }
+}
+
+/// Build the appropriate client for a resolved model.
+fn build_client(provider: &str, api_key: String, base_url: Option<String>) -> LlmClient {
+    match detect_protocol(provider) {
+        WireProtocol::OpenAi => {
+            let url = base_url.unwrap_or_else(|| "http://localhost:8080/v1".into());
+            LlmClient::OpenAi(OpenAiClient::new(api_key, url))
+        }
+        WireProtocol::Anthropic => {
+            if let Some(url) = base_url {
+                LlmClient::Anthropic(AnthropicClient::with_base_url(api_key, url))
+            } else {
+                LlmClient::Anthropic(AnthropicClient::new(api_key))
+            }
+        }
+    }
+}
+
 impl LlmPool {
-    /// Create a pool with an explicit API key and default model.
+    /// Create a pool with an explicit API key and default model (Anthropic).
     pub fn new(api_key: String, default_model: &str) -> Self {
         Self {
-            client: AnthropicClient::new(api_key),
+            client: LlmClient::Anthropic(AnthropicClient::new(api_key)),
             default_model: resolve_model(default_model).to_string(),
         }
     }
 
     /// Create a pool from a ModelsConfig.
     /// Resolves the default model and gets API key + base_url from the provider.
+    /// Automatically selects wire protocol based on provider name.
     pub fn from_config(config: &agentos_config::ModelsConfig) -> Result<Self, LlmError> {
         let default_alias = config
             .default
@@ -44,11 +95,7 @@ impl LlmPool {
             ))
         })?;
 
-        let client = if let Some(base_url) = resolved.base_url {
-            AnthropicClient::with_base_url(api_key, base_url)
-        } else {
-            AnthropicClient::new(api_key)
-        };
+        let client = build_client(&resolved.provider, api_key, resolved.base_url);
 
         Ok(Self {
             client,
@@ -64,20 +111,31 @@ impl LlmPool {
         Ok(Self::new(api_key, default_model))
     }
 
-    /// Create a pool with a custom base URL (for testing).
+    /// Create a pool with a custom base URL (Anthropic wire format, for testing).
     pub fn with_base_url(api_key: String, default_model: &str, base_url: String) -> Self {
         Self {
-            client: AnthropicClient::with_base_url(api_key, base_url),
+            client: LlmClient::Anthropic(AnthropicClient::with_base_url(api_key, base_url)),
             default_model: resolve_model(default_model).to_string(),
         }
     }
 
+    /// Create a pool targeting an OpenAI-compatible endpoint (cortex, vLLM, etc.).
+    pub fn openai_compatible(api_key: String, default_model: &str, base_url: String) -> Self {
+        Self {
+            client: LlmClient::OpenAi(OpenAiClient::new(api_key, base_url)),
+            default_model: default_model.to_string(),
+        }
+    }
+
+    /// Which wire protocol this pool is currently using.
+    pub fn wire_protocol(&self) -> WireProtocol {
+        match &self.client {
+            LlmClient::Anthropic(_) => WireProtocol::Anthropic,
+            LlmClient::OpenAi(_) => WireProtocol::OpenAi,
+        }
+    }
+
     /// Send a completion request.
-    ///
-    /// - `model`: None means use default model, Some("alias") resolves aliases.
-    /// - `messages`: Conversation history.
-    /// - `max_tokens`: Maximum tokens to generate.
-    /// - `system`: Optional system prompt.
     pub async fn complete(
         &self,
         model: Option<&str>,
@@ -98,7 +156,10 @@ impl LlmPool {
             tools: None,
         };
 
-        self.client.messages(&request).await
+        match &self.client {
+            LlmClient::Anthropic(c) => c.messages(&request).await,
+            LlmClient::OpenAi(c) => c.messages(&request).await,
+        }
     }
 
     /// Send a completion request with tool definitions.
@@ -123,7 +184,10 @@ impl LlmPool {
             tools: if tools.is_empty() { None } else { Some(tools) },
         };
 
-        self.client.messages(&request).await
+        match &self.client {
+            LlmClient::Anthropic(c) => c.messages(&request).await,
+            LlmClient::OpenAi(c) => c.messages(&request).await,
+        }
     }
 
     /// Change the default model at runtime (e.g. from `/model` command).
@@ -149,11 +213,7 @@ impl LlmPool {
                 resolved.provider, resolved.provider
             ))
         })?;
-        self.client = if let Some(base_url) = resolved.base_url {
-            AnthropicClient::with_base_url(api_key, base_url)
-        } else {
-            AnthropicClient::new(api_key)
-        };
+        self.client = build_client(&resolved.provider, api_key, resolved.base_url);
         self.default_model = resolved.model_id;
         Ok(())
     }
@@ -164,12 +224,8 @@ impl LlmPool {
     pub fn rebuild_for_alias(&mut self, config: &agentos_config::ModelsConfig, alias: &str) -> Result<(), LlmError> {
         if let Some(resolved) = config.resolve_or_fallback(alias) {
             if let Some(api_key) = resolved.api_key {
-                // Full rebuild — new provider/key
-                self.client = if let Some(base_url) = resolved.base_url {
-                    AnthropicClient::with_base_url(api_key, base_url)
-                } else {
-                    AnthropicClient::new(api_key)
-                };
+                // Full rebuild — new provider/key, auto-detect protocol
+                self.client = build_client(&resolved.provider, api_key, resolved.base_url);
                 self.default_model = resolved.model_id;
             } else {
                 // Config knows the model but no key — just change model ID, keep existing client
@@ -187,9 +243,12 @@ impl LlmPool {
         &self.default_model
     }
 
-    /// List models available from the API.
+    /// List models available from the API (Anthropic only — OpenAI endpoints vary).
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
-        self.client.list_models().await
+        match &self.client {
+            LlmClient::Anthropic(c) => c.list_models().await,
+            LlmClient::OpenAi(_) => Ok(vec![]), // Most OpenAI-compatible servers don't support this
+        }
     }
 }
 

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism", "crates/wasm", "crates/config", "crates/llm", "crates/routing", "crates/librarian", "crates/agent", "crates/wit", "crates/tools"]
+members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism", "crates/wasm", "crates/config", "crates/llm", "crates/routing", "crates/librarian", "crates/agent", "crates/wit", "crates/tools", "crates/cloud"]
 
 [package]
 name = "agentos"
