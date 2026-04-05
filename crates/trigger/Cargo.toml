@@ -1,0 +1,38 @@
+[package]
+name = "agentos-trigger"
+version = "0.1.0"
+edition = "2021"
+description = "Trigger runtime — event-driven dispatch for autonomous agent behavior."
+
+[dependencies]
+# Organism types (TriggerConfig, TriggerSource)
+agentos-organism = { path = "../organism" }
+agentos-events = { path = "../events" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# File watching
+notify = { version = "7", features = ["macos_fsevent"] }
+notify-debouncer-mini = "0.5"
+
+# Cron scheduling
+cron = "0.15"
+chrono = "0.4"
+
+# Rhai scripting (custom triggers)
+rhai = { version = "1", features = ["sync", "serde"] }
+
+# HTTP for Rhai trigger scripts
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# Utilities
+tracing = "0.1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+glob = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = "3"

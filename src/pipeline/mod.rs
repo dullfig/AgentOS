@@ -61,6 +61,8 @@ pub struct AgentPipeline {
     approval_rx: Option<tokio::sync::mpsc::Receiver<crate::agent::permissions::ToolApprovalRequest>>,
     /// Receiver for user query requests from agents (consumed by TUI runner).
     query_rx: Option<tokio::sync::mpsc::Receiver<crate::tools::user_channel::UserQueryRequest>>,
+    /// Trigger runtime — spawns background tasks for file watchers, timers, crons, etc.
+    trigger_runtime: Option<agentos_trigger::TriggerRuntime>,
 }
 
 impl AgentPipeline {
@@ -96,6 +98,7 @@ impl AgentPipeline {
             llm_pool: None,
             approval_rx: None,
             query_rx: None,
+            trigger_runtime: None,
         })
     }
 
@@ -265,6 +268,8 @@ pub struct AgentPipelineBuilder {
     wasm_runtime: Option<Arc<WasmRuntime>>,
     wasm_registry: Option<WasmToolRegistry>,
     semantic_router: Option<SemanticRouter>,
+    /// Trigger runtime (created by `with_triggers()`).
+    trigger_runtime: Option<agentos_trigger::TriggerRuntime>,
     /// Event channel created early so handlers can emit events.
     event_tx: broadcast::Sender<PipelineEvent>,
     /// WIT-parsed tool interfaces, keyed by tool name.
@@ -304,6 +309,7 @@ impl AgentPipelineBuilder {
             wasm_runtime: None,
             wasm_registry: None,
             semantic_router: None,
+            trigger_runtime: None,
             event_tx,
             tool_interfaces: std::collections::HashMap::new(),
             local_engine: None,
@@ -774,6 +780,56 @@ impl AgentPipelineBuilder {
         Ok(self)
     }
 
+    /// Register triggers from the organism config.
+    ///
+    /// Collects all listeners with `handler: "trigger"` and creates a
+    /// `TriggerRuntime` that will spawn background tasks when the pipeline runs.
+    /// The runtime's dispatch channel is consumed in `build()` to feed
+    /// trigger events back into the pipeline.
+    pub fn with_triggers(mut self) -> Result<Self, String> {
+        let trigger_listeners: Vec<_> = self
+            .organism
+            .listeners()
+            .values()
+            .filter(|def| def.trigger.is_some())
+            .cloned()
+            .collect();
+
+        if trigger_listeners.is_empty() {
+            return Ok(self);
+        }
+
+        let mut runtime = agentos_trigger::TriggerRuntime::new();
+
+        for listener in &trigger_listeners {
+            let event_rx = if matches!(
+                listener.trigger.as_ref().map(|t| &t.source),
+                Some(agentos_organism::TriggerSource::Event { .. })
+            ) {
+                Some(self.event_tx.subscribe())
+            } else {
+                None
+            };
+
+            runtime.register(listener, event_rx).map_err(|e| {
+                format!("Failed to register trigger '{}': {e}", listener.name)
+            })?;
+        }
+
+        tracing::info!(
+            "Registered {} trigger(s): {}",
+            trigger_listeners.len(),
+            trigger_listeners
+                .iter()
+                .map(|l| l.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        self.trigger_runtime = Some(runtime);
+        Ok(self)
+    }
+
     /// Build a semantic router from the organism's semantic descriptions.
     ///
     /// Requires an LLM pool to be attached first (form-filler calls Haiku).
@@ -1141,6 +1197,7 @@ impl AgentPipelineBuilder {
             llm_pool: self.llm_pool.clone(),
             approval_rx: self.approval_rx,
             query_rx: self.query_rx,
+            trigger_runtime: self.trigger_runtime,
         })
     }
 }

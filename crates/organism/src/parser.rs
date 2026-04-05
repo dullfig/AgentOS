@@ -314,7 +314,7 @@ struct PythonYaml {
 /// Trigger configuration — makes a listener fire messages rather than handle them.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct TriggerYaml {
-    /// Trigger type: `file_watch`, `timer`, `cron`, `event`, `webhook`, `custom`.
+    /// Trigger type: `file_watch`, `timer`, `cron`, `event`, `webhook`, `custom`, `rhai`.
     #[serde(rename = "type")]
     trigger_type: String,
     /// Target listener to send generated messages to.
@@ -340,9 +340,15 @@ struct TriggerYaml {
     /// URL path (for `webhook`).
     #[serde(default)]
     path: Option<String>,
-    /// Poll interval in seconds (for `custom`).
+    /// Poll interval in seconds (for `custom` and `rhai`).
     #[serde(default)]
     poll_secs: Option<u64>,
+    /// Inline Rhai script (for `rhai`). Mutually exclusive with `script_file`.
+    #[serde(default)]
+    script: Option<String>,
+    /// Path to Rhai script file (for `rhai`). Mutually exclusive with `script`.
+    #[serde(default)]
+    script_file: Option<String>,
 }
 
 /// Network port declaration for a listener.
@@ -740,6 +746,22 @@ fn build_organism(raw: OrganismYaml, base_dir: Option<&Path>) -> Result<Organism
                     },
                     "webhook" => TriggerSource::Webhook {
                         path: t.path.unwrap_or_else(|| "/".to_string()),
+                    },
+                    "rhai" => {
+                        // Inline script or file path — load the script source
+                        let script = if let Some(inline) = t.script {
+                            inline
+                        } else if let Some(path) = t.script_file {
+                            std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                                format!("// Failed to load {path}: {e}\nfn check() {{ () }}")
+                            })
+                        } else {
+                            "fn check() { () }".to_string()
+                        };
+                        TriggerSource::Rhai {
+                            script,
+                            poll_secs: t.poll_secs.unwrap_or(60),
+                        }
                     },
                     "custom" | _ => TriggerSource::Custom {
                         poll_secs: t.poll_secs.unwrap_or(60),
@@ -2634,6 +2656,39 @@ listeners:
                 assert_eq!(path, "/api/notify");
             }
             other => panic!("expected Webhook, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_rhai_trigger_inline() {
+        let yaml = r#"
+organism:
+  name: test-rhai
+listeners:
+  - name: health-rhai
+    payload_class: trigger.RhaiEvent
+    handler: trigger
+    description: "Rhai health check"
+    trigger:
+      type: rhai
+      poll_secs: 30
+      script: |
+        fn check() {
+            if 1 > 0 { "healthy" } else { () }
+        }
+      target: monitor-agent
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let trigger = org.get_listener("health-rhai").unwrap()
+            .trigger.as_ref().unwrap();
+        assert_eq!(trigger.target, "monitor-agent");
+        match &trigger.source {
+            super::super::TriggerSource::Rhai { script, poll_secs } => {
+                assert_eq!(*poll_secs, 30);
+                assert!(script.contains("fn check()"));
+                assert!(script.contains("healthy"));
+            }
+            other => panic!("expected Rhai, got {:?}", other),
         }
     }
 

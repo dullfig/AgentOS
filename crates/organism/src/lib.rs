@@ -185,6 +185,14 @@ pub enum TriggerSource {
         /// Polling interval in seconds.
         poll_secs: u64,
     },
+    /// Rhai script trigger — runs check() on a schedule, fires if it returns a value.
+    /// Script can be inline (in YAML) or loaded from a file.
+    Rhai {
+        /// Rhai script source (inline or file contents).
+        script: String,
+        /// Polling interval in seconds.
+        poll_secs: u64,
+    },
 }
 
 /// Trigger configuration on a listener — makes it fire rather than handle.

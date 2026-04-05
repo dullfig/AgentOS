@@ -702,11 +702,27 @@
         },
         "poll_secs": {
           "default": null,
-          "description": "Poll interval in seconds (for `custom`).",
+          "description": "Poll interval in seconds (for `custom` and `rhai`).",
           "format": "uint64",
           "minimum": 0.0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "script": {
+          "default": null,
+          "description": "Inline Rhai script (for `rhai`). Mutually exclusive with `script_file`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "script_file": {
+          "default": null,
+          "description": "Path to Rhai script file (for `rhai`). Mutually exclusive with `script`.",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -715,7 +731,7 @@
           "type": "string"
         },
         "type": {
-          "description": "Trigger type: `file_watch`, `timer`, `cron`, `event`, `webhook`, `custom`.",
+          "description": "Trigger type: `file_watch`, `timer`, `cron`, `event`, `webhook`, `custom`, `rhai`.",
           "type": "string"
         }
       },
