@@ -159,6 +159,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentos-gui"
+version = "0.1.0"
+
+[[package]]
 name = "agentos-kernel"
 version = "0.1.0"
 dependencies = [
@@ -221,6 +225,21 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+]
+
+[[package]]
+name = "agentos-platform"
+version = "0.1.0"
+dependencies = [
+ "agentos-events",
+ "agentos-kernel",
+ "agentos-kv-store",
+ "agentos-organism",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

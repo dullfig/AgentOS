@@ -1,0 +1,8 @@
+[package]
+name = "agentos-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Single-user web UI for AgentOS — browser-based alternative to the TUI."
+
+[dependencies]
+# Will depend on agentos-platform when there's something to display

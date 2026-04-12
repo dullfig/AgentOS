@@ -1,0 +1,22 @@
+[package]
+name = "agentos-platform"
+version = "0.1.0"
+edition = "2021"
+description = "Agent orchestration platform — instance registry, hierarchical addressing, materialization-on-routing."
+
+[dependencies]
+# Workspace crates
+agentos-kernel = { path = "../kernel" }
+agentos-events = { path = "../events" }
+agentos-organism = { path = "../organism" }
+agentos-kv-store = { path = "../kv-store" }
+
+# Core
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
