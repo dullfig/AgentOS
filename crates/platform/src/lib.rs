@@ -56,5 +56,6 @@
 //! - [ ] Integration tests against real kernel + pipeline (not just MockRuntime)
 
 pub mod address;
+pub mod concurrent;
 pub mod registry;
 pub mod router;
