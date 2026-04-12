@@ -7,6 +7,7 @@
 //! - **Instance registry** — lazy materialization on first message, VMM-style eviction
 //! - **Materialization-on-routing** — `send_to(address)` creates anything missing along the path
 //! - **Lifetime policies** — UntilIdle, UntilTaskComplete, Pinned, Ephemeral
+//! - **Namespace security** — agents can only reach addresses in their own namespace
 //!
 //! # Architecture
 //!
@@ -15,14 +16,44 @@
 //! due to circular dependencies with the buffer system). Instead, it provides the addressing
 //! and instance management primitives that the pipeline imports.
 //!
-//! Future work: extract the pipeline orchestrator into this crate once the buffer↔pipeline
-//! circular dependency is resolved.
+//! The [`router::Runtime`] trait is the seam: the pipeline implements it, the platform calls it.
 //!
-//! # Key Types
+//! # What's Built (41 tests)
 //!
-//! - [`Address`] — hierarchical agent address with `organism[key].buffer` syntax
-//! - `InstanceRegistry` — maps addresses to live agent instances (planned)
-//! - `Lifetime` — eviction policy for instances (planned)
+//! - [`address::Address`] — full hierarchical grammar with bracket keys, cache composition (`+`), ephemeral detection
+//! - [`registry::InstanceRegistry`] — VMM-tiered instance tracking, lifetime policies, idle eviction, parent-child
+//! - [`router::Router`] — `send_to` with materialization-on-routing, namespace enforcement, shard pattern expansion
+//! - [`router::Runtime`] trait — decouples platform from pipeline
+//!
+//! # Missing Pieces (TODO)
+//!
+//! ## Wiring (connects platform to the existing pipeline)
+//! - [ ] `Runtime` trait impl on `AgentPipeline` — the actual bridge, makes `send_to` real
+//! - [ ] Trigger `send_to:` / `message:` YAML fields + template variable expansion from events
+//! - [ ] KV shard loading at materialization time (calls memex/cortex to load shards)
+//!
+//! ## Concurrency (production-grade)
+//! - [ ] `Router` behind `Arc<Mutex<>>` or concurrent map — parallel message routing
+//! - [ ] Per-address materialization mutex — prevent double-materialize on simultaneous first-messages
+//!
+//! ## Lifecycle
+//! - [ ] Periodic eviction task — background tokio timer calling `router.evict_idle()`
+//! - [ ] Parent-child cascade on kill (optional, policy-driven)
+//! - [ ] Registry persistence — survive process restart, replay from sled/WAL
+//!
+//! ## Buffers
+//! - [ ] Buffer creation/routing within instances — `envelope.buffer` field routed to per-channel buffers
+//!
+//! ## Observability
+//! - [ ] Pipeline event emission — `instance.spawned`, `instance.evicted`, `instance.killed`
+//! - [ ] Admin commands — `/instances` in TUI, list/inspect/kill/force-materialize
+//! - [ ] Metrics — instance count gauges, materialization latency, eviction counters
+//!
+//! ## Performance
+//! - [ ] Organism template cache — don't re-read YAML from disk on every materialization
+//!
+//! ## Testing
+//! - [ ] Integration tests against real kernel + pipeline (not just MockRuntime)
 
 pub mod address;
 pub mod registry;

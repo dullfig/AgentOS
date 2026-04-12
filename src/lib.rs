@@ -27,3 +27,5 @@ pub mod treesitter;
 pub mod tui;
 pub mod vdrive;
 pub use agentos_wasm as wasm;
+pub use agentos_platform as platform;
+pub mod runtime_impl;

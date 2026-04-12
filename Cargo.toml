@@ -26,6 +26,7 @@ agentos-agent = { path = "crates/agent" }
 agentos-wit = { path = "crates/wit" }
 agentos-tools = { path = "crates/tools" }
 agentos-trigger = { path = "crates/trigger" }
+agentos-platform = { path = "crates/platform" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
