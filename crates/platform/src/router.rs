@@ -22,6 +22,7 @@
 
 use crate::address::{Address, AddressError};
 use crate::buffers::BufferId;
+use crate::events::PlatformEvent;
 use crate::registry::{
     InstanceInfo, InstanceRegistry, Lifetime, MaterializeOpts, RegistryError,
 };
@@ -91,6 +92,14 @@ pub trait Runtime: Send + Sync {
     /// Called when an instance is evicted (idle timeout, explicit kill).
     /// The runtime should clean up kernel state, flush KV, etc.
     async fn evict_instance(&self, thread_id: &str) -> Result<(), String>;
+
+    /// Emit a platform event. The runtime broadcasts it to observers
+    /// (TUI, monitoring, triggers, admin tools).
+    ///
+    /// Default implementation is a no-op — test runtimes can ignore events.
+    fn emit_event(&self, _event: PlatformEvent) {
+        // Default: no-op. Override in production runtime to broadcast.
+    }
 }
 
 /// Metadata about an organism template, returned by [`Runtime::resolve_organism`].
@@ -196,6 +205,14 @@ impl Router {
                 thread_id = &buffer_thread_id,
                 "Buffer created"
             );
+
+            runtime.emit_event(PlatformEvent::BufferOpened {
+                address: full_address.clone(),
+                instance_address: inst_address.clone(),
+                buffer_name: buffer_id.canonical(),
+                channel: buffer_channel,
+                thread_id: buffer_thread_id.clone(),
+            });
         }
 
         // Record the message delivery on the buffer.
@@ -211,6 +228,12 @@ impl Router {
                 address: full_address.raw().to_string(),
                 reason,
             })?;
+
+        runtime.emit_event(PlatformEvent::MessageDelivered {
+            address: full_address.clone(),
+            thread_id: buffer_thread_id,
+            from: envelope.from.clone(),
+        });
 
         Ok(())
     }
@@ -273,6 +296,16 @@ impl Router {
             "Instance materialized"
         );
 
+        // Emit event — retrieve shard info from the freshly registered instance.
+        if let Some(info) = self.registry.lookup(address) {
+            runtime.emit_event(PlatformEvent::InstanceSpawned {
+                address: address.clone(),
+                organism: info.organism.clone(),
+                thread_id: info.thread_id.clone(),
+                cache_shards: info.cache_shards.clone(),
+            });
+        }
+
         Ok(())
     }
 
@@ -313,6 +346,12 @@ impl Router {
             thread_id = &info.thread_id,
             "Instance killed"
         );
+
+        runtime.emit_event(PlatformEvent::InstanceEvicted {
+            address: address.clone(),
+            organism: info.organism.clone(),
+            reason: crate::events::EvictionReason::Killed,
+        });
 
         Ok(info)
     }

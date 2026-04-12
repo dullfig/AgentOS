@@ -58,5 +58,6 @@
 pub mod address;
 pub mod buffers;
 pub mod concurrent;
+pub mod events;
 pub mod registry;
 pub mod router;
