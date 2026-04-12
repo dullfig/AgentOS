@@ -109,20 +109,29 @@ impl Address {
         &self.raw
     }
 
-    /// The organism name (first segment's name, or second if first is a namespace).
-    /// For simple addresses like "bob" or "bob[alice]", this is "bob".
-    /// For namespaced addresses like "ringhub.bob[alice]", this is "bob".
-    pub fn organism(&self) -> &str {
-        if self.segments.len() >= 2 {
-            &self.segments[1].name
-        } else {
-            &self.segments[0].name
-        }
+    /// Index of the organism segment.
+    ///
+    /// The organism is the first segment that has a key (bracket parameter).
+    /// If no segment has a key, the first segment is the organism.
+    /// Everything before the organism is namespace; everything after is buffer.
+    fn organism_index(&self) -> usize {
+        self.segments
+            .iter()
+            .position(|s| s.key.is_some())
+            .unwrap_or(0)
     }
 
-    /// The namespace prefix, if present (first segment when there are 2+ segments).
+    /// The organism name.
+    /// For `bob[alice]` → "bob". For `ringhub.bob[alice]` → "bob".
+    pub fn organism(&self) -> &str {
+        &self.segments[self.organism_index()].name
+    }
+
+    /// The namespace prefix, if present (segments before the organism).
+    /// For `ringhub.bob[alice]` → Some("ringhub"). For `bob[alice]` → None.
     pub fn namespace(&self) -> Option<&str> {
-        if self.segments.len() >= 2 {
+        let idx = self.organism_index();
+        if idx > 0 {
             Some(&self.segments[0].name)
         } else {
             None
@@ -131,24 +140,23 @@ impl Address {
 
     /// The instance key from the organism segment, if present.
     pub fn instance_key(&self) -> Option<&str> {
-        let org_idx = if self.segments.len() >= 2 { 1 } else { 0 };
-        self.segments.get(org_idx).and_then(|s| s.key())
+        self.segments.get(self.organism_index()).and_then(|s| s.key())
     }
 
     /// The cache composition keys, if the instance key contains `+`.
     pub fn cache_keys(&self) -> Vec<&str> {
-        let org_idx = if self.segments.len() >= 2 { 1 } else { 0 };
         self.segments
-            .get(org_idx)
+            .get(self.organism_index())
             .map(|s| s.cache_keys())
             .unwrap_or_default()
     }
 
-    /// The buffer segment (last segment after the organism), if present.
+    /// The buffer segment (first segment after the organism), if present.
+    /// For `bob[alice].dm` → Some(Segment("dm")). For `bob[alice]` → None.
     pub fn buffer(&self) -> Option<&Segment> {
-        let org_idx = if self.segments.len() >= 2 { 1 } else { 0 };
+        let org_idx = self.organism_index();
         if self.segments.len() > org_idx + 1 {
-            self.segments.last()
+            Some(&self.segments[org_idx + 1])
         } else {
             None
         }

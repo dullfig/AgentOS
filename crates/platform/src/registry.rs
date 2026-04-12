@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::address::Address;
+use crate::buffers::BufferStore;
 
 /// Lifecycle policy for an agent instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +78,8 @@ pub struct InstanceInfo {
     pub created_at: Instant,
     /// When this instance was last accessed (message received or sent).
     pub last_accessed: Instant,
+    /// Per-channel buffer store — isolates DM, public, help, task conversations.
+    pub buffers: BufferStore,
 }
 
 /// Options for materializing a new instance.
@@ -180,6 +183,7 @@ impl InstanceRegistry {
             cache_shards: opts.cache_shards,
             created_at: now,
             last_accessed: now,
+            buffers: BufferStore::new(),
         };
 
         self.instances.insert(key, info);
