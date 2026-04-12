@@ -349,6 +349,13 @@ struct TriggerYaml {
     /// Path to Rhai script file (for `rhai`). Mutually exclusive with `script`.
     #[serde(default)]
     script_file: Option<String>,
+    /// Hierarchical address to route to via the platform router.
+    /// Supports template variables: `{event.user_id}`, `{event.thread_id}`, etc.
+    #[serde(default)]
+    send_to: Option<String>,
+    /// Message body template to deliver. Supports `{event.*}` template variables.
+    #[serde(default)]
+    message: Option<String>,
 }
 
 /// Network port declaration for a listener.
@@ -770,6 +777,9 @@ fn build_organism(raw: OrganismYaml, base_dir: Option<&Path>) -> Result<Organism
                 TriggerConfig {
                     source,
                     target: t.target,
+                    send_to: t.send_to,
+                    message: t.message,
+                    source_namespace: None, // set at runtime registration, not in YAML
                 }
             }),
         })?;

@@ -200,8 +200,20 @@ pub enum TriggerSource {
 pub struct TriggerConfig {
     /// What condition causes this trigger to fire.
     pub source: TriggerSource,
-    /// Which listener receives the generated message.
+    /// Which listener receives the generated message (legacy: plain listener name).
     pub target: String,
+    /// Hierarchical address to route to via the platform router (new model).
+    /// When present, the trigger fires through `SharedRouter::send_to` with
+    /// namespace enforcement instead of raw pipeline injection.
+    /// Template variables like `{event.user_id}` are expanded at fire time.
+    pub send_to: Option<String>,
+    /// Message body template to deliver. Supports `{event.*}` template variables.
+    /// If absent, a default trigger payload is sent.
+    pub message: Option<String>,
+    /// Source namespace for security enforcement. Set at registration time
+    /// from the registering entity's namespace. Platform triggers use None
+    /// (root, can reach any namespace). User triggers carry the user's namespace.
+    pub source_namespace: Option<String>,
 }
 
 /// Port declaration on a listener (from organism config).

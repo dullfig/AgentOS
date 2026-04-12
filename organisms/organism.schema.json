@@ -684,6 +684,14 @@
             "null"
           ]
         },
+        "message": {
+          "default": null,
+          "description": "Message body template to deliver. Supports `{event.*}` template variables.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "path": {
           "default": null,
           "description": "URL path (for `webhook`).",
@@ -721,6 +729,14 @@
         "script_file": {
           "default": null,
           "description": "Path to Rhai script file (for `rhai`). Mutually exclusive with `script`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "send_to": {
+          "default": null,
+          "description": "Hierarchical address to route to via the platform router. Supports template variables: `{event.user_id}`, `{event.thread_id}`, etc.",
           "type": [
             "string",
             "null"
