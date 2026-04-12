@@ -25,3 +25,4 @@
 //! - `Lifetime` — eviction policy for instances (planned)
 
 pub mod address;
+pub mod registry;
