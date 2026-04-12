@@ -162,6 +162,25 @@ impl Address {
         }
     }
 
+    /// Returns the instance-level address (namespace + organism[key], without buffer).
+    ///
+    /// For `concierge[alice].dm` → `concierge[alice]`
+    /// For `ringhub.concierge[alice].help[email]` → `ringhub.concierge[alice]`
+    /// For `concierge[alice]` → `concierge[alice]` (unchanged)
+    pub fn instance_address(&self) -> Address {
+        let org_idx = self.organism_index();
+        let instance_segments: Vec<Segment> = self.segments[..=org_idx].to_vec();
+        let raw = instance_segments
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+        Address {
+            segments: instance_segments,
+            raw,
+        }
+    }
+
     /// Whether this address refers to the ephemeral scratch namespace.
     pub fn is_ephemeral(&self) -> bool {
         self.segments.iter().any(|s| s.name == "scratch")

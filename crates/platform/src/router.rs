@@ -21,6 +21,7 @@
 //! ```
 
 use crate::address::{Address, AddressError};
+use crate::buffers::BufferId;
 use crate::registry::{
     InstanceInfo, InstanceRegistry, Lifetime, MaterializeOpts, RegistryError,
 };
@@ -132,44 +133,82 @@ impl Router {
     ///
     /// 1. Parse and validate the address
     /// 2. Check namespace boundaries (if `from` is set)
-    /// 3. Look up the instance in the registry
-    /// 4. If not found → materialize (resolve organism, allocate, register)
+    /// 3. Look up the instance in the registry — materialize if missing
+    /// 4. Resolve the buffer within the instance — create if missing
     /// 5. Touch the instance (update timestamp, promote if Shelved)
-    /// 6. Deliver the message
+    /// 6. Deliver the message to the buffer's thread_id
     pub async fn send_to(
         &mut self,
         envelope: &Envelope,
         runtime: &dyn Runtime,
     ) -> Result<(), RouterError> {
-        let address = &envelope.to;
+        let full_address = &envelope.to;
+        // The instance address strips the buffer segment: concierge[alice].dm → concierge[alice]
+        let inst_address = full_address.instance_address();
 
         // Namespace check: if we know the sender, verify they can reach the target.
         if let Some(ref from) = envelope.from {
-            self.check_namespace(from, address)?;
+            self.check_namespace(from, full_address)?;
         }
 
-        // Materialize if needed.
-        if !self.registry.is_materialized(address) {
-            self.materialize_for(address, runtime).await?;
+        // Materialize instance if needed (keyed on instance address, not full address).
+        if !self.registry.is_materialized(&inst_address) {
+            self.materialize_for(&inst_address, runtime).await?;
         }
 
         // Touch — update timestamp, promote Shelved → Active.
-        self.registry.touch(address).map_err(RouterError::Registry)?;
+        self.registry.touch(&inst_address).map_err(RouterError::Registry)?;
 
-        // Deliver.
+        // Resolve the buffer within the instance.
+        let buffer_id = BufferId::from_address(full_address);
+
         let info = self
             .registry
-            .lookup(address)
+            .lookup_mut(&inst_address)
             .ok_or_else(|| RouterError::DeliveryFailed {
-                address: address.raw().to_string(),
+                address: full_address.raw().to_string(),
                 reason: "instance vanished between materialize and deliver".into(),
             })?;
 
+        let instance_thread_id = info.thread_id.clone();
+        let (buffer_info, buffer_created) = info.buffers.get_or_create(
+            buffer_id.clone(),
+            &instance_thread_id,
+        );
+        let buffer_thread_id = buffer_info.thread_id.clone();
+        let buffer_channel = buffer_info.channel;
+
+        // If the buffer was just created, allocate kernel state for it.
+        if buffer_created {
+            let organism = info.organism.clone();
+            runtime
+                .allocate_instance(&buffer_thread_id, full_address, &organism)
+                .await
+                .map_err(|reason| RouterError::MaterializationFailed {
+                    address: full_address.raw().to_string(),
+                    reason: format!("buffer {}: {}", buffer_id, reason),
+                })?;
+
+            tracing::info!(
+                address = full_address.raw(),
+                buffer = %buffer_id,
+                channel = ?buffer_channel,
+                thread_id = &buffer_thread_id,
+                "Buffer created"
+            );
+        }
+
+        // Record the message delivery on the buffer.
+        if let Some(info) = self.registry.lookup_mut(&inst_address) {
+            info.buffers.record_message(&buffer_id);
+        }
+
+        // Deliver to the buffer's thread_id, not the instance's.
         runtime
-            .deliver(&info.thread_id, envelope)
+            .deliver(&buffer_thread_id, envelope)
             .await
             .map_err(|reason| RouterError::DeliveryFailed {
-                address: address.raw().to_string(),
+                address: full_address.raw().to_string(),
                 reason,
             })?;
 
@@ -408,11 +447,12 @@ mod tests {
         let mut router = Router::new(reg);
         let runtime = MockRuntime::new();
 
-        // First message to bob[alice] — should materialize
+        // First message to concierge[alice] — materializes instance + default buffer
         router.send_to(&envelope("concierge[alice]"), &runtime).await.unwrap();
 
         assert!(router.registry().is_materialized(&Address::parse("concierge[alice]").unwrap()));
-        assert_eq!(runtime.allocated.lock().unwrap().len(), 1);
+        // 2 allocations: one for the instance, one for the default buffer
+        assert_eq!(runtime.allocated.lock().unwrap().len(), 2);
         assert_eq!(runtime.delivered.lock().unwrap().len(), 1);
     }
 
@@ -425,8 +465,8 @@ mod tests {
         router.send_to(&envelope("concierge[alice]"), &runtime).await.unwrap();
         router.send_to(&envelope("concierge[alice]"), &runtime).await.unwrap();
 
-        // Only one allocation, two deliveries
-        assert_eq!(runtime.allocated.lock().unwrap().len(), 1);
+        // 2 allocations (instance + buffer on first msg), 2 deliveries (both to buffer)
+        assert_eq!(runtime.allocated.lock().unwrap().len(), 2);
         assert_eq!(runtime.delivered.lock().unwrap().len(), 2);
     }
 
@@ -459,6 +499,51 @@ mod tests {
             info.cache_shards,
             vec!["shared.public", "shared.wiki", "user.alice"]
         );
+    }
+
+    #[tokio::test]
+    async fn different_buffers_get_different_threads() {
+        let reg = InstanceRegistry::new(0);
+        let mut router = Router::new(reg);
+        let runtime = MockRuntime::new();
+
+        // Send to DM buffer
+        router.send_to(&envelope("concierge[alice].dm"), &runtime).await.unwrap();
+        // Send to help buffer
+        router.send_to(&envelope("concierge[alice].help[email]"), &runtime).await.unwrap();
+
+        // One instance, two buffers
+        let addr = Address::parse("concierge[alice]").unwrap();
+        let info = router.registry().lookup(&addr).unwrap();
+        assert_eq!(info.buffers.count(), 2);
+
+        // 3 allocations: instance + dm buffer + help buffer
+        assert_eq!(runtime.allocated.lock().unwrap().len(), 3);
+        // 2 deliveries, to different buffer thread_ids
+        let delivered = runtime.delivered.lock().unwrap();
+        assert_eq!(delivered.len(), 2);
+        assert_ne!(delivered[0], delivered[1]);
+    }
+
+    #[tokio::test]
+    async fn same_buffer_reuses_thread() {
+        let reg = InstanceRegistry::new(0);
+        let mut router = Router::new(reg);
+        let runtime = MockRuntime::new();
+
+        router.send_to(&envelope("concierge[alice].dm"), &runtime).await.unwrap();
+        router.send_to(&envelope("concierge[alice].dm"), &runtime).await.unwrap();
+
+        // Still one instance, one buffer
+        let addr = Address::parse("concierge[alice]").unwrap();
+        let info = router.registry().lookup(&addr).unwrap();
+        assert_eq!(info.buffers.count(), 1);
+
+        // 2 allocations (instance + buffer), 2 deliveries to same buffer thread
+        assert_eq!(runtime.allocated.lock().unwrap().len(), 2);
+        let delivered = runtime.delivered.lock().unwrap();
+        assert_eq!(delivered.len(), 2);
+        assert_eq!(delivered[0], delivered[1]); // same buffer thread
     }
 
     #[tokio::test]
