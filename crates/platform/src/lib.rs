@@ -26,3 +26,4 @@
 
 pub mod address;
 pub mod registry;
+pub mod router;
