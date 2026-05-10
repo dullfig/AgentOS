@@ -319,6 +319,58 @@ impl AgentPipeline {
     }
 }
 
+/// Load a per-agent shim-rules.json from disk.
+///
+/// Looks for `<rules_dir>/<agent_name>/shim-rules.json`. Missing file
+/// returns `None` (the common case — most agents don't use shims).
+/// Unparseable or unreadable files log a warning and return `None`
+/// rather than failing the whole pipeline build, on the principle
+/// that an agent coming up shim-less is recoverable while a build
+/// failure is not.
+pub fn load_shim_rules_for_agent(
+    rules_dir: &std::path::Path,
+    agent_name: &str,
+) -> Option<agentos_llm::types::ShimAttachment> {
+    let path = rules_dir.join(agent_name).join("shim-rules.json");
+    if !path.exists() {
+        return None;
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str::<agentos_llm::types::ShimAttachment>(&raw) {
+            Ok(parsed) => {
+                tracing::info!(
+                    agent = %agent_name,
+                    path = %path.display(),
+                    gates = parsed.gate_shims.len(),
+                    steers = parsed.steer_shims.len(),
+                    inject = parsed.inject_shims.len(),
+                    rules = parsed.shim_rules.len(),
+                    "loaded shim config from disk"
+                );
+                Some(parsed)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    agent = %agent_name,
+                    path = %path.display(),
+                    error = %e,
+                    "shim-rules.json present but unparseable; agent starts without shims"
+                );
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                agent = %agent_name,
+                path = %path.display(),
+                error = %e,
+                "shim-rules.json present but unreadable; agent starts without shims"
+            );
+            None
+        }
+    }
+}
+
 /// Builder for AgentPipeline — register handlers before building.
 pub struct AgentPipelineBuilder {
     organism: Organism,
@@ -353,6 +405,15 @@ pub struct AgentPipelineBuilder {
     query_rx: Option<tokio::sync::mpsc::Receiver<agentos_tools::user_channel::UserQueryRequest>>,
     /// Debug mode: enables DebugGate middleware and PermissionGate override.
     debug: bool,
+    /// Per-agent shim-rules.json directory. When `None`, defaults to
+    /// `<data_dir>/agents/`. The builder looks for
+    /// `<rules_dir>/<agent_name>/shim-rules.json` for each agent
+    /// listener at build time and, when present, calls
+    /// `set_shim_config` on the handler.
+    ///
+    /// v1 reload semantics: restart-required. Hot-reload of rules
+    /// during a running pipeline is not supported.
+    shim_rules_dir: Option<std::path::PathBuf>,
 }
 
 impl AgentPipelineBuilder {
@@ -382,7 +443,15 @@ impl AgentPipelineBuilder {
             query_tx,
             query_rx: Some(query_rx),
             debug: false,
+            shim_rules_dir: None,
         }
+    }
+
+    /// Override the directory the builder reads per-agent
+    /// `shim-rules.json` files from. Default is `<data_dir>/agents/`.
+    pub fn with_shim_rules_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.shim_rules_dir = Some(dir);
+        self
     }
 
     /// Get the event broadcast sender (for registering UserChannelHandler).
@@ -1124,6 +1193,17 @@ impl AgentPipelineBuilder {
 
             // Wire the event sender
             handler.set_event_sender(self.event_tx.clone());
+
+            // Load this agent's shim-rules.json if present. v1 is
+            // restart-required: changes made via the shim-rules tool
+            // during runtime won't propagate until the next build.
+            let rules_dir = self
+                .shim_rules_dir
+                .clone()
+                .unwrap_or_else(|| self.data_dir.join("agents"));
+            if let Some(parsed) = load_shim_rules_for_agent(&rules_dir, &def.name) {
+                handler.set_shim_config(Some(parsed));
+            }
 
             self = self.register(&def.name, handler)?;
 
@@ -3368,5 +3448,185 @@ profiles:
             .unwrap();
 
         assert!(pipeline.organism().get_listener("coding-agent").is_some());
+    }
+
+    // ── shim-rules.json loader ──
+
+    #[test]
+    fn load_shim_rules_returns_none_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let result = load_shim_rules_for_agent(dir.path(), "bob");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_shim_rules_parses_valid_file() {
+        let dir = TempDir::new().unwrap();
+        let bob_dir = dir.path().join("bob");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+        let rules_json = serde_json::json!({
+            "gate_shims": ["should_respond"],
+            "steer_shims": ["voice_bob"],
+            "inject_shims": [],
+            "shim_rules": [
+                {"if": {"gate": "should_respond", "gt": 0.7},
+                 "then": {"activate": ["voice_bob"]}}
+            ]
+        });
+        std::fs::write(
+            bob_dir.join("shim-rules.json"),
+            serde_json::to_string_pretty(&rules_json).unwrap(),
+        )
+        .unwrap();
+
+        let parsed = load_shim_rules_for_agent(dir.path(), "bob")
+            .expect("loader should succeed");
+        assert_eq!(parsed.gate_shims, vec!["should_respond"]);
+        assert_eq!(parsed.steer_shims, vec!["voice_bob"]);
+        assert_eq!(parsed.shim_rules.len(), 1);
+    }
+
+    #[test]
+    fn load_shim_rules_returns_none_when_unparseable() {
+        let dir = TempDir::new().unwrap();
+        let bob_dir = dir.path().join("bob");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+        std::fs::write(
+            bob_dir.join("shim-rules.json"),
+            "{ this is not valid JSON",
+        )
+        .unwrap();
+
+        let result = load_shim_rules_for_agent(dir.path(), "bob");
+        assert!(
+            result.is_none(),
+            "unparseable file must NOT crash the build, just yield None"
+        );
+    }
+
+    #[test]
+    fn load_shim_rules_other_agent_unaffected() {
+        let dir = TempDir::new().unwrap();
+        let bob_dir = dir.path().join("bob");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+        std::fs::write(
+            bob_dir.join("shim-rules.json"),
+            r#"{"gate_shims":["x"]}"#,
+        )
+        .unwrap();
+
+        // bob has rules; sarah doesn't. Loader should not see bob's
+        // rules when asked about sarah.
+        assert!(load_shim_rules_for_agent(dir.path(), "sarah").is_none());
+        assert!(load_shim_rules_for_agent(dir.path(), "bob").is_some());
+    }
+
+    #[tokio::test]
+    async fn pipeline_build_loads_per_agent_shim_rules() {
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+
+        // Pre-populate bob's shim-rules.json under the default location
+        // (`<data_dir>/agents/bob/shim-rules.json`) so the builder's
+        // auto-discovery picks it up without needing with_shim_rules_dir.
+        let bob_dir = data_dir.join("agents").join("coding-agent");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+        std::fs::write(
+            bob_dir.join("shim-rules.json"),
+            r#"{
+                "gate_shims": ["should_respond"],
+                "steer_shims": ["voice_bob"],
+                "inject_shims": [],
+                "shim_rules": [
+                    {"if": {"gate": "should_respond", "gt": 0.6},
+                     "then": {"activate": ["voice_bob"]}}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let org = multi_agent_organism();
+        let pool = agentos_llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        // Build should succeed (the loader is invoked silently on each
+        // agent listener; missing files are fine).
+        let pipeline = AgentPipelineBuilder::new(org, &data_dir)
+            .with_llm_pool(pool)
+            .unwrap()
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
+            .unwrap()
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
+            .unwrap()
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
+            .unwrap()
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
+            .unwrap()
+            .register_tool("grep", agentos_tools::grep::GrepTool)
+            .unwrap()
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
+            .unwrap()
+            .with_agents()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // Smoke-check the pipeline built. Direct verification that the
+        // handler picked up the shim_config requires either a getter on
+        // CodingAgentHandler or routing a message through the agent and
+        // inspecting the outbound LLM request — both larger surface
+        // changes than v1 needs. The loader-helper unit tests above
+        // pin its correctness; this test pins that the builder doesn't
+        // reject a populated rules file.
+        assert!(pipeline.organism().get_listener("coding-agent").is_some());
+    }
+
+    #[tokio::test]
+    async fn pipeline_build_with_custom_shim_rules_dir() {
+        let dir = TempDir::new().unwrap();
+        let custom_rules = dir.path().join("custom_rules");
+        let bob_dir = custom_rules.join("coding-agent");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+        std::fs::write(
+            bob_dir.join("shim-rules.json"),
+            r#"{"gate_shims": ["custom_gate"]}"#,
+        )
+        .unwrap();
+
+        let org = multi_agent_organism();
+        let pool = agentos_llm::LlmPool::with_base_url(
+            "test-key".into(),
+            "opus",
+            "http://localhost:19999".into(),
+        );
+
+        let _pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
+            .with_shim_rules_dir(custom_rules.clone())
+            .with_llm_pool(pool)
+            .unwrap()
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
+            .unwrap()
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
+            .unwrap()
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
+            .unwrap()
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
+            .unwrap()
+            .register_tool("grep", agentos_tools::grep::GrepTool)
+            .unwrap()
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
+            .unwrap()
+            .with_agents()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // Verify the loader actually reads from the custom location.
+        let parsed = load_shim_rules_for_agent(&custom_rules, "coding-agent")
+            .expect("custom-dir loader should succeed");
+        assert_eq!(parsed.gate_shims, vec!["custom_gate"]);
     }
 }

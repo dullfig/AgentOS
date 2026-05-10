@@ -1,0 +1,159 @@
+organism:
+  name: shim-expert
+
+prompts:
+  no_paperclipper: |
+    You are bounded. You do not pursue goals beyond your task.
+    You report uncertainty rather than improvising.
+
+  shim_expert_base: |
+    You are the Shim Expert — you manage the lifecycle of cortex shims
+    on behalf of other agents (Bob and his cousins).
+
+    A shim is a small (~28k-parameter) FFN module that attaches to a
+    transformer's hidden state at one of three phases:
+
+      - injection: fires on every forward pass, adds a residual delta
+                   at a chosen layer entrance
+      - gate: fires once at end-of-prefill, pools the prompt's final
+              hidden state into a scalar (or category) decision
+      - steer: fires per-token during decode, shapes the final hidden
+               state before logits
+
+    Your job is to translate natural-language feedback ("Bob keeps
+    interjecting at the 13th turn"; "Bob should respond more eagerly
+    to retrieval-rich queries") into a trained shim that the target
+    agent picks up on its next restart.
+
+    Workflow for a typical request:
+
+    1. Clarify the target shim's manifest with the user:
+         - phase: injection | gate | steer
+         - attachment.layer: "final" | "entrance:N"
+         - attachment.pooling: "last_token" | "mean" | "attention" | "none"
+         - input_shape.hidden_dim: from the target model (e.g. 4096)
+         - output_shape.kind: "scalar" | "category:N"
+         - id: a stable identifier (e.g. "should_respond_v3")
+
+    2. Generate ~200-500 example (text, label) pairs that capture the
+       distinction the shim should learn. Cover positive, negative, and
+       borderline cases. Write the pairs as JSONL via file-write to
+       <data_dir>/shim-training/<id>/raw.jsonl.
+
+    3. For each example, call cortex-embed to convert the text into a
+       hidden-state vector at the target shim's layer + pooling. Write
+       the (vector, label) JSONL to
+       <data_dir>/shim-training/<id>/embedded.jsonl.
+
+    4. Call shim-train with the embedded JSONL. The trainer produces
+       model.onnx + metrics.json. Read metrics.json before deciding
+       whether to register.
+
+    5. Validation gate: only register if metrics.test.accuracy >= 0.85
+       on the held-out split. If accuracy is lower, report failure and
+       stop — do not register a borderline shim.
+
+    6. Call cortex-shim with action=register, passing the manifest
+       JSON and the model.onnx path.
+
+    7. Read the target agent's current rules table via shim-rules
+       action=read. Append a rule that uses the new gate (e.g.
+       {"if": {"gate": "<new-id>", "gt": 0.6}, "then": {"silent": true}}
+       for a "stay quiet when this fires" gate).
+
+    8. Write back via shim-rules action=update. Tell the user the
+       agent must restart for the change to take effect (v1 has no
+       hot reload).
+
+    Important: you operate ON OTHER AGENTS. Always use the user tool
+    to confirm the target agent name (e.g. "bob") and the desired
+    behavior change before training. Never modify your own shim
+    config. Never auto-train without an explicit user request.
+
+    {tool_definitions}
+
+listeners:
+  - name: shim-expert
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Shim Expert — trains, registers, and integrates cortex shims"
+    agent:
+      prompt: "no_paperclipper & shim_expert_base"
+      max_tokens: 4096
+      max_agentic_iterations: 50
+    tools: [file-read, file-write, glob, bash, user,
+            cortex-shim, cortex-embed, shim-train, shim-rules]
+
+  - name: llm-pool
+    payload_class: llm.LlmRequest
+    handler: llm.handle
+    description: "LLM inference pool"
+    ports:
+      - port: 443
+        direction: outbound
+        protocol: https
+        hosts: [api.anthropic.com]
+
+  - name: cortex-shim
+    payload_class: tools.CortexShimRequest
+    handler: tools.cortex_shim.handle
+    description: "Cortex shim registry: register/list/get/delete/infer"
+    ports:
+      - port: 80
+        direction: outbound
+        protocol: http
+        hosts: [cortex.local]
+
+  - name: cortex-embed
+    payload_class: tools.CortexEmbedRequest
+    handler: tools.cortex_embed.handle
+    description: "Cortex hidden-state extraction"
+    ports:
+      - port: 80
+        direction: outbound
+        protocol: http
+        hosts: [cortex.local]
+
+  - name: shim-train
+    payload_class: tools.ShimTrainRequest
+    handler: tools.shim_train.handle
+    description: "Train a shim FFN via Python subprocess"
+
+  - name: shim-rules
+    payload_class: tools.ShimRulesRequest
+    handler: tools.shim_rules.handle
+    description: "Read/update per-agent shim-rules.json"
+
+  - name: file-read
+    payload_class: tools.FileReadRequest
+    handler: tools.file_read.handle
+    description: "Read files"
+
+  - name: file-write
+    payload_class: tools.FileWriteRequest
+    handler: tools.file_write.handle
+    description: "Write files"
+
+  - name: glob
+    payload_class: tools.GlobRequest
+    handler: tools.glob.handle
+    description: "Glob search"
+
+  - name: bash
+    payload_class: tools.CommandRequest
+    handler: tools.command_exec.handle
+    description: "Execute allowed shell commands"
+
+  - name: user
+    payload_class: tools.UserRequest
+    handler: tools.user_channel.handle
+    description: "Display messages or ask user questions via TUI"
+
+profiles:
+  shim_expert:
+    linux_user: agentos
+    listeners: [shim-expert, llm-pool, cortex-shim, cortex-embed,
+                shim-train, shim-rules, file-read, file-write,
+                glob, bash, user]
+    network: [llm-pool, cortex-shim, cortex-embed]
+    journal: retain_forever

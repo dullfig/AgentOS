@@ -50,7 +50,7 @@ async fn post_messages_round_trip() {
 
     // Build the pipeline. The stub handler captures event_tx so it can
     // emit `AgentResponse` — that's what the SSE stream waits for.
-    let mut builder = AgentPipelineBuilder::new(org, &dir.path().join("data"));
+    let builder = AgentPipelineBuilder::new(org, &dir.path().join("data"));
     let event_tx = builder.event_sender();
 
     let event_tx_for_handler = event_tx.clone();
@@ -268,7 +268,7 @@ async fn shim_silent_emits_no_text_events() {
     let org = parse_organism(organism_yaml()).unwrap();
     let dir = TempDir::new().unwrap();
 
-    let mut builder = AgentPipelineBuilder::new(org, &dir.path().join("data"));
+    let builder = AgentPipelineBuilder::new(org, &dir.path().join("data"));
     let event_tx = builder.event_sender();
 
     let event_tx_for_handler = event_tx.clone();
@@ -361,7 +361,7 @@ async fn shim_non_silent_populates_done_metadata() {
     let org = parse_organism(organism_yaml()).unwrap();
     let dir = TempDir::new().unwrap();
 
-    let mut builder = AgentPipelineBuilder::new(org, &dir.path().join("data"));
+    let builder = AgentPipelineBuilder::new(org, &dir.path().join("data"));
     let event_tx = builder.event_sender();
 
     let event_tx_for_handler = event_tx.clone();
