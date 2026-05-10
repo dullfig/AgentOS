@@ -15,10 +15,10 @@ This mechanism already exists for process isolation. Multi-tenancy is a reframe,
 ## Integration Path
 
 ```
-RingHub (Django) → Donna (FastAPI/WS) → agentos-kernel → Concierge organism
+RingHub (Django) → agentos-kernel (HTTP/WS listener) → Concierge organism
 ```
 
-- Donna bridges HTTP/WebSocket to the kernel
+- The kernel exposes its own HTTP/WebSocket listener — RingHub talks to it directly
 - Each RingHub user = one dispatch root in the call chain
 - Concierge organism template is shared, dispatch context is per-user
 - neuralkv-core memory naturally partitions per root (each chain sees its own KV store)

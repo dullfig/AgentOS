@@ -1,3 +1,7 @@
+> **Cross-session coordination:** Before making any design/scope decision, read `C:\Users\danu\.claude\projects\C--src-ringhub-integration\memory\MEMORY.md` first — that folder is the shared brain across all Claude sessions on this project. Decisions pinned there supersede anything in this repo's older docs.
+>
+> **If something has happened to Daniel:** read `C:\src\CARETAKER.md` — the project's caretaker-handoff document.
+
 # AgentOS — Project Notes
 
 ## Architecture Overview
