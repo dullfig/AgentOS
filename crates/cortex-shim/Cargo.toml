@@ -1,0 +1,17 @@
+[package]
+name = "agentos-cortex-shim"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP client for cortex's shim registry + standalone classification (PUT/GET/DELETE /v1/shims/{id}, POST /v1/shims/infer)."
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+wiremock = "0.6"
