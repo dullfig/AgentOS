@@ -36,8 +36,16 @@ pub struct AgentConfig {
     pub max_routing_iterations: usize,
     /// Max global agentic loop iterations (Opus→tool→Opus cycles).
     pub max_agentic_iterations: usize,
-    /// Model override. None = pool default.
+    /// Model override (base substrate). None = pool default. Set from
+    /// either `model: <alias>` or `model: { base: ..., shim_store: ... }`
+    /// per the YAML schema (see `project_shim_store_design.md`).
     pub model: Option<String>,
+    /// Named shim_store under the kernel's shim_store directory tree.
+    /// Set from `model: { base: ..., shim_store: ... }` only — the legacy
+    /// flat `model: <alias>` shape leaves this `None`. The pipeline
+    /// builder reads the kernel's shim_store at this name and installs
+    /// the parsed `ShimAttachment` on the agent's handler at build time.
+    pub shim_store: Option<String>,
     /// Per-tool permission tiers. Unlisted tools default to Prompt.
     pub permissions: PermissionMap,
 }
@@ -50,6 +58,7 @@ impl Default for AgentConfig {
             max_routing_iterations: 5,
             max_agentic_iterations: 25,
             model: None,
+            shim_store: None,
             permissions: PermissionMap::new(),
         }
     }
@@ -811,6 +820,7 @@ mod tests {
             max_routing_iterations: 10,
             max_agentic_iterations: 30,
             model: Some("haiku".into()),
+            shim_store: None,
             permissions: agentos_events::PermissionMap::new(),
         });
 

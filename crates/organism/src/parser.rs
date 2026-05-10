@@ -177,12 +177,36 @@ struct AgentConfigYaml {
     /// Maximum tool-call loop iterations. Default: 25.
     #[serde(default)]
     max_agentic_iterations: Option<usize>,
-    /// LLM model override — `opus`, `sonnet`, or `haiku`.
+    /// LLM model. Either a flat alias (`opus` / `sonnet` / `haiku` / full id),
+    /// or a layered block `{base: ..., shim_store: ...}` per
+    /// `project_shim_store_design.md`.
     #[serde(default)]
-    model: Option<String>,
+    model: Option<ModelYaml>,
     /// Per-tool permission tiers: `auto` (no approval), `prompt` (ask user), `deny` (never).
     #[serde(default)]
     permissions: std::collections::HashMap<String, String>,
+}
+
+/// Two-shape model declaration. Backwards-compat: `model: haiku` continues
+/// to parse as `Alias("haiku")`. New shape `model: { base: ..., shim_store: ... }`
+/// declares both layers of agent identity (immutable substrate + mutable
+/// cognition).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum ModelYaml {
+    Alias(String),
+    Layered(LayeredModelYaml),
+}
+
+/// Layered model block: base substrate + optional cognitive layer.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct LayeredModelYaml {
+    /// Base model alias (e.g. `qwen-2.5-3b`, `haiku`, or full provider id).
+    base: String,
+    /// Named shim_store under the kernel's `<data_dir>/shim_stores/` tree.
+    /// Optional — agents that don't yet have shims simply omit it.
+    #[serde(default)]
+    shim_store: Option<String>,
 }
 
 /// WASM sandboxed tool configuration.
@@ -617,12 +641,18 @@ fn build_organism(raw: OrganismYaml, base_dir: Option<&Path>) -> Result<Organism
                         .map_err(|e| format!("listener '{}': {e}", l.name))?;
                     permissions.insert(tool, tier);
                 }
+                let (model, shim_store) = match cfg.model {
+                    Some(ModelYaml::Alias(s)) => (Some(s), None),
+                    Some(ModelYaml::Layered(l)) => (Some(l.base), l.shim_store),
+                    None => (None, None),
+                };
                 let config = AgentConfig {
                     prompt: cfg.prompt,
                     max_tokens: cfg.max_tokens.unwrap_or(4096),
                     max_routing_iterations: cfg.max_iterations.unwrap_or(5),
                     max_agentic_iterations: cfg.max_agentic_iterations.unwrap_or(25),
-                    model: cfg.model,
+                    model,
+                    shim_store,
                     permissions,
                 };
                 (true, Some(config))
@@ -2716,5 +2746,116 @@ listeners:
         let org = parse_organism(yaml).unwrap();
         let tool = org.get_listener("file-read").unwrap();
         assert!(tool.trigger.is_none());
+    }
+
+    // ── model: { base, shim_store } block ──
+
+    #[test]
+    fn agent_model_alias_string_legacy() {
+        let yaml = r#"
+organism:
+  name: t
+
+listeners:
+  - name: bob
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Bob"
+    agent:
+      prompt: "x"
+      model: haiku
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let cfg = org
+            .get_listener("bob")
+            .unwrap()
+            .agent_config
+            .as_ref()
+            .unwrap();
+        assert_eq!(cfg.model.as_deref(), Some("haiku"));
+        assert!(cfg.shim_store.is_none());
+    }
+
+    #[test]
+    fn agent_model_layered_block_with_shim_store() {
+        let yaml = r#"
+organism:
+  name: t
+
+listeners:
+  - name: bob
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Bob"
+    agent:
+      prompt: "x"
+      model:
+        base: qwen-2.5-3b
+        shim_store: bob-coastliners
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let cfg = org
+            .get_listener("bob")
+            .unwrap()
+            .agent_config
+            .as_ref()
+            .unwrap();
+        assert_eq!(cfg.model.as_deref(), Some("qwen-2.5-3b"));
+        assert_eq!(cfg.shim_store.as_deref(), Some("bob-coastliners"));
+    }
+
+    #[test]
+    fn agent_model_layered_block_without_shim_store() {
+        let yaml = r#"
+organism:
+  name: t
+
+listeners:
+  - name: bob
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Bob"
+    agent:
+      prompt: "x"
+      model:
+        base: qwen-2.5-3b
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let cfg = org
+            .get_listener("bob")
+            .unwrap()
+            .agent_config
+            .as_ref()
+            .unwrap();
+        assert_eq!(cfg.model.as_deref(), Some("qwen-2.5-3b"));
+        assert!(
+            cfg.shim_store.is_none(),
+            "shim_store omitted from layered block must yield None"
+        );
+    }
+
+    #[test]
+    fn agent_model_omitted_entirely() {
+        let yaml = r#"
+organism:
+  name: t
+
+listeners:
+  - name: bob
+    payload_class: agent.AgentTask
+    handler: agent.handle
+    description: "Bob"
+    agent:
+      prompt: "x"
+"#;
+        let org = parse_organism(yaml).unwrap();
+        let cfg = org
+            .get_listener("bob")
+            .unwrap()
+            .agent_config
+            .as_ref()
+            .unwrap();
+        assert!(cfg.model.is_none());
+        assert!(cfg.shim_store.is_none());
     }
 }
