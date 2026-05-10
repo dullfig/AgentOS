@@ -1829,6 +1829,7 @@ mod tests {
             thread_id: "t1".into(),
             agent_name: "test-agent".into(),
             text: "Done!".into(),
+            shim_report: None,
         }));
         assert_eq!(app.activity_log[0].status, ActivityStatus::Done);
     }

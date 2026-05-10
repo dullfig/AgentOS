@@ -7,7 +7,7 @@
 //! memory growth. The first message (original task) is pinned, and a
 //! synthetic summary is injected when older messages are pruned.
 
-use agentos_events::{ContentBlock, Message, ToolResultBlock};
+use agentos_events::{ContentBlock, Message, ShimReport, ToolResultBlock};
 
 /// Default maximum number of messages to retain in a thread.
 /// ~30 agentic turns (each turn ≈ 2-3 messages: user/assistant/tool_result).
@@ -19,6 +19,11 @@ pub struct AgentThread {
     pub messages: Vec<Message>,
     /// Current state in the agentic loop.
     pub state: AgentState,
+    /// Cortex shim outcomes from the most recent LLM call on this
+    /// thread. None when no shim attachment was used (default agent
+    /// config). Populated each time `call_opus` runs; the agent's
+    /// `AgentResponse` event surfaces the most recent value.
+    pub latest_shim_report: Option<ShimReport>,
     /// Maximum messages to retain. When exceeded, the oldest messages
     /// (except the first) are pruned and replaced with a summary.
     max_messages: usize,
@@ -56,6 +61,7 @@ impl Default for AgentThread {
         Self {
             messages: Vec::new(),
             state: AgentState::Ready,
+            latest_shim_report: None,
             max_messages: DEFAULT_MAX_MESSAGES,
             pruned_count: 0,
         }

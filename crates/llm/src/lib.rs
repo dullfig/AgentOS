@@ -11,7 +11,7 @@ pub mod types;
 
 pub use client::{AnthropicClient, LlmError, ModelInfo};
 pub use openai::OpenAiClient;
-use types::{resolve_model, Message, MessagesRequest, MessagesResponse};
+use types::{resolve_model, Message, MessagesRequest, MessagesResponse, ShimAttachment};
 
 /// Which wire protocol a provider speaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +154,7 @@ impl LlmPool {
             system: system.map(|s| s.to_string()),
             temperature: None,
             tools: None,
+            shims: None,
         };
 
         match &self.client {
@@ -171,6 +172,27 @@ impl LlmPool {
         system: Option<&str>,
         tools: Vec<types::ToolDefinition>,
     ) -> Result<MessagesResponse, LlmError> {
+        self.complete_with_tools_and_shims(model, messages, max_tokens, system, tools, None)
+            .await
+    }
+
+    /// Send a completion request with tool definitions and an optional
+    /// cortex shim attachment (gate / steer / inject + rules table).
+    ///
+    /// `shims` is silently passed through to non-cortex providers — the
+    /// MessagesRequest field has `skip_serializing_if = None` and
+    /// Anthropic ignores unknown extras. Cortex's OpenAI-compat
+    /// `/v1/chat/completions` reads the four flat fields off the wire
+    /// body and returns shim outcomes in `MessagesResponse.shim_metadata`.
+    pub async fn complete_with_tools_and_shims(
+        &self,
+        model: Option<&str>,
+        messages: Vec<Message>,
+        max_tokens: u32,
+        system: Option<&str>,
+        tools: Vec<types::ToolDefinition>,
+        shims: Option<ShimAttachment>,
+    ) -> Result<MessagesResponse, LlmError> {
         let resolved_model = model
             .map(|m| resolve_model(m).to_string())
             .unwrap_or_else(|| self.default_model.clone());
@@ -182,6 +204,7 @@ impl LlmPool {
             system: system.map(|s| s.to_string()),
             temperature: None,
             tools: if tools.is_empty() { None } else { Some(tools) },
+            shims,
         };
 
         match &self.client {

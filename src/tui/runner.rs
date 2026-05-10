@@ -812,6 +812,7 @@ profiles:
             thread_id: "t1".into(),
             agent_name: "test-agent".into(),
             text: "Done! Here is the summary.".into(),
+            shim_report: None,
         }));
 
         assert_eq!(app.agent_status, AgentStatus::Idle);

@@ -266,6 +266,10 @@ pub async fn post_messages(
         }
 
         let mut silent = true;
+        let mut shim_decisions: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::new();
+        let mut active_steers: Vec<String> = Vec::new();
+        let mut signals: Vec<String> = Vec::new();
 
         // Cap how long we wait for Bob to respond. v1 contract says nothing
         // about timeout but we don't want a stuck instance to hold an HTTP
@@ -277,12 +281,30 @@ pub async fn post_messages(
                 _ = tokio::time::sleep_until(deadline) => break,
                 msg = events.recv() => {
                     match msg {
-                        Ok(PipelineEvent::AgentResponse { thread_id, text, .. })
+                        Ok(PipelineEvent::AgentResponse { thread_id, text, shim_report, .. })
                             if thread_id == buffer_thread_id =>
                         {
-                            silent = false;
-                            if let Ok(ev) = text_event(&text) {
-                                yield Ok(ev);
+                            // Shim outcomes (if any) drive both the silence
+                            // decision and the done-event metadata. Cortex's
+                            // `gate_decisions` surface as `shim_decisions` per
+                            // the public contract.
+                            let force_silent = shim_report.as_ref().map(|r| r.silent).unwrap_or(false);
+                            if let Some(report) = shim_report {
+                                shim_decisions = report.gate_decisions;
+                                active_steers = report.active_steers;
+                                signals = report.signals;
+                            }
+
+                            if force_silent {
+                                // Silence-as-first-class: zero text events,
+                                // done with silent=true. Empty `text` from a
+                                // cortex silent path matches this branch.
+                                silent = true;
+                            } else {
+                                silent = false;
+                                if let Ok(ev) = text_event(&text) {
+                                    yield Ok(ev);
+                                }
                             }
                             break;
                         }
@@ -304,6 +326,9 @@ pub async fn post_messages(
                 generation_ms: started.elapsed().as_millis() as u64,
                 model: String::new(),
                 memex_corpora_queried: vec![],
+                shim_decisions,
+                active_steers,
+                signals,
             },
         };
         if let Ok(ev) = done_event(&done) {

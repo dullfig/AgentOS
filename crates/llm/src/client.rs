@@ -199,6 +199,7 @@ mod tests {
             system: None,
             temperature: Some(0.7),
             tools: None,
+            shims: None,
         };
 
         let json = serde_json::to_value(&req).unwrap();

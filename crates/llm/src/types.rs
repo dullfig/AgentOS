@@ -50,6 +50,13 @@ pub struct MessagesRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
+    /// Cortex shim attachment for `/v1/chat/completions`. None for
+    /// providers that don't speak the cortex extension (Anthropic,
+    /// stock OpenAI). The OpenAI client flattens these onto the wire
+    /// request; the Anthropic client serializes the field as an unknown
+    /// extra and Anthropic ignores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shims: Option<ShimAttachment>,
 }
 
 /// Response from the Anthropic Messages API.
@@ -60,6 +67,135 @@ pub struct MessagesResponse {
     pub content: Vec<ContentBlock>,
     pub stop_reason: Option<String>,
     pub usage: Usage,
+    /// Cortex shim outcomes when present. None for non-cortex providers.
+    #[serde(default)]
+    pub shim_metadata: Option<ShimMetadata>,
+}
+
+// ── Shim types (cortex `/v1/chat/completions` extension) ──
+
+/// Cortex shim attachment per `project_cortex_v1_shim_api.md`.
+///
+/// Four parallel vectors of shim ids plus a priority-ordered rules
+/// table cortex evaluates after gates fire. AgentOS attaches one
+/// `ShimAttachment` per request; cortex serializes the four fields
+/// flat on the chat-completions wire body.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ShimAttachment {
+    /// Gate shims — fire once at end-of-prefill; their scalar decisions
+    /// feed `shim_rules` evaluation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_shims: Vec<String>,
+
+    /// Steer shims — apply per-token during decode. Cortex starts decode
+    /// with these active unless a rule's `activate` overrides them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steer_shims: Vec<String>,
+
+    /// Injection shims — attach throughout the forward pass (prefill +
+    /// decode), adding a residual delta at their declared layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inject_shims: Vec<String>,
+
+    /// Declarative rule table cortex matches in order after gate shims
+    /// fire. First match wins; an `else` rule serves as the fallback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shim_rules: Vec<ShimRule>,
+}
+
+impl ShimAttachment {
+    pub fn is_empty(&self) -> bool {
+        self.gate_shims.is_empty()
+            && self.steer_shims.is_empty()
+            && self.inject_shims.is_empty()
+            && self.shim_rules.is_empty()
+    }
+}
+
+/// One rule in the cortex shim dispatch table.
+///
+/// Either `{"if": <cond>, "then": <action>}` or `{"else": <action>}`.
+/// Cortex evaluates rules in declared order and stops at the first match.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ShimRule {
+    /// Predicate-action: when `condition` matches a gate's decision,
+    /// take `action`.
+    If {
+        #[serde(rename = "if")]
+        condition: ShimCondition,
+        #[serde(rename = "then")]
+        action: ShimAction,
+    },
+    /// Fallback when no preceding rule matched.
+    Else {
+        #[serde(rename = "else")]
+        action: ShimAction,
+    },
+}
+
+/// Condition under `"if"`. v1 supports a single comparison form:
+/// the named gate's scalar output is strictly greater than `gt`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShimCondition {
+    /// Gate shim id to inspect.
+    pub gate: String,
+    /// Strict greater-than threshold.
+    pub gt: f32,
+}
+
+/// Action under `"then"` / `"else"`. Vocabulary is intentionally bounded:
+/// activate a steer set, route to silence, attach a free-form signal.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ShimAction {
+    /// Activate these steers, replacing the request's default steer set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activate: Vec<String>,
+    /// When true, cortex emits a silent done event (zero text tokens).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub silent: bool,
+    /// Free-form signal string surfaced in `ShimMetadata.signals`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Shim outcomes cortex returns alongside the chat-completion response.
+///
+/// `silent=true` accompanies a response with no generated content —
+/// the cortex rule table chose silence as a first-class outcome.
+/// `gate_decisions` lets the caller log or learn from the gate values
+/// without re-running them. `active_steers` records what actually
+/// shaped the decode (after rule arbitration). `signals` carries any
+/// free-form strings rule actions emitted (e.g. `"escalate"`).
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+pub struct ShimMetadata {
+    /// True when cortex emitted zero generated tokens by rule decision.
+    #[serde(default)]
+    pub silent: bool,
+
+    /// Per-gate scalar decisions, keyed by gate shim id.
+    #[serde(default)]
+    pub gate_decisions: std::collections::HashMap<String, f32>,
+
+    /// Steer shims that were actually active during decode.
+    #[serde(default)]
+    pub active_steers: Vec<String>,
+
+    /// Free-form signal strings emitted by rule actions.
+    #[serde(default)]
+    pub signals: Vec<String>,
+
+    /// Prefill latency in milliseconds (cortex-side).
+    #[serde(default)]
+    pub prefill_ms: Option<u64>,
+
+    /// Generation latency in milliseconds (cortex-side).
+    #[serde(default)]
+    pub generation_ms: Option<u64>,
 }
 
 /// Token usage from the API response.
@@ -124,6 +260,7 @@ mod tests {
             system: Some("You are helpful.".into()),
             temperature: None,
             tools: None,
+            shims: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -132,6 +269,7 @@ mod tests {
         assert!(json.contains("\"system\":\"You are helpful.\""));
         assert!(!json.contains("temperature"));
         assert!(!json.contains("tools"));
+        assert!(!json.contains("shims"));
     }
 
     #[test]
@@ -142,6 +280,7 @@ mod tests {
             messages: vec![Message::text("user", "What is 2+2?")],
             system: None,
             temperature: None,
+            shims: None,
             tools: Some(vec![ToolDefinition {
                 name: "calculator".into(),
                 description: "A simple calculator".into(),

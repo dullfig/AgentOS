@@ -36,7 +36,8 @@ use rust_pipeline::prelude::*;
 use tokio::sync::{broadcast, Mutex};
 
 use agentos_librarian::Librarian;
-use agentos_events::{ContentBlock, ToolDefinition, ToolResultBlock};
+use agentos_events::{ContentBlock, ShimReport, ToolDefinition, ToolResultBlock};
+use agentos_llm::types::ShimAttachment;
 use agentos_llm::LlmPool;
 use agentos_organism::AgentConfig;
 use agentos_events::{ConversationEntry, PipelineEvent};
@@ -73,6 +74,11 @@ pub struct CodingAgentHandler {
     max_tokens: u32,
     /// Model override. None = pool default.
     model: Option<String>,
+    /// Cortex shim attachment applied to every LLM call this handler
+    /// makes. None disables shims entirely (default — non-cortex
+    /// providers ignore the field even when present). Step 5's
+    /// shim-expert agent owns the lifecycle of this value.
+    shim_config: Option<ShimAttachment>,
 }
 
 /// Type alias — generic agent handler (same implementation, data-driven identity).
@@ -101,6 +107,7 @@ impl CodingAgentHandler {
             event_tx: None,
             max_tokens: 4096,
             model: None,
+            shim_config: None,
         }
     }
 
@@ -124,6 +131,7 @@ impl CodingAgentHandler {
             event_tx: None,
             max_tokens: config.max_tokens,
             model: config.model.clone(),
+            shim_config: None,
         }
     }
 
@@ -147,6 +155,7 @@ impl CodingAgentHandler {
             event_tx: None,
             max_tokens: 4096,
             model: None,
+            shim_config: None,
         }
     }
 
@@ -170,6 +179,7 @@ impl CodingAgentHandler {
             event_tx: None,
             max_tokens: 4096,
             model: None,
+            shim_config: None,
         }
     }
 
@@ -195,9 +205,33 @@ impl CodingAgentHandler {
         self.event_tx = Some(tx);
     }
 
+    /// Attach a cortex shim configuration (builder-style).
+    ///
+    /// Every subsequent LLM call this handler makes will carry the
+    /// shim attachment on the wire. None disables shims entirely
+    /// (default; non-cortex providers ignore shims even when present).
+    pub fn with_shim_config(mut self, config: ShimAttachment) -> Self {
+        self.shim_config = Some(config);
+        self
+    }
+
+    /// Replace the shim config at runtime. Step 5's shim-expert agent
+    /// will call this when it adds, retires, or composes shims.
+    pub fn set_shim_config(&mut self, config: Option<ShimAttachment>) {
+        self.shim_config = config;
+    }
+
 
     /// Emit an AgentResponse event if an event sender is attached.
-    fn maybe_emit_response(&self, thread_id: &str, result: &HandlerResult) {
+    ///
+    /// Carries the thread's most recent shim outcomes (if any) so the
+    /// server can surface them in the v1 API contract's `done` event.
+    fn maybe_emit_response(
+        &self,
+        thread_id: &str,
+        thread: &AgentThread,
+        result: &HandlerResult,
+    ) {
         if let Ok(HandlerResponse::Reply { ref payload_xml }) = result {
             if let Some(ref tx) = self.event_tx {
                 let text = String::from_utf8_lossy(payload_xml);
@@ -207,6 +241,7 @@ impl CodingAgentHandler {
                     thread_id: thread_id.to_string(),
                     agent_name: self.name.clone(),
                     text: response_text,
+                    shim_report: thread.latest_shim_report.clone(),
                 });
             }
         }
@@ -226,6 +261,7 @@ impl CodingAgentHandler {
                 thread_id: thread_id.to_string(),
                 agent_name: self.name.clone(),
                 text: format!("Error: {error}"),
+                shim_report: None,
             });
         }
     }
@@ -278,7 +314,7 @@ impl CodingAgentHandler {
     /// own 5-minute timeout as a second safety net.
     async fn call_opus(
         &self,
-        thread: &AgentThread,
+        thread: &mut AgentThread,
     ) -> Result<agentos_llm::types::MessagesResponse, String> {
         // Optional: curate context before the API call
         let mut system = format!(
@@ -297,18 +333,31 @@ impl CodingAgentHandler {
         }
 
         let pool = self.pool.lock().await;
-        let fut = pool.complete_with_tools(
+        let fut = pool.complete_with_tools_and_shims(
             self.model.as_deref(),
             thread.messages.clone(),
             self.max_tokens,
             Some(&system),
             self.tool_definitions.clone(),
+            self.shim_config.clone(),
         );
 
-        match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
-            Ok(result) => result.map_err(|e| format!("LLM API error: {e}")),
-            Err(_) => Err("LLM API call timed out after 5 minutes".into()),
-        }
+        let response = match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
+            Ok(result) => result.map_err(|e| format!("LLM API error: {e}"))?,
+            Err(_) => return Err("LLM API call timed out after 5 minutes".into()),
+        };
+
+        // Stash cortex's shim outcomes on the thread; the next
+        // AgentResponse event surfaces them. None for non-cortex
+        // providers (parser tolerates the missing field).
+        thread.latest_shim_report = response.shim_metadata.as_ref().map(|m| ShimReport {
+            silent: m.silent,
+            gate_decisions: m.gate_decisions.clone(),
+            active_steers: m.active_steers.clone(),
+            signals: m.signals.clone(),
+        });
+
+        Ok(response)
     }
 
     /// Process an Opus response: extract tool calls or final text.
@@ -665,7 +714,7 @@ impl Handler for CodingAgentHandler {
                     let result = self
                         .dispatch_or_route(thread, action, &[])
                         .await;
-                    self.maybe_emit_response(&thread_id, &result);
+                    self.maybe_emit_response(&thread_id, thread, &result);
                     self.maybe_emit_conversation(&thread_id, thread);
                     result
                 }
@@ -717,7 +766,7 @@ impl Handler for CodingAgentHandler {
             let result = self
                 .dispatch_or_route(thread, action, &[])
                 .await;
-            self.maybe_emit_response(&thread_id, &result);
+            self.maybe_emit_response(&thread_id, thread, &result);
             self.maybe_emit_conversation(&thread_id, thread);
             result
         }
@@ -963,6 +1012,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 5,
             },
+            shim_metadata: None,
         };
         let action = handler.process_response(&response);
         match action {
@@ -993,6 +1043,7 @@ mod tests {
                 input_tokens: 20,
                 output_tokens: 15,
             },
+            shim_metadata: None,
         };
         let action = handler.process_response(&response);
         match action {
@@ -1029,6 +1080,7 @@ mod tests {
                 input_tokens: 30,
                 output_tokens: 25,
             },
+            shim_metadata: None,
         };
         let action = handler.process_response(&response);
         match action {

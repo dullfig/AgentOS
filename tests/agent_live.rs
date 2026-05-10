@@ -225,6 +225,7 @@ fn response_with_text_and_tool_use() {
             input_tokens: 10,
             output_tokens: 10,
         },
+        shim_metadata: None,
     };
 
     // Both text and tool_use should be accessible

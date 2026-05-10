@@ -9,6 +9,25 @@ use async_trait::async_trait;
 use rust_pipeline::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+// ── Cortex shim event payload ──
+
+/// Cross-crate transport for cortex's shim outcomes on one turn.
+///
+/// Mirrors `agentos_llm::types::ShimMetadata` field-for-field but lives
+/// in this zero-dependency crate so the event bus doesn't pull `agentos-llm`
+/// into every consumer (TUI, observers, server).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ShimReport {
+    /// Cortex chose silence — zero text tokens generated.
+    pub silent: bool,
+    /// Per-gate scalar decisions, keyed by gate shim id.
+    pub gate_decisions: HashMap<String, f32>,
+    /// Steer shims active during the actual decode.
+    pub active_steers: Vec<String>,
+    /// Free-form signal strings emitted by rule actions.
+    pub signals: Vec<String>,
+}
+
 // ── Pipeline Events ──
 
 /// Events emitted by the pipeline for observation.
@@ -50,10 +69,17 @@ pub enum PipelineEvent {
         success: bool,
     },
     /// Coding agent produced a final response.
+    ///
+    /// `text` is the user-facing reply (may be empty when shim rules
+    /// chose silence). `shim_report`, when present, carries cortex's
+    /// gate decisions and active steers for downstream consumers
+    /// (server's `done` event, TUI activity log).
     AgentResponse {
         thread_id: String,
         agent_name: String,
         text: String,
+        #[doc = "Shim outcomes from cortex when this turn used shims."]
+        shim_report: Option<ShimReport>,
     },
     /// Agent is about to call the LLM (thinking).
     AgentThinking {
