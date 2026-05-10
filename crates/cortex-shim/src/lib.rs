@@ -16,10 +16,12 @@
 //! memory.
 
 pub mod client;
+pub mod embed;
 pub mod error;
 pub mod manifest;
 
 pub use client::CortexShimClient;
+pub use embed::{EmbedClient, EmbedRequest, EmbedResponse, KnownPooling, Pooling};
 pub use error::ShimClientError;
 pub use manifest::{
     Attachment, InputShape, OutputShape, ShimDecision, ShimManifest, ShimPhase, ShimSummary,

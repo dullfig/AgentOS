@@ -175,7 +175,7 @@ impl CortexShimClient {
 }
 
 /// Map HTTP errors into `ShimClientError`. Returns the response when OK.
-async fn check_status(
+pub(crate) async fn check_status(
     status: StatusCode,
     resp: reqwest::Response,
 ) -> Result<reqwest::Response, ShimClientError> {
