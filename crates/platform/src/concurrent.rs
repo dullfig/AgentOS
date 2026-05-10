@@ -39,12 +39,35 @@ pub struct SharedRouter<R: Runtime> {
 }
 
 impl<R: Runtime + 'static> SharedRouter<R> {
-    /// Create a new shared router.
+    /// Create a new in-memory shared router. State is lost on process
+    /// exit. Use [`Self::open`] for a registry that persists across
+    /// restarts.
     ///
     /// `max_instances`: 0 = unlimited.
     /// `eviction_interval`: how often to sweep for idle instances.
     pub fn new(max_instances: usize, runtime: R, eviction_interval: Duration) -> Self {
         let registry = InstanceRegistry::new(max_instances);
+        let router = Router::new(registry);
+        Self {
+            inner: Arc::new(Mutex::new(router)),
+            runtime: Arc::new(runtime),
+            eviction_interval,
+        }
+    }
+
+    /// Create a shared router backed by an on-disk JSON snapshot.
+    ///
+    /// On boot the snapshot at `snapshot_path` is replayed into the
+    /// in-memory registry; from then on every materialize / kill /
+    /// idle-eviction triggers a flush. Missing or corrupt snapshots
+    /// are treated as first-boot.
+    pub fn open(
+        snapshot_path: std::path::PathBuf,
+        max_instances: usize,
+        runtime: R,
+        eviction_interval: Duration,
+    ) -> Self {
+        let registry = InstanceRegistry::open(snapshot_path, max_instances);
         let router = Router::new(registry);
         Self {
             inner: Arc::new(Mutex::new(router)),

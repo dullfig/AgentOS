@@ -61,4 +61,5 @@ pub mod concurrent;
 pub mod events;
 pub mod registry;
 pub mod router;
+pub mod snapshot;
 pub mod template;

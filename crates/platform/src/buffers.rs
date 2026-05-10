@@ -155,7 +155,6 @@ pub struct BufferInfo {
 #[derive(Debug, Clone, Default)]
 pub struct BufferStore {
     buffers: HashMap<BufferId, BufferInfo>,
-    next_thread_suffix: u64,
 }
 
 impl BufferStore {
@@ -166,8 +165,11 @@ impl BufferStore {
     /// Get or create a buffer. Returns (buffer_info, was_created).
     ///
     /// If the buffer already exists, updates last_accessed and returns it.
-    /// If not, creates it with a new thread_id derived from the instance's
-    /// thread_id + a suffix.
+    /// If not, creates it with a thread_id derived deterministically from
+    /// the instance's thread_id and the buffer's canonical name. Same
+    /// (instance, buffer_id) → same thread_id across process restarts;
+    /// that's what lets WAL-backed context segments survive restart
+    /// without persisting buffer metadata separately.
     pub fn get_or_create(
         &mut self,
         id: BufferId,
@@ -180,11 +182,7 @@ impl BufferStore {
             info.last_accessed = Instant::now();
             (info, false)
         } else {
-            self.next_thread_suffix += 1;
-            let thread_id = format!(
-                "{}/buf-{:03}",
-                instance_thread_id, self.next_thread_suffix
-            );
+            let thread_id = derive_buffer_thread_id(instance_thread_id, &id);
 
             let now = Instant::now();
             let info = BufferInfo {
@@ -235,6 +233,22 @@ impl BufferStore {
         self.buffers.clear();
         count
     }
+}
+
+/// Derive a deterministic buffer thread_id. The result is stable across
+/// process restarts so context segments WAL'd under a buffer thread keep
+/// resolving to the same buffer after a kernel replay.
+///
+/// `[`/`]` from keyed buffer IDs are replaced with `-` so the thread_id
+/// stays safe in trace logs and any path-derived contexts.
+fn derive_buffer_thread_id(instance_thread_id: &str, id: &BufferId) -> String {
+    let canonical = id.canonical();
+    let label: String = canonical
+        .chars()
+        .map(|c| if matches!(c, '[' | ']') { '-' } else { c })
+        .collect();
+    let label = label.trim_end_matches('-').to_string();
+    format!("{instance_thread_id}/buf-{label}")
 }
 
 #[cfg(test)]
@@ -331,6 +345,30 @@ mod tests {
         assert_ne!(t1, t2);
         assert!(t1.starts_with("inst-001/buf-"));
         assert!(t2.starts_with("inst-001/buf-"));
+    }
+
+    #[test]
+    fn buffer_thread_id_is_deterministic_across_stores() {
+        // Two BufferStores created independently (e.g. across a process
+        // restart) must mint identical thread_ids for the same BufferId
+        // — that's what lets WAL-replayed context segments survive.
+        let mut a = BufferStore::new();
+        let mut b = BufferStore::new();
+
+        let id = BufferId { name: "dm".into(), key: None };
+        let (info_a, _) = a.get_or_create(id.clone(), "inst-001");
+        let (info_b, _) = b.get_or_create(id.clone(), "inst-001");
+
+        assert_eq!(info_a.thread_id, info_b.thread_id);
+        assert_eq!(info_a.thread_id, "inst-001/buf-dm");
+
+        let keyed = BufferId { name: "help".into(), key: Some("email-issue".into()) };
+        let (info_a, _) = a.get_or_create(keyed.clone(), "inst-001");
+        let (info_b, _) = b.get_or_create(keyed.clone(), "inst-001");
+
+        assert_eq!(info_a.thread_id, info_b.thread_id);
+        // `[`/`]` from the canonical form are sanitized to `-`.
+        assert_eq!(info_a.thread_id, "inst-001/buf-help-email-issue");
     }
 
     #[test]

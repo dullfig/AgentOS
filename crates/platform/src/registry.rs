@@ -21,10 +21,12 @@
 //! Transitions are driven by idle timeouts and memory pressure.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::address::Address;
 use crate::buffers::BufferStore;
+use crate::snapshot::{self, InstanceRecord, RegistrySnapshot};
 
 /// Lifecycle policy for an agent instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,15 +125,113 @@ pub struct InstanceRegistry {
     max_instances: usize,
     /// Counter for generating unique thread_ids.
     next_thread_id: u64,
+    /// Optional snapshot path. When `Some`, materialize / kill / evict
+    /// flush the in-memory state to disk so it survives restart.
+    snapshot_path: Option<PathBuf>,
 }
 
 impl InstanceRegistry {
-    /// Create a new empty registry.
+    /// Create a new empty in-memory registry. Use [`Self::open`] for
+    /// the persistent variant.
     pub fn new(max_instances: usize) -> Self {
         Self {
             instances: HashMap::new(),
             max_instances,
             next_thread_id: 1,
+            snapshot_path: None,
+        }
+    }
+
+    /// Open a registry persisted at `snapshot_path`. If the file exists
+    /// and parses, instances are restored. Missing or corrupt snapshots
+    /// produce an empty registry (treated as first boot).
+    ///
+    /// `next_thread_id` is reseeded from the highest restored
+    /// `inst-NNNNNN` so freshly-materialized instances don't collide
+    /// with replayed ones.
+    pub fn open(snapshot_path: PathBuf, max_instances: usize) -> Self {
+        let mut instances: HashMap<String, InstanceInfo> = HashMap::new();
+        let mut max_seen: u64 = 0;
+
+        if let Ok(Some(snap)) = snapshot::read(&snapshot_path) {
+            for rec in snap.instances {
+                let address = match Address::parse(&rec.address_raw) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!(
+                            address = %rec.address_raw,
+                            error = %e,
+                            "skipping unparseable address in registry snapshot"
+                        );
+                        continue;
+                    }
+                };
+                let parent = rec
+                    .parent_raw
+                    .as_deref()
+                    .and_then(|s| Address::parse(s).ok());
+                if let Some(n) = thread_id_suffix(&rec.thread_id) {
+                    if n > max_seen {
+                        max_seen = n;
+                    }
+                }
+                let now = Instant::now();
+                let info = InstanceInfo {
+                    address,
+                    organism: rec.organism,
+                    thread_id: rec.thread_id,
+                    lifetime: rec.lifetime.into(),
+                    tier: Tier::Active,
+                    parent,
+                    cache_shards: rec.cache_shards,
+                    created_at: now,
+                    last_accessed: now,
+                    buffers: BufferStore::new(),
+                };
+                instances.insert(rec.address_raw, info);
+            }
+        }
+
+        Self {
+            instances,
+            max_instances,
+            next_thread_id: max_seen + 1,
+            snapshot_path: Some(snapshot_path),
+        }
+    }
+
+    /// Force a snapshot write. Returns `Ok(())` when no snapshot path
+    /// is configured (in-memory mode). Errors propagate up so callers
+    /// can decide whether to fail-loud or log-and-continue.
+    pub fn flush(&self) -> std::io::Result<()> {
+        let Some(path) = self.snapshot_path.as_ref() else {
+            return Ok(());
+        };
+        let records: Vec<InstanceRecord> = self
+            .instances
+            .values()
+            .map(|info| InstanceRecord {
+                address_raw: info.address.raw().to_string(),
+                organism: info.organism.clone(),
+                thread_id: info.thread_id.clone(),
+                lifetime: (&info.lifetime).into(),
+                parent_raw: info.parent.as_ref().map(|p| p.raw().to_string()),
+                cache_shards: info.cache_shards.clone(),
+            })
+            .collect();
+        snapshot::write_atomic(path, &RegistrySnapshot::new(records))
+    }
+
+    /// Best-effort flush — logs but doesn't propagate IO errors.
+    /// Used after mutations where a snapshot failure shouldn't crash
+    /// the request path; the next mutation retries.
+    fn flush_quiet(&self) {
+        if let Err(e) = self.flush() {
+            tracing::warn!(
+                path = ?self.snapshot_path,
+                error = %e,
+                "platform registry snapshot write failed; in-memory state intact"
+            );
         }
     }
 
@@ -187,6 +287,7 @@ impl InstanceRegistry {
         };
 
         self.instances.insert(key, info);
+        self.flush_quiet();
         Ok(thread_id)
     }
 
@@ -232,9 +333,12 @@ impl InstanceRegistry {
     /// Kill an instance — remove it from the registry entirely.
     /// Returns the removed instance info.
     pub fn kill(&mut self, address: &Address) -> Result<InstanceInfo, RegistryError> {
-        self.instances
+        let info = self
+            .instances
             .remove(address.raw())
-            .ok_or_else(|| RegistryError::NotFound(address.raw().to_string()))
+            .ok_or_else(|| RegistryError::NotFound(address.raw().to_string()))?;
+        self.flush_quiet();
+        Ok(info)
     }
 
     /// List all materialized instances.
@@ -281,14 +385,18 @@ impl InstanceRegistry {
             }
         }
 
-        to_evict
+        let evicted: Vec<Address> = to_evict
             .iter()
             .filter_map(|key| {
                 self.instances
                     .remove(key)
                     .map(|info| info.address)
             })
-            .collect()
+            .collect();
+        if !evicted.is_empty() {
+            self.flush_quiet();
+        }
+        evicted
     }
 
     /// Total number of materialized instances.
@@ -310,6 +418,15 @@ impl InstanceRegistry {
         }
         (active, shelved, folded)
     }
+}
+
+/// Parse the trailing number out of an `inst-NNNNNN` thread_id, used
+/// to reseed the registry's counter on `open` so we don't reissue an
+/// id that's already on disk.
+fn thread_id_suffix(thread_id: &str) -> Option<u64> {
+    thread_id
+        .strip_prefix("inst-")
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 #[cfg(test)]
@@ -548,5 +665,86 @@ mod tests {
         assert!(reg.is_materialized(&addr("ringhub.bob[alice]")));
         assert!(reg.is_materialized(&addr("chorus.bob[sarah]")));
         assert!(!reg.is_materialized(&addr("ringhub.bob[sarah]")));
+    }
+
+    // ── Snapshot-backed persistence ──
+
+    #[test]
+    fn open_with_no_snapshot_starts_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("registry.json");
+        let reg = InstanceRegistry::open(path, 0);
+        assert_eq!(reg.count(), 0);
+    }
+
+    #[test]
+    fn materialize_writes_snapshot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("registry.json");
+        let mut reg = InstanceRegistry::open(path.clone(), 0);
+        reg.materialize(addr("bob[alice]"), default_opts("bob")).unwrap();
+
+        assert!(path.exists(), "snapshot file should be written on materialize");
+        let snap = crate::snapshot::read(&path).unwrap().expect("snapshot must parse");
+        assert_eq!(snap.instances.len(), 1);
+        assert_eq!(snap.instances[0].address_raw, "bob[alice]");
+    }
+
+    #[test]
+    fn instance_survives_registry_reopen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("registry.json");
+
+        let original_thread_id = {
+            let mut reg = InstanceRegistry::open(path.clone(), 0);
+            let tid = reg.materialize(addr("bob[alice]"), default_opts("bob")).unwrap();
+            tid
+        };
+
+        let reg = InstanceRegistry::open(path, 0);
+        let info = reg
+            .lookup(&addr("bob[alice]"))
+            .expect("bob[alice] must replay from snapshot");
+        assert_eq!(info.thread_id, original_thread_id);
+        assert_eq!(info.organism, "bob");
+        // Tier resets to Active on replay (idle-eviction will reshelve naturally).
+        assert_eq!(info.tier, Tier::Active);
+    }
+
+    #[test]
+    fn next_thread_id_advances_past_replayed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("registry.json");
+
+        // First boot: materialize three instances → inst-000001..3.
+        {
+            let mut reg = InstanceRegistry::open(path.clone(), 0);
+            reg.materialize(addr("bob[a]"), default_opts("bob")).unwrap();
+            reg.materialize(addr("bob[b]"), default_opts("bob")).unwrap();
+            reg.materialize(addr("bob[c]"), default_opts("bob")).unwrap();
+        }
+
+        // Second boot: a fresh materialize must skip past 1..3.
+        let mut reg = InstanceRegistry::open(path, 0);
+        let tid = reg
+            .materialize(addr("bob[d]"), default_opts("bob"))
+            .unwrap();
+        assert_eq!(tid, "inst-000004");
+    }
+
+    #[test]
+    fn kill_persists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("registry.json");
+
+        let mut reg = InstanceRegistry::open(path.clone(), 0);
+        reg.materialize(addr("bob[alice]"), default_opts("bob")).unwrap();
+        reg.materialize(addr("bob[bob]"), default_opts("bob")).unwrap();
+        reg.kill(&addr("bob[alice]")).unwrap();
+
+        // Reopen — only bob[bob] should remain.
+        let reg2 = InstanceRegistry::open(path, 0);
+        assert!(reg2.lookup(&addr("bob[alice]")).is_none());
+        assert!(reg2.lookup(&addr("bob[bob]")).is_some());
     }
 }
