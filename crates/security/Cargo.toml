@@ -1,0 +1,13 @@
+[package]
+name = "agentos-security"
+version = "0.1.0"
+edition = "2021"
+description = "Security profile resolution and dispatch table enforcement for AgentOS."
+
+[dependencies]
+agentos-kernel = { path = "../kernel" }
+agentos-organism = { path = "../organism" }
+
+[dev-dependencies]
+agentos-embedding = { path = "../embedding" }
+tempfile = "3"

@@ -10,7 +10,11 @@
 //! - Enforces security profiles before messages enter the pipeline
 //! - On crash recovery, rebuilds in-memory state from the kernel
 
+pub mod buffer;
 pub mod events;
+pub mod llm_handler;
+pub mod runtime_impl;
+pub mod test_organism;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -21,27 +25,28 @@ use rust_pipeline::prelude::*;
 
 use events::PipelineEvent;
 
-use crate::agent::handler::CodingAgentHandler;
-use crate::agent::prompts;
-use crate::agent::tools as agent_tools;
-use crate::embedding::tfidf::TfIdfProvider;
-use crate::tools::ToolPeer;
-use crate::wit::ToolInterface;
-use crate::embedding::EmbeddingIndex;
-use crate::kernel::Kernel;
-use crate::librarian::handler::LibrarianHandler;
-use crate::librarian::Librarian;
-use crate::llm::{handler::LlmHandler, LlmPool};
-use crate::organism::Organism;
-use crate::ports::{Direction, PortDeclaration, PortManager, Protocol};
-use crate::routing::{self, form_filler::CloudFormFiller, SemanticRouter, ToolMetadata};
-use crate::security::SecurityResolver;
-use crate::treesitter::handler::CodeIndexHandler;
-use crate::treesitter::CodeIndex;
-use crate::wasm::definitions::WasmToolRegistry;
-use crate::wasm::peer::WasmToolPeer;
-use crate::wasm::python_runtime::{PythonRuntime, PythonToolPeer};
-use crate::wasm::runtime::WasmRuntime;
+use agentos_agent::handler::CodingAgentHandler;
+use agentos_agent::prompts;
+use agentos_agent::tools as agent_tools;
+use agentos_embedding::tfidf::TfIdfProvider;
+use agentos_events::ToolPeer;
+use agentos_wit::ToolInterface;
+use agentos_embedding::EmbeddingIndex;
+use agentos_kernel::Kernel;
+use agentos_librarian::handler::LibrarianHandler;
+use agentos_librarian::Librarian;
+use agentos_llm::LlmPool;
+use crate::llm_handler::LlmHandler;
+use agentos_organism::Organism;
+use agentos_ports::{Direction, PortDeclaration, PortManager, Protocol};
+use agentos_routing::{self as routing, form_filler::CloudFormFiller, SemanticRouter, ToolMetadata};
+use agentos_security::SecurityResolver;
+use agentos_treesitter::handler::CodeIndexHandler;
+use agentos_treesitter::CodeIndex;
+use agentos_wasm::definitions::WasmToolRegistry;
+use agentos_wasm::peer::WasmToolPeer;
+use agentos_wasm::python_runtime::{PythonRuntime, PythonToolPeer};
+use agentos_wasm::runtime::WasmRuntime;
 
 /// AgentPipeline: wraps rust-pipeline's Pipeline with kernel integration.
 pub struct AgentPipeline {
@@ -58,11 +63,15 @@ pub struct AgentPipeline {
     /// LLM pool (shared with TUI for `/model` command).
     llm_pool: Option<Arc<Mutex<LlmPool>>>,
     /// Receiver for tool approval requests from handlers (consumed by TUI runner).
-    approval_rx: Option<tokio::sync::mpsc::Receiver<crate::agent::permissions::ToolApprovalRequest>>,
+    approval_rx: Option<tokio::sync::mpsc::Receiver<agentos_agent::permissions::ToolApprovalRequest>>,
     /// Receiver for user query requests from agents (consumed by TUI runner).
-    query_rx: Option<tokio::sync::mpsc::Receiver<crate::tools::user_channel::UserQueryRequest>>,
+    query_rx: Option<tokio::sync::mpsc::Receiver<agentos_tools::user_channel::UserQueryRequest>>,
     /// Trigger runtime — spawns background tasks for file watchers, timers, crons, etc.
     trigger_runtime: Option<agentos_trigger::TriggerRuntime>,
+    /// Kernel data directory — exposed so frontends can derive sibling
+    /// paths (e.g. the platform registry snapshot) without locking the
+    /// kernel mutex.
+    data_dir: std::path::PathBuf,
 }
 
 impl AgentPipeline {
@@ -99,6 +108,7 @@ impl AgentPipeline {
             approval_rx: None,
             query_rx: None,
             trigger_runtime: None,
+            data_dir: data_dir.to_path_buf(),
         })
     }
 
@@ -234,14 +244,14 @@ impl AgentPipeline {
     /// Take the approval request receiver (consumed once by TUI runner).
     pub fn take_approval_receiver(
         &mut self,
-    ) -> Option<tokio::sync::mpsc::Receiver<crate::agent::permissions::ToolApprovalRequest>> {
+    ) -> Option<tokio::sync::mpsc::Receiver<agentos_agent::permissions::ToolApprovalRequest>> {
         self.approval_rx.take()
     }
 
     /// Take the user query request receiver (consumed once by TUI runner).
     pub fn take_query_receiver(
         &mut self,
-    ) -> Option<tokio::sync::mpsc::Receiver<crate::tools::user_channel::UserQueryRequest>> {
+    ) -> Option<tokio::sync::mpsc::Receiver<agentos_tools::user_channel::UserQueryRequest>> {
         self.query_rx.take()
     }
 
@@ -249,10 +259,63 @@ impl AgentPipeline {
     pub fn reload(
         &mut self,
         new_organism: Organism,
-    ) -> Result<crate::organism::ReloadEvent, String> {
+    ) -> Result<agentos_organism::ReloadEvent, String> {
         let event = self.organism.apply_config(new_organism);
         self.security.rebuild(&self.organism)?;
         Ok(event)
+    }
+
+    /// Build a [`PipelineRuntime`] over this pipeline's resources.
+    ///
+    /// The returned runtime borrows kernel/organism via Arc clones and
+    /// captures the live ingress channel — `pipeline.run()` must be called
+    /// first, otherwise the ingress channel is the pre-build placeholder
+    /// and delivered messages are silently dropped.
+    pub fn pipeline_runtime(&self) -> crate::runtime_impl::PipelineRuntime {
+        crate::runtime_impl::PipelineRuntime::new(
+            self.kernel.clone(),
+            Arc::new(self.organism.clone()),
+            self.ingress_tx(),
+        )
+    }
+
+    /// Build a persistent [`SharedRouter`] over this pipeline.
+    ///
+    /// The registry's snapshot lives at `<data_dir>/platform_registry.json`
+    /// — same directory as the kernel WAL — so a restart of the host
+    /// process replays both halves of the platform's durable state from
+    /// adjacent files.
+    ///
+    /// `max_instances`: 0 = unlimited.
+    /// `eviction_interval`: how often to sweep idle instances when the
+    /// returned router's eviction timer is started.
+    ///
+    /// `pipeline.run()` must be called first — see [`pipeline_runtime`].
+    pub fn shared_router(
+        &self,
+        max_instances: usize,
+        eviction_interval: std::time::Duration,
+    ) -> agentos_platform::concurrent::SharedRouter<crate::runtime_impl::PipelineRuntime> {
+        agentos_platform::concurrent::SharedRouter::open(
+            self.data_dir.join("platform_registry.json"),
+            max_instances,
+            self.pipeline_runtime(),
+            eviction_interval,
+        )
+    }
+
+    /// Kernel data directory. Frontends use this to derive sibling
+    /// paths (e.g. snapshot files) without locking the kernel.
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
+    /// Take the trigger runtime out of the pipeline (consumed once by main).
+    ///
+    /// After this returns, the caller owns the runtime and must spawn
+    /// `process_trigger_events` with the receiver and the SharedRouter.
+    pub fn take_trigger_runtime(&mut self) -> Option<agentos_trigger::TriggerRuntime> {
+        self.trigger_runtime.take()
     }
 }
 
@@ -276,18 +339,18 @@ pub struct AgentPipelineBuilder {
     /// Stored at `register_tool()` time, consumed by `with_agents()`.
     tool_interfaces: std::collections::HashMap<String, ToolInterface>,
     /// Local inference engine for constrained decoding (optional).
-    local_engine: Option<crate::routing::local_engine::SharedEngine>,
+    local_engine: Option<agentos_routing::local_engine::SharedEngine>,
     /// ToolDefinitions generated by buffer nodes (callable organisms).
     /// Appended to peer tool definitions in `with_agents()`.
-    buffer_tool_definitions: Vec<crate::llm::types::ToolDefinition>,
+    buffer_tool_definitions: Vec<agentos_llm::types::ToolDefinition>,
     /// Approval channel for tool permission prompts (handler → TUI).
-    approval_tx: tokio::sync::mpsc::Sender<crate::agent::permissions::ToolApprovalRequest>,
+    approval_tx: tokio::sync::mpsc::Sender<agentos_agent::permissions::ToolApprovalRequest>,
     /// Receiver end of approval channel (consumed by TUI runner).
-    approval_rx: Option<tokio::sync::mpsc::Receiver<crate::agent::permissions::ToolApprovalRequest>>,
+    approval_rx: Option<tokio::sync::mpsc::Receiver<agentos_agent::permissions::ToolApprovalRequest>>,
     /// User query channel (agent asks user a question → TUI).
-    query_tx: tokio::sync::mpsc::Sender<crate::tools::user_channel::UserQueryRequest>,
+    query_tx: tokio::sync::mpsc::Sender<agentos_tools::user_channel::UserQueryRequest>,
     /// Receiver end of query channel (consumed by TUI runner).
-    query_rx: Option<tokio::sync::mpsc::Receiver<crate::tools::user_channel::UserQueryRequest>>,
+    query_rx: Option<tokio::sync::mpsc::Receiver<agentos_tools::user_channel::UserQueryRequest>>,
     /// Debug mode: enables DebugGate middleware and PermissionGate override.
     debug: bool,
 }
@@ -328,7 +391,7 @@ impl AgentPipelineBuilder {
     }
 
     /// Get the user query sender (for registering UserChannelHandler).
-    pub fn query_sender(&self) -> tokio::sync::mpsc::Sender<crate::tools::user_channel::UserQueryRequest> {
+    pub fn query_sender(&self) -> tokio::sync::mpsc::Sender<agentos_tools::user_channel::UserQueryRequest> {
         self.query_tx.clone()
     }
 
@@ -352,7 +415,7 @@ impl AgentPipelineBuilder {
             return self.register(listener_name, tool);
         }
 
-        let iface = crate::wit::parser::parse_wit(wit_str)
+        let iface = agentos_wit::parser::parse_wit(wit_str)
             .map_err(|e| format!("WIT parse error for '{}': {}", listener_name, e))?;
 
         let schema = iface.to_payload_schema();
@@ -475,7 +538,7 @@ impl AgentPipelineBuilder {
     pub fn with_buffer_nodes(
         mut self,
         base_dir: &std::path::Path,
-        drive_slot: crate::tools::vdrive_tools::DriveSlot,
+        drive_slot: agentos_tools::vdrive_tools::DriveSlot,
     ) -> Result<Self, String> {
         let pool = match self.llm_pool.clone() {
             Some(p) => p,
@@ -530,7 +593,7 @@ impl AgentPipelineBuilder {
                 "user",
             ];
             // Safe command tools are also known
-            for def in crate::tools::safe_commands::ALL_SAFE_COMMANDS {
+            for def in agentos_tools::safe_commands::ALL_SAFE_COMMANDS {
                 known_tools.push(def.name);
             }
             for req in &buf.requires {
@@ -567,7 +630,7 @@ impl AgentPipelineBuilder {
     /// loads the model and stores the engine for use by `with_semantic_router()`.
     /// If not found, logs a message and continues — local inference is optional.
     pub fn with_local_inference(mut self) -> Result<Self, String> {
-        use crate::routing::local_engine::{load_engine, LocalEngineConfig};
+        use agentos_routing::local_engine::{load_engine, LocalEngineConfig};
 
         match LocalEngineConfig::from_conventional_paths() {
             Some(config) => {
@@ -890,7 +953,7 @@ impl AgentPipelineBuilder {
         let cloud_filler = CloudFormFiller::new(pool, 3);
 
         // Build router — use local engine if available, otherwise cloud-only
-        let form_filler: Box<dyn crate::routing::form_filler::FormFillStrategy> =
+        let form_filler: Box<dyn agentos_routing::form_filler::FormFillStrategy> =
             if let Some(ref engine) = self.local_engine {
                 // Build codeLlm schemas from stored WIT interfaces
                 let mut schemas = std::collections::HashMap::new();
@@ -904,7 +967,7 @@ impl AgentPipelineBuilder {
                     "local form filler: {} tool schemas loaded",
                     schemas.len()
                 );
-                Box::new(crate::routing::form_filler::LocalFormFiller::new(
+                Box::new(agentos_routing::form_filler::LocalFormFiller::new(
                     engine.clone(),
                     schemas,
                     Some(cloud_filler),
@@ -1099,10 +1162,10 @@ impl AgentPipelineBuilder {
         // ensure malformed responses are rejected at the validation gate.
         self.registry
             .schemas
-            .register(crate::tools::tool_response_schema());
+            .register(agentos_tools::tool_response_schema());
         self.registry
             .schemas
-            .register(crate::tools::agent_response_schema());
+            .register(agentos_tools::agent_response_schema());
 
         let kernel =
             Kernel::open(&self.data_dir).map_err(|e| format!("kernel open failed: {e}"))?;
@@ -1144,7 +1207,7 @@ impl AgentPipelineBuilder {
         // DebugGate (pre_dispatch): gates agent→tool calls before handler
         if self.debug {
             pipeline.add_middleware(
-                crate::agent::middleware::debug_gate::DebugGate::new(
+                agentos_agent::middleware::debug_gate::DebugGate::new(
                     true,
                     agent_names,
                     Some(self.approval_tx.clone()),
@@ -1156,13 +1219,13 @@ impl AgentPipelineBuilder {
         // LoopGuard (pre_dispatch): counts iterations, short-circuits at limit
         if !loop_limits.is_empty() {
             pipeline.add_middleware(
-                crate::agent::middleware::loop_guard::LoopGuard::new(loop_limits),
+                agentos_agent::middleware::loop_guard::LoopGuard::new(loop_limits),
             );
         }
 
         // PermissionGate (post_dispatch): auto-approves in debug mode, normal policy otherwise
         pipeline.add_middleware(
-            crate::agent::middleware::permission_gate::PermissionGate::new(
+            agentos_agent::middleware::permission_gate::PermissionGate::new(
                 permission_policies,
                 Some(self.approval_tx.clone()),
                 Some(self.event_tx.clone()),
@@ -1180,7 +1243,7 @@ impl AgentPipelineBuilder {
                 .map(|def| def.name.clone())
                 .collect();
             pipeline.add_middleware(
-                crate::agent::middleware::injection_guard::InjectionGuard::new(
+                agentos_agent::middleware::injection_guard::InjectionGuard::new(
                     agent_name_set,
                 )
                 .with_approval(self.approval_tx.clone())
@@ -1198,6 +1261,7 @@ impl AgentPipelineBuilder {
             approval_rx: self.approval_rx,
             query_rx: self.query_rx,
             trigger_runtime: self.trigger_runtime,
+            data_dir: self.data_dir,
         })
     }
 }
@@ -1205,7 +1269,7 @@ impl AgentPipelineBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::organism::parser::parse_organism;
+    use agentos_organism::parser::parse_organism;
     use rust_pipeline::prelude::{
         build_envelope, FnHandler, HandlerContext, HandlerResponse, ValidatedPayload,
     };
@@ -1491,12 +1555,12 @@ profiles:
         builder: AgentPipelineBuilder,
     ) -> Result<AgentPipelineBuilder, String> {
         builder
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)?
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)?
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)?
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)?
-            .register_tool("grep", crate::tools::grep::GrepTool)?
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)?
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)?
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)?
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)?
+            .register_tool("grep", agentos_tools::grep::GrepTool)?
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
     }
 
     #[tokio::test]
@@ -1504,7 +1568,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = m2_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -1530,7 +1594,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = m2_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -1539,17 +1603,17 @@ profiles:
         let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_llm_pool(pool)
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_port_manager()
             .unwrap()
@@ -1594,7 +1658,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = m2_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -1603,17 +1667,17 @@ profiles:
         let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_llm_pool(pool)
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_port_manager()
             .unwrap()
@@ -1731,7 +1795,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = m2_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -1741,17 +1805,17 @@ profiles:
         let builder = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_llm_pool(pool)
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_port_manager()
             .unwrap();
@@ -1844,7 +1908,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p3_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -1874,7 +1938,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p3_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -1889,17 +1953,17 @@ profiles:
             .unwrap()
             .with_code_index()
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap();
 
         // Librarian should be attached
@@ -1915,7 +1979,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p3_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -1928,17 +1992,17 @@ profiles:
             .unwrap()
             .with_code_index()
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_port_manager()
             .unwrap()
@@ -1969,7 +2033,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p3_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -1982,17 +2046,17 @@ profiles:
             .unwrap()
             .with_code_index()
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap()
             .build()
             .unwrap();
@@ -2036,7 +2100,7 @@ profiles:
         // Use m2 organism which doesn't have codebase-index listener
         let org = m2_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2049,17 +2113,17 @@ profiles:
             .unwrap()
             .with_code_index()
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap();
 
         assert!(builder.code_index.is_some());
@@ -2155,7 +2219,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p4_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2185,7 +2249,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p4_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2219,7 +2283,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p4_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2275,7 +2339,7 @@ profiles:
         // Use m2 organism which doesn't have coding-agent listener
         let org = m2_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2303,7 +2367,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p4_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2349,7 +2413,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p4_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2394,7 +2458,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = p4_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2424,7 +2488,7 @@ profiles:
         // Verify that the coding-agent's peers produce tool definitions
         let def = org.get_listener("coding-agent").unwrap();
         let peer_names: Vec<&str> = def.tools.iter().map(|s| s.as_str()).collect();
-        let tool_defs = crate::agent::tools::build_tool_definitions(&peer_names);
+        let tool_defs = agentos_agent::tools::build_tool_definitions(&peer_names);
 
         // Should have definitions for all six tools + codebase-index
         assert_eq!(tool_defs.len(), 7);
@@ -2438,7 +2502,7 @@ profiles:
         assert!(names.contains(&"codebase-index"));
 
         // Also verify the pipeline builds cleanly
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2460,7 +2524,12 @@ profiles:
     // ── Phase 5 Integration Tests ──
 
     fn echo_wasm_dir() -> std::path::PathBuf {
+        // Fixtures live at the workspace root (`AgentOS/tests/fixtures`).
+        // CARGO_MANIFEST_DIR for this crate is `AgentOS/crates/pipeline`,
+        // so walk up two levels to reach the root.
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
             .join("tests")
             .join("fixtures")
     }
@@ -2516,7 +2585,7 @@ profiles:
         let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_wasm_tools(&echo_wasm_dir())
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
             .build()
             .unwrap();
@@ -2532,7 +2601,7 @@ profiles:
         let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_wasm_tools(&echo_wasm_dir())
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
             .build()
             .unwrap();
@@ -2550,7 +2619,7 @@ profiles:
         let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_wasm_tools(&echo_wasm_dir())
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
             .build()
             .unwrap();
@@ -2569,7 +2638,7 @@ profiles:
         let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_wasm_tools(&echo_wasm_dir())
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
             .build()
             .unwrap();
@@ -2600,7 +2669,7 @@ profiles:
         let builder = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_wasm_tools(&echo_wasm_dir())
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap();
 
         // WASM registry should have the echo tool definition
@@ -2652,7 +2721,7 @@ profiles:
         let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_wasm_tools(&echo_wasm_dir())
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
             .build()
             .unwrap();
@@ -2696,7 +2765,7 @@ profiles:
         let builder = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_wasm_tools(&echo_wasm_dir())
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap();
 
         let reg = builder.wasm_registry.as_ref().unwrap();
@@ -2711,7 +2780,7 @@ profiles:
         let mut pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_wasm_tools(&echo_wasm_dir())
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
             .build()
             .unwrap();
@@ -2731,7 +2800,7 @@ profiles:
         // Use p4 organism (no WASM listeners) — pipeline builds fine without with_wasm_tools()
         let org = p4_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -2892,12 +2961,12 @@ profiles:
 
     #[tokio::test]
     async fn agent_thread_snapshots_empty() {
-        let pool = Arc::new(Mutex::new(crate::llm::LlmPool::with_base_url(
+        let pool = Arc::new(Mutex::new(agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
         )));
-        let handler = crate::agent::handler::CodingAgentHandler::new(
+        let handler = agentos_agent::handler::CodingAgentHandler::new(
             "test-agent".into(),
             pool,
             vec![],
@@ -3031,7 +3100,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = routing_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -3168,7 +3237,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = multi_agent_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -3177,17 +3246,17 @@ profiles:
         let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_llm_pool(pool)
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_agents()
             .unwrap()
@@ -3249,7 +3318,7 @@ profiles:
         let org = parse_organism(yaml).unwrap();
         let dir = TempDir::new().unwrap();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -3271,7 +3340,7 @@ profiles:
         let dir = TempDir::new().unwrap();
         let org = multi_agent_organism();
 
-        let pool = crate::llm::LlmPool::with_base_url(
+        let pool = agentos_llm::LlmPool::with_base_url(
             "test-key".into(),
             "opus",
             "http://localhost:19999".into(),
@@ -3281,17 +3350,17 @@ profiles:
         let pipeline = AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .with_llm_pool(pool)
             .unwrap()
-            .register_tool("file-read", crate::tools::file_read::FileReadTool)
+            .register_tool("file-read", agentos_tools::file_read::FileReadTool)
             .unwrap()
-            .register_tool("file-write", crate::tools::file_write::FileWriteTool)
+            .register_tool("file-write", agentos_tools::file_write::FileWriteTool)
             .unwrap()
-            .register_tool("file-edit", crate::tools::file_edit::FileEditTool)
+            .register_tool("file-edit", agentos_tools::file_edit::FileEditTool)
             .unwrap()
-            .register_tool("glob", crate::tools::glob_tool::GlobTool)
+            .register_tool("glob", agentos_tools::glob_tool::GlobTool)
             .unwrap()
-            .register_tool("grep", crate::tools::grep::GrepTool)
+            .register_tool("grep", agentos_tools::grep::GrepTool)
             .unwrap()
-            .register_tool("bash", crate::tools::command_exec::CommandExecTool::new())
+            .register_tool("bash", agentos_tools::command_exec::CommandExecTool::new())
             .unwrap()
             .with_coding_agent()
             .unwrap()

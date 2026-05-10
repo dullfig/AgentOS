@@ -9,7 +9,7 @@ use rust_pipeline::prelude::*;
 use tokio::sync::Mutex;
 
 use super::CodeIndex;
-use crate::tools::{ToolPeer, ToolResponse};
+use agentos_events::{ToolPeer, ToolResponse};
 
 /// Pipeline handler wrapping a CodeIndex.
 pub struct CodeIndexHandler {
@@ -149,7 +149,7 @@ mod tests {
             let mut idx = index.lock().await;
             idx.index_source(
                 "test.rs",
-                crate::treesitter::languages::Lang::Rust,
+                crate::languages::Lang::Rust,
                 b"pub fn hello() {} pub struct World {}",
             )
             .unwrap();
@@ -209,7 +209,7 @@ mod tests {
         let index = Arc::new(tokio::sync::Mutex::new(CodeIndex::new()));
         let handler = CodeIndexHandler::new(index);
         assert_eq!(handler.name(), "codebase-index");
-        let iface = crate::wit::parser::parse_wit(handler.wit()).unwrap();
+        let iface = agentos_wit::parser::parse_wit(handler.wit()).unwrap();
         assert_eq!(iface.name, "codebase-index");
         assert_eq!(iface.request_tag(), "CodebaseIndexRequest");
         assert!(iface.request.fields.iter().any(|f| f.name == "action"));

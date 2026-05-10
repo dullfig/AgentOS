@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 
-use crate::kernel::thread_table::ThreadTable;
-use crate::organism::profile::DispatchTable;
-use crate::organism::Organism;
+use agentos_kernel::thread_table::ThreadTable;
+use agentos_organism::profile::DispatchTable;
+use agentos_organism::Organism;
 
 /// Resolves thread → profile → dispatch table.
 pub struct SecurityResolver {
@@ -80,8 +80,8 @@ impl SecurityResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::organism::profile::{RetentionPolicy, SecurityProfile};
-    use crate::organism::ListenerDef;
+    use agentos_organism::profile::{RetentionPolicy, SecurityProfile};
+    use agentos_organism::ListenerDef;
     use std::collections::HashSet;
     use tempfile::TempDir;
 
@@ -192,7 +192,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let mut threads =
-            crate::kernel::thread_table::ThreadTable::open(&dir.path().join("t.bin")).unwrap();
+            agentos_kernel::thread_table::ThreadTable::open(&dir.path().join("t.bin")).unwrap();
         let root = threads.initialize_root("org", "admin");
         let child = threads.extend_chain(&root, "handler");
 
@@ -210,7 +210,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let mut threads =
-            crate::kernel::thread_table::ThreadTable::open(&dir.path().join("t.bin")).unwrap();
+            agentos_kernel::thread_table::ThreadTable::open(&dir.path().join("t.bin")).unwrap();
         let root = threads.initialize_root("org", "nonexistent");
 
         let err = resolver.resolve(&threads, &root).unwrap_err();
@@ -279,7 +279,7 @@ mod tests {
         let allowed = resolver.allowed_tool_names("public");
 
         // Build a mock embedding index with all tools
-        let mut index = crate::embedding::EmbeddingIndex::new(0.0);
+        let mut index = agentos_embedding::EmbeddingIndex::new(0.0);
         // Register with trivial vectors — just testing filtering
         index.register("file-ops", vec![1.0, 0.0, 0.0, 0.0]);
         index.register("shell", vec![0.0, 1.0, 0.0, 0.0]);

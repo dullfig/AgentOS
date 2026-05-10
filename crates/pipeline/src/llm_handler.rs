@@ -9,9 +9,9 @@ use async_trait::async_trait;
 use rust_pipeline::prelude::*;
 use tokio::sync::Mutex;
 
-use super::types::Message;
-use super::LlmPool;
-use crate::librarian::Librarian;
+use agentos_llm::types::Message;
+use agentos_llm::LlmPool;
+use agentos_librarian::Librarian;
 
 /// Pipeline handler that wraps an LlmPool.
 /// Optionally holds a Librarian for auto-curation before API calls.
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn handler_without_librarian() {
-        let pool = Arc::new(Mutex::new(crate::llm::LlmPool::with_base_url(
+        let pool = Arc::new(Mutex::new(agentos_llm::LlmPool::with_base_url(
             "k".into(),
             "opus",
             "http://localhost:1".into(),
@@ -330,16 +330,16 @@ mod tests {
 
     #[test]
     fn handler_with_librarian() {
-        let pool = Arc::new(Mutex::new(crate::llm::LlmPool::with_base_url(
+        let pool = Arc::new(Mutex::new(agentos_llm::LlmPool::with_base_url(
             "k".into(),
             "haiku",
             "http://localhost:1".into(),
         )));
         let kernel =
-            crate::kernel::Kernel::open(&tempfile::TempDir::new().unwrap().path().join("data"))
+            agentos_kernel::Kernel::open(&tempfile::TempDir::new().unwrap().path().join("data"))
                 .unwrap();
         let kernel = Arc::new(Mutex::new(kernel));
-        let lib = Arc::new(Mutex::new(crate::librarian::Librarian::new(
+        let lib = Arc::new(Mutex::new(agentos_librarian::Librarian::new(
             pool.clone(),
             kernel,
         )));

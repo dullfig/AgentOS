@@ -556,6 +556,35 @@ async fn main() -> Result<()> {
         handles.connect(pipeline.kernel(), pipeline.ingress_tx()).await;
     }
 
+    // Build the platform router over the running pipeline. The router
+    // is the seam that makes `send_to(address)` materialize-and-deliver
+    // into the live pipeline. It runs alongside the legacy direct-inject
+    // path; both feed the same ingress.
+    let shared_router = Arc::new(pipeline.shared_router(
+        0, // unlimited instances
+        std::time::Duration::from_secs(60),
+    ));
+    let _eviction_handle = shared_router.start_eviction_timer();
+
+    // If the organism declared any triggers, drain trigger events into
+    // the platform router. Without this loop, triggers fire but their
+    // events go nowhere. `_trigger_runtime` is held until the end of main
+    // so its Drop doesn't abort the spawned trigger source tasks.
+    let _trigger_runtime = if let Some(mut trig_rt) = pipeline.take_trigger_runtime() {
+        if let Some(trig_rx) = trig_rt.take_receiver() {
+            let org_arc = Arc::new(pipeline.organism().clone());
+            let router_for_triggers = shared_router.clone();
+            tokio::spawn(agentos::runtime_impl::process_trigger_events(
+                trig_rx,
+                org_arc,
+                router_for_triggers,
+            ));
+        }
+        Some(trig_rt)
+    } else {
+        None
+    };
+
     // Run TUI (blocks until quit) — always opens, errors shown as messages
     run_tui(&mut pipeline, debug, &yaml, models_config, agents_config, has_pool && build_error.is_none(), drive_slot, auto_mount_msg, startup_errors).await?;
 

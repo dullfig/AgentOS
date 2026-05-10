@@ -1,0 +1,36 @@
+[package]
+name = "agentos-pipeline"
+version = "0.1.0"
+edition = "2021"
+description = "AgentPipeline orchestrator — wraps rust-pipeline with kernel integration, buffer nodes, and the platform Runtime trait impl."
+
+[dependencies]
+# Workspace crates
+agentos-agent = { path = "../agent" }
+agentos-config = { path = "../config" }
+agentos-embedding = { path = "../embedding" }
+agentos-events = { path = "../events" }
+agentos-kernel = { path = "../kernel" }
+agentos-librarian = { path = "../librarian" }
+agentos-llm = { path = "../llm" }
+agentos-organism = { path = "../organism" }
+agentos-platform = { path = "../platform" }
+agentos-ports = { path = "../ports" }
+agentos-routing = { path = "../routing" }
+agentos-security = { path = "../security" }
+agentos-tools = { path = "../tools" }
+agentos-treesitter = { path = "../treesitter" }
+agentos-trigger = { path = "../trigger" }
+agentos-vdrive = { path = "../vdrive" }
+agentos-wasm = { path = "../wasm" }
+agentos-wit = { path = "../wit" }
+
+rust-pipeline = { path = "../../../rust-pipeline" }
+
+# Core
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"

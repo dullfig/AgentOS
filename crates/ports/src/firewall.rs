@@ -4,7 +4,7 @@
 //! (just strings, no system calls). Applied on Linux deployment only.
 
 use super::{Direction, PortManager, Protocol};
-use crate::organism::Organism;
+use agentos_organism::Organism;
 
 /// Action for a firewall rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,9 +120,9 @@ pub fn generate_rules(port_manager: &PortManager, organism: &Organism) -> Vec<Fi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::organism::profile::{RetentionPolicy, SecurityProfile};
-    use crate::organism::ListenerDef;
-    use crate::ports::PortDeclaration;
+    use agentos_organism::profile::{RetentionPolicy, SecurityProfile};
+    use agentos_organism::ListenerDef;
+    use crate::PortDeclaration;
 
     fn setup() -> (PortManager, Organism) {
         let mut pm = PortManager::new();

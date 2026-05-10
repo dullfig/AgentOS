@@ -1,0 +1,8 @@
+[package]
+name = "agentos-ports"
+version = "0.1.0"
+edition = "2021"
+description = "Port declarations and firewall validation for AgentOS listeners."
+
+[dependencies]
+agentos-organism = { path = "../organism" }

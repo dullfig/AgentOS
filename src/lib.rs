@@ -4,28 +4,29 @@
 //! security profiles, and organism configuration.
 
 pub use agentos_agent as agent;
-pub mod buffer;
+pub use agentos_pipeline::buffer;
 pub use agentos_config as config;
 pub use agentos_embedding as embedding;
 pub use agentos_kernel as kernel;
 pub use agentos_librarian as librarian;
 pub mod lsp;
-pub mod llm;
+pub use agentos_llm as llm;
 pub use agentos_organism as organism;
-pub mod pipeline;
-pub mod ports;
+pub use agentos_pipeline as pipeline;
+pub use agentos_ports as ports;
 pub use agentos_routing as routing;
-pub mod security;
+pub use agentos_security as security;
 pub use agentos_wit as wit;
 
-// Tools: re-export from crate, keep test_organism locally (needs pipeline)
+// Tools: re-export the crate; test_organism now lives in agentos-pipeline
+// (it depends on AgentPipelineBuilder, so it had to move with pipeline).
 pub mod tools {
     pub use agentos_tools::*;
-    pub mod test_organism;
+    pub use agentos_pipeline::test_organism;
 }
-pub mod treesitter;
+pub use agentos_treesitter as treesitter;
 pub mod tui;
 pub mod vdrive;
 pub use agentos_wasm as wasm;
 pub use agentos_platform as platform;
-pub mod runtime_impl;
+pub use agentos_pipeline::runtime_impl;

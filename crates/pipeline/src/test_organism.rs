@@ -13,11 +13,11 @@ use tokio::sync::Mutex;
 #[allow(unused_imports)]
 use rust_pipeline::prelude::build_envelope;
 
-use super::{extract_tag, ToolPeer, ToolResponse};
-use super::vdrive_tools::DriveSlot;
-use crate::llm::{LlmPool, types::Message};
-use crate::organism::parser::parse_organism;
-use crate::pipeline::AgentPipelineBuilder;
+use agentos_tools::{extract_tag, ToolPeer, ToolResponse};
+use agentos_tools::vdrive_tools::DriveSlot;
+use agentos_llm::{LlmPool, types::Message};
+use agentos_organism::parser::parse_organism;
+use crate::AgentPipelineBuilder;
 
 // ── DummyTool — Haiku-backed tool simulator ──
 
@@ -345,7 +345,7 @@ impl TestOrganismTool {
     /// Run a single test case against the organism.
     async fn run_test_case(
         &self,
-        organism: &crate::organism::Organism,
+        organism: &agentos_organism::Organism,
         _yaml: &str,
         haiku_pool: &Arc<Mutex<LlmPool>>,
         test_input: &str,
@@ -418,7 +418,7 @@ impl TestOrganismTool {
 
         let task_xml = format!(
             "<AgentTask><task>{}</task></AgentTask>",
-            crate::tools::xml_escape(test_input)
+            agentos_tools::xml_escape(test_input)
         );
         let envelope = build_envelope(
             "test-harness",
@@ -519,7 +519,7 @@ interface test_organism {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::vdrive_tools::empty_slot;
+    use agentos_tools::vdrive_tools::empty_slot;
 
     fn make_payload(xml: &str) -> ValidatedPayload {
         ValidatedPayload {
@@ -556,7 +556,7 @@ mod tests {
         let yaml = "organism:\n  name: test";
         let xml = format!(
             "<TestOrganismRequest><yaml>{}</yaml></TestOrganismRequest>",
-            crate::tools::xml_escape(yaml)
+            agentos_tools::xml_escape(yaml)
         );
         let result = tool.handle(make_payload(&xml), make_ctx()).await.unwrap();
         match result {

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism", "crates/wasm", "crates/config", "crates/llm", "crates/routing", "crates/librarian", "crates/agent", "crates/wit", "crates/tools", "crates/cloud", "crates/trigger", "crates/kv-store", "crates/platform", "crates/gui"]
+members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism", "crates/wasm", "crates/config", "crates/llm", "crates/routing", "crates/librarian", "crates/agent", "crates/wit", "crates/tools", "crates/cloud", "crates/trigger", "crates/kv-store", "crates/platform", "crates/gui", "crates/security", "crates/ports", "crates/treesitter", "crates/pipeline", "crates/server"]
 
 [package]
 name = "agentos"
@@ -27,6 +27,10 @@ agentos-wit = { path = "crates/wit" }
 agentos-tools = { path = "crates/tools" }
 agentos-trigger = { path = "crates/trigger" }
 agentos-platform = { path = "crates/platform" }
+agentos-security = { path = "crates/security" }
+agentos-ports = { path = "crates/ports" }
+agentos-treesitter = { path = "crates/treesitter" }
+agentos-pipeline = { path = "crates/pipeline" }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

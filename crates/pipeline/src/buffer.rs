@@ -21,17 +21,17 @@ use async_trait::async_trait;
 use rust_pipeline::prelude::*;
 use tokio::sync::{broadcast, Mutex, Semaphore};
 
-use crate::llm::LlmPool;
-use crate::organism::parser::load_organism;
-use crate::organism::{BufferConfig, Organism};
-use crate::pipeline::events::PipelineEvent;
-use crate::pipeline::AgentPipelineBuilder;
-use crate::tools::vdrive_tools::{
+use agentos_llm::LlmPool;
+use agentos_organism::parser::load_organism;
+use agentos_organism::{BufferConfig, Organism};
+use crate::events::PipelineEvent;
+use crate::AgentPipelineBuilder;
+use agentos_tools::vdrive_tools::{
     DriveSlot, VDriveFileRead, VDriveFileWrite, VDriveFileEdit,
     VDriveGlob, VDriveGrep, VDriveListDir, VDriveCommandExec,
 };
-use crate::tools::user_channel::{UserChannelHandler, UserQueryRequest};
-use crate::tools::{self, ToolResponse};
+use agentos_tools::user_channel::{UserChannelHandler, UserQueryRequest};
+use agentos_tools::{self as tools, ToolResponse};
 
 /// Buffer handler — manages ephemeral child pipeline lifecycles.
 pub struct BufferHandler {
@@ -301,14 +301,14 @@ fn register_required_tools(
 ) -> Result<AgentPipelineBuilder, String> {
     for name in requires {
         // Check safe commands first
-        let safe_def = crate::tools::safe_commands::ALL_SAFE_COMMANDS
+        let safe_def = agentos_tools::safe_commands::ALL_SAFE_COMMANDS
             .iter()
             .find(|def| def.name == name.as_str());
 
         if let Some(def) = safe_def {
             builder = builder.register_tool(
                 name,
-                crate::tools::safe_commands::SafeCommandTool::new(def, drive_slot.clone()),
+                agentos_tools::safe_commands::SafeCommandTool::new(def, drive_slot.clone()),
             )?;
             continue;
         }
@@ -321,9 +321,9 @@ fn register_required_tools(
             "grep" => builder.register_tool(name, VDriveGrep::new(drive_slot.clone()))?,
             "list-dir" => builder.register_tool(name, VDriveListDir::new(drive_slot.clone()))?,
             "bash" => builder.register_tool(name, VDriveCommandExec::new(drive_slot.clone()))?,
-            "validate-organism" => builder.register_tool(name, crate::tools::validate_organism::ValidateOrganismTool::new(drive_slot.clone()))?,
-            "test-organism" => builder.register_tool(name, crate::tools::test_organism::TestOrganismTool::new(drive_slot.clone(), None))?,
-            "package-organism" => builder.register_tool(name, crate::tools::package_organism::PackageOrganismTool::new(drive_slot.clone()))?,
+            "validate-organism" => builder.register_tool(name, agentos_tools::validate_organism::ValidateOrganismTool::new(drive_slot.clone()))?,
+            "test-organism" => builder.register_tool(name, crate::test_organism::TestOrganismTool::new(drive_slot.clone(), None))?,
+            "package-organism" => builder.register_tool(name, agentos_tools::package_organism::PackageOrganismTool::new(drive_slot.clone()))?,
             "codebase-index" => {
                 builder = builder.with_code_index()?;
                 continue;
@@ -362,8 +362,8 @@ pub fn load_child_organism(base_dir: &std::path::Path, organism_path: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::organism::parser::parse_organism;
-    use crate::organism::CallableParam;
+    use agentos_organism::parser::parse_organism;
+    use agentos_organism::CallableParam;
 
     #[test]
     fn register_required_tools_known() {
@@ -393,7 +393,7 @@ profiles:
         let builder = AgentPipelineBuilder::new(org, dir.path());
 
         let requires = vec!["file-read".to_string(), "bash".to_string()];
-        let slot = crate::tools::vdrive_tools::empty_slot();
+        let slot = agentos_tools::vdrive_tools::empty_slot();
         let result = register_required_tools(builder, &requires, slot, None, None);
         assert!(result.is_ok());
     }
@@ -415,7 +415,7 @@ profiles:
         let builder = AgentPipelineBuilder::new(org, dir.path());
 
         let requires = vec!["nonexistent-tool".to_string()];
-        let slot = crate::tools::vdrive_tools::empty_slot();
+        let slot = agentos_tools::vdrive_tools::empty_slot();
         let result = register_required_tools(builder, &requires, slot, None, None);
         match result {
             Err(e) => assert!(e.contains("unknown required tool"), "unexpected error: {e}"),
