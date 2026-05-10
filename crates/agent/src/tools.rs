@@ -159,6 +159,145 @@ pub fn bash_definition() -> ToolDefinition {
     }
 }
 
+/// Build a ToolDefinition for the cortex-shim tool (registry CRUD + infer).
+pub fn cortex_shim_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "cortex-shim".into(),
+        description: "Manage cortex shims: register a new shim, list/get/delete existing ones, or run a registered shim against a free-form context for standalone classification (no generation).".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["register", "list", "get", "delete", "infer"],
+                    "description": "Operation to perform"
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Shim id (required for get/delete/infer)"
+                },
+                "manifest": {
+                    "type": "string",
+                    "description": "JSON-serialized ShimManifest (required for register)"
+                },
+                "onnx_path": {
+                    "type": "string",
+                    "description": "Path to the ONNX file on disk (required for register)"
+                },
+                "context": {
+                    "type": "string",
+                    "description": "JSON-serialized context value (required for infer)"
+                }
+            },
+            "required": ["action"]
+        }),
+    }
+}
+
+/// Build a ToolDefinition for the cortex-embed tool.
+pub fn cortex_embed_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "cortex-embed".into(),
+        description: "Embed a text context into a hidden-state vector via cortex. Layer + pooling must match the target shim's manifest attachment so the trainer and inference see the same distribution.".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "context": {
+                    "type": "string",
+                    "description": "Free-form text to embed"
+                },
+                "layer": {
+                    "type": "string",
+                    "description": "Layer to capture: 'final' or 'entrance:N' (default: 'final')"
+                },
+                "pooling": {
+                    "type": "string",
+                    "enum": ["last_token", "mean", "attention", "none"],
+                    "description": "Pooling strategy (default: 'last_token')"
+                }
+            },
+            "required": ["context"]
+        }),
+    }
+}
+
+/// Build a ToolDefinition for the shim-train tool.
+pub fn shim_train_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "shim-train".into(),
+        description: "Train a shim FFN by invoking the Python trainer subprocess. Reads (vector, label) JSONL, exports an ONNX file plus metrics.json. Read metrics.json before deciding whether to register the trained shim.".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "string",
+                    "description": "Path to (vector, label) JSONL input"
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Directory the trainer writes model.onnx + metrics.json into"
+                },
+                "input_dim": {
+                    "type": "integer",
+                    "description": "Input vector dimension (autodetected from JSONL if omitted)"
+                },
+                "hidden": {
+                    "type": "string",
+                    "description": "Comma-separated hidden layer dims, e.g. '1024,256'"
+                },
+                "output_dim": {
+                    "type": "integer",
+                    "description": "1 = scalar binary; N>1 = N-class category (default: 1)"
+                },
+                "epochs": {
+                    "type": "integer",
+                    "description": "Training epochs (default: 30)"
+                },
+                "lr": {
+                    "type": "number",
+                    "description": "Learning rate (default: 1e-3)"
+                },
+                "batch_size": {
+                    "type": "integer",
+                    "description": "Batch size (default: 64)"
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "Random seed (default: 42)"
+                }
+            },
+            "required": ["input", "output_dir"]
+        }),
+    }
+}
+
+/// Build a ToolDefinition for the shim-rules tool.
+pub fn shim_rules_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "shim-rules".into(),
+        description: "Read or update an agent's per-agent shim configuration JSON (gate_shims, steer_shims, inject_shims, shim_rules). Updates require an agent restart to take effect (v1).".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["read", "update"],
+                    "description": "Operation to perform"
+                },
+                "agent": {
+                    "type": "string",
+                    "description": "Target agent name (e.g. 'bob')"
+                },
+                "rules": {
+                    "type": "string",
+                    "description": "JSON-serialized ShimAttachment (required for update)"
+                }
+            },
+            "required": ["action", "agent"]
+        }),
+    }
+}
+
 /// Build a ToolDefinition for the codebase-index tool.
 pub fn codebase_index_definition() -> ToolDefinition {
     ToolDefinition {
@@ -214,13 +353,29 @@ pub fn definition_for_peer(name: &str) -> Option<ToolDefinition> {
         "grep" => Some(grep_definition()),
         "bash" => Some(bash_definition()),
         "codebase-index" => Some(codebase_index_definition()),
+        "cortex-shim" => Some(cortex_shim_definition()),
+        "cortex-embed" => Some(cortex_embed_definition()),
+        "shim-train" => Some(shim_train_definition()),
+        "shim-rules" => Some(shim_rules_definition()),
         _ => None,
     }
 }
 
 /// Return all known hand-written tool names (for `tools: auto` resolution).
 pub fn all_peer_names() -> &'static [&'static str] {
-    &["file-read", "file-write", "file-edit", "glob", "grep", "bash", "codebase-index"]
+    &[
+        "file-read",
+        "file-write",
+        "file-edit",
+        "glob",
+        "grep",
+        "bash",
+        "codebase-index",
+        "cortex-shim",
+        "cortex-embed",
+        "shim-train",
+        "shim-rules",
+    ]
 }
 
 /// Build tool definitions with WASM registry fallback.

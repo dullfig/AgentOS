@@ -5,6 +5,8 @@
 
 pub mod command_exec;
 pub mod compile_wasm;
+pub mod cortex_embed;
+pub mod cortex_shim;
 pub mod dispatch;
 pub mod file_edit;
 pub mod file_read;
@@ -16,6 +18,8 @@ pub mod model_download;
 pub mod model_search;
 pub mod model_verify;
 pub mod safe_commands;
+pub mod shim_rules;
+pub mod shim_train;
 pub mod user_channel;
 pub mod package_organism;
 pub mod validate_organism;

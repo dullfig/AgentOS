@@ -11,6 +11,7 @@ agentos-llm = { path = "../llm" }
 agentos-kernel = { path = "../kernel" }
 agentos-vdrive = { path = "../vdrive" }
 agentos-wit = { path = "../wit" }
+agentos-cortex-shim = { path = "../cortex-shim" }
 similar = "2"
 crc32fast = "1"
 rust-pipeline = { path = "../../../rust-pipeline" }
@@ -30,3 +31,4 @@ imago = "0.2"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"

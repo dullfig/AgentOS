@@ -361,6 +361,7 @@ dependencies = [
 name = "agentos-tools"
 version = "0.1.0"
 dependencies = [
+ "agentos-cortex-shim",
  "agentos-events",
  "agentos-kernel",
  "agentos-llm",
@@ -382,6 +383,7 @@ dependencies = [
  "tokio",
  "tracing",
  "urlencoding",
+ "wiremock",
  "zip 2.4.2",
 ]
 
