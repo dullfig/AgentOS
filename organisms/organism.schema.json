@@ -35,12 +35,15 @@
           ]
         },
         "model": {
-          "default": null,
-          "description": "LLM model override — `opus`, `sonnet`, or `haiku`.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelYaml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "LLM model. Either a flat alias (`opus` / `sonnet` / `haiku` / full id), or a layered block `{base: ..., shim_store: ...}` per `project_shim_store_design.md`."
         },
         "permissions": {
           "additionalProperties": {
@@ -302,6 +305,27 @@
         }
       ]
     },
+    "LayeredModelYaml": {
+      "description": "Layered model block: base substrate + optional cognitive layer.",
+      "properties": {
+        "base": {
+          "description": "Base model alias (e.g. `qwen-2.5-3b`, `haiku`, or full provider id).",
+          "type": "string"
+        },
+        "shim_store": {
+          "default": null,
+          "description": "Named shim_store under the kernel's `<data_dir>/shim_stores/` tree. Optional — agents that don't yet have shims simply omit it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "base"
+      ],
+      "type": "object"
+    },
     "ListenerYaml": {
       "description": "A listener definition — handles one payload type via a handler function.",
       "properties": {
@@ -433,6 +457,17 @@
         }
       ],
       "description": "Listeners access spec: `\"all\"` or a list of listener names."
+    },
+    "ModelYaml": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/LayeredModelYaml"
+        }
+      ],
+      "description": "Two-shape model declaration. Backwards-compat: `model: haiku` continues to parse as `Alias(\"haiku\")`. New shape `model: { base: ..., shim_store: ... }` declares both layers of agent identity (immutable substrate + mutable cognition)."
     },
     "OnboardingChoiceYaml": {
       "description": "A choice block with a prompt and options.",

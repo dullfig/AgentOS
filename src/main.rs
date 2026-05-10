@@ -423,6 +423,88 @@ struct Cli {
     /// Enable debug tab (activity trace, diagnostics)
     #[arg(long)]
     debug: bool,
+
+    /// Optional subcommand. When omitted, runs the TUI as usual.
+    #[command(subcommand)]
+    command: Option<SubCmd>,
+}
+
+/// Top-level subcommands. The default (no subcommand) launches the TUI.
+#[derive(clap::Subcommand)]
+enum SubCmd {
+    /// Manage cortex shim_stores — the kernel's fourth pillar.
+    /// Cold-start path for shim-expert workflows: create the store
+    /// first, then point an agent's `model.shim_store` at it.
+    #[command(name = "shim-store")]
+    ShimStore {
+        #[command(subcommand)]
+        action: ShimStoreCmd,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum ShimStoreCmd {
+    /// Initialize an empty shim_store under the kernel's data dir.
+    Init {
+        /// Store name (e.g. `bob-coastliners`).
+        name: String,
+        /// Base-model names this cognition is intended to be trained
+        /// against. Optional and free-form for v1; used for human
+        /// auditability, not enforced.
+        #[arg(long, value_delimiter = ',')]
+        base_compat: Vec<String>,
+    },
+    /// List all on-disk shim_stores under the kernel's data dir.
+    List,
+    /// Delete a shim_store directory + its kernel state.
+    Delete {
+        name: String,
+    },
+}
+
+fn run_shim_store_cmd(action: ShimStoreCmd, data_dir: &std::path::Path) -> Result<()> {
+    use agentos::kernel::Kernel;
+    let mut kernel = Kernel::open(data_dir)
+        .map_err(|e| anyhow::anyhow!("kernel open at {}: {e}", data_dir.display()))?;
+
+    match action {
+        ShimStoreCmd::Init { name, base_compat } => {
+            kernel
+                .create_shim_store(&name, base_compat.clone())
+                .map_err(|e| anyhow::anyhow!("create_shim_store: {e}"))?;
+            let path = kernel.shim_store().path_for(&name);
+            println!("created shim_store `{name}` at {}", path.display());
+            if !base_compat.is_empty() {
+                println!("  base_compat: {}", base_compat.join(", "));
+            }
+        }
+        ShimStoreCmd::List => {
+            let mut stores = kernel.shim_store().list_stores();
+            stores.sort();
+            if stores.is_empty() {
+                println!("(no shim_stores at {})", data_dir.join("shim_stores").display());
+            } else {
+                for name in stores {
+                    let n_shims = kernel
+                        .shim_store()
+                        .shims_in(&name)
+                        .map(|s| s.len())
+                        .unwrap_or(0);
+                    println!("{name}\t({n_shims} shim{})", if n_shims == 1 { "" } else { "s" });
+                }
+            }
+        }
+        ShimStoreCmd::Delete { name } => {
+            if !kernel.shim_store().exists(&name) {
+                anyhow::bail!("shim_store `{name}` does not exist");
+            }
+            kernel
+                .delete_shim_store(&name)
+                .map_err(|e| anyhow::anyhow!("delete_shim_store: {e}"))?;
+            println!("deleted shim_store `{name}`");
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -439,6 +521,13 @@ async fn main() -> Result<()> {
 
     // Set working directory
     std::env::set_current_dir(&work_dir)?;
+
+    // Subcommand path: dispatches without booting the TUI.
+    if let Some(cmd) = cli.command {
+        match cmd {
+            SubCmd::ShimStore { action } => return run_shim_store_cmd(action, &data_dir),
+        }
+    }
 
     // Initialize tracing to file (avoid polluting the TUI)
     let log_dir = PathBuf::from(&data_rel);

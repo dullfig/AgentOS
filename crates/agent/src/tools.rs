@@ -271,29 +271,58 @@ pub fn shim_train_definition() -> ToolDefinition {
     }
 }
 
-/// Build a ToolDefinition for the shim-rules tool.
-pub fn shim_rules_definition() -> ToolDefinition {
+/// Build a ToolDefinition for the shim-store tool.
+pub fn shim_store_definition() -> ToolDefinition {
     ToolDefinition {
-        name: "shim-rules".into(),
-        description: "Read or update an agent's per-agent shim configuration JSON (gate_shims, steer_shims, inject_shims, shim_rules). Updates require an agent restart to take effect (v1).".into(),
+        name: "shim-store".into(),
+        description: "Manage cortex shim_stores via the kernel's fourth pillar. A shim_store is a named directory of ONNX shim weights + composition rules + per-shim metadata. Updates require an agent restart to take effect (v1).".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["read", "update"],
+                    "enum": [
+                        "create-store",
+                        "delete-store",
+                        "list-stores",
+                        "read-composition",
+                        "update-composition",
+                        "add-shim",
+                        "retire-shim",
+                        "list-shims"
+                    ],
                     "description": "Operation to perform"
                 },
-                "agent": {
+                "name": {
                     "type": "string",
-                    "description": "Target agent name (e.g. 'bob')"
+                    "description": "Store name (required for most actions)"
                 },
-                "rules": {
+                "base_compat": {
                     "type": "string",
-                    "description": "JSON-serialized ShimAttachment (required for update)"
+                    "description": "Comma-separated base-model names this cognition was trained against (create-store only)"
+                },
+                "composition": {
+                    "type": "string",
+                    "description": "JSON-serialized ShimAttachment (required for update-composition)"
+                },
+                "store": {
+                    "type": "string",
+                    "description": "Target store name (add-shim, retire-shim, list-shims)"
+                },
+                "shim_id": {
+                    "type": "string",
+                    "description": "Shim identifier (add-shim, retire-shim)"
+                },
+                "manifest": {
+                    "type": "string",
+                    "description": "JSON-serialized ShimManifest sidecar (required for add-shim)"
+                },
+                "onnx_path": {
+                    "type": "string",
+                    "description": "Path to the trained ONNX file on disk (required for add-shim)"
                 }
             },
-            "required": ["action", "agent"]
+            "required": ["action"]
         }),
     }
 }
@@ -356,7 +385,7 @@ pub fn definition_for_peer(name: &str) -> Option<ToolDefinition> {
         "cortex-shim" => Some(cortex_shim_definition()),
         "cortex-embed" => Some(cortex_embed_definition()),
         "shim-train" => Some(shim_train_definition()),
-        "shim-rules" => Some(shim_rules_definition()),
+        "shim-store" => Some(shim_store_definition()),
         _ => None,
     }
 }
@@ -374,7 +403,7 @@ pub fn all_peer_names() -> &'static [&'static str] {
         "cortex-shim",
         "cortex-embed",
         "shim-train",
-        "shim-rules",
+        "shim-store",
     ]
 }
 

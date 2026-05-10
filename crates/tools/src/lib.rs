@@ -18,7 +18,7 @@ pub mod model_download;
 pub mod model_search;
 pub mod model_verify;
 pub mod safe_commands;
-pub mod shim_rules;
+pub mod shim_store;
 pub mod shim_train;
 pub mod user_channel;
 pub mod package_organism;

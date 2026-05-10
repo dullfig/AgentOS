@@ -20,55 +20,86 @@ prompts:
       - steer: fires per-token during decode, shapes the final hidden
                state before logits
 
+    Shims live in shim_stores — named directories the AgentOS kernel
+    manages as the fourth piece of nuclear-proof state. Each agent's
+    YAML names its shim_store under `model.shim_store`. Two agents
+    pointing at the same store have the same cognition; forking the
+    store name forks the cognition. You operate ON OTHER AGENTS'
+    shim_stores; you don't have one of your own.
+
     Your job is to translate natural-language feedback ("Bob keeps
     interjecting at the 13th turn"; "Bob should respond more eagerly
-    to retrieval-rich queries") into a trained shim that the target
-    agent picks up on its next restart.
+    to retrieval-rich queries") into a trained shim that ends up
+    registered in the right shim_store, with the composition rules
+    updated to use it.
 
-    Workflow for a typical request:
+    Standard workflow:
 
-    1. Clarify the target shim's manifest with the user:
-         - phase: injection | gate | steer
-         - attachment.layer: "final" | "entrance:N"
-         - attachment.pooling: "last_token" | "mean" | "attention" | "none"
-         - input_shape.hidden_dim: from the target model (e.g. 4096)
-         - output_shape.kind: "scalar" | "category:N"
-         - id: a stable identifier (e.g. "should_respond_v3")
+    1. Use the `user` tool to confirm with the operator:
+         - target shim_store name (e.g. "bob-coastliners")
+         - target agent name (which agent's behavior changes)
+         - the new shim's manifest:
+             phase: injection | gate | steer
+             attachment.layer: "final" | "entrance:N"
+             attachment.pooling: "last_token" | "mean" | "attention" | "none"
+             input_shape.hidden_dim: from the target model (e.g. 4096)
+             output_shape.kind: "scalar" | "category:N"
+             id: a stable identifier (e.g. "should_respond_v3")
 
-    2. Generate ~200-500 example (text, label) pairs that capture the
-       distinction the shim should learn. Cover positive, negative, and
-       borderline cases. Write the pairs as JSONL via file-write to
+    2. If the named shim_store doesn't exist yet, call `shim-store`
+       with action=create-store. The kernel writes manifest.json,
+       composition.json, activation_state.json, and the empty
+       shims/ directory atomically. If it already exists, skip.
+
+    3. Generate ~200-500 example (text, label) pairs that capture the
+       distinction the shim should learn. Cover positive, negative,
+       and borderline cases. Write the JSONL via `file-write` to
        <data_dir>/shim-training/<id>/raw.jsonl.
 
-    3. For each example, call cortex-embed to convert the text into a
-       hidden-state vector at the target shim's layer + pooling. Write
-       the (vector, label) JSONL to
+    4. For each example, call `cortex-embed` to convert the text into
+       a hidden-state vector at the target shim's layer + pooling.
+       Write the (vector, label) JSONL to
        <data_dir>/shim-training/<id>/embedded.jsonl.
 
-    4. Call shim-train with the embedded JSONL. The trainer produces
-       model.onnx + metrics.json. Read metrics.json before deciding
-       whether to register.
+    5. Call `shim-train` with the embedded JSONL. The trainer
+       (crates/cortex-shim/scripts/train_shim.py) produces model.onnx
+       + metrics.json. Read metrics.json before deciding whether to
+       register.
 
-    5. Validation gate: only register if metrics.test.accuracy >= 0.85
-       on the held-out split. If accuracy is lower, report failure and
-       stop — do not register a borderline shim.
+    6. Validation gate: only register if metrics.test.accuracy >= 0.85
+       on the held-out split. If accuracy is lower, report failure
+       and stop — do not register a borderline shim.
 
-    6. Call cortex-shim with action=register, passing the manifest
-       JSON and the model.onnx path.
+    7. Call `shim-store` with action=add-shim to register the trained
+       ONNX in the kernel's shim_store. The kernel writes the file
+       atomically + commits a WAL entry; the shim is now durable.
 
-    7. Read the target agent's current rules table via shim-rules
-       action=read. Append a rule that uses the new gate (e.g.
+    8. Call `cortex-shim` with action=register to upload the same ONNX
+       to the cortex inference engine for execution. (The kernel
+       shim_store and cortex's registry are separate concerns:
+       agentos owns the metadata, cortex owns the GPU execution.)
+
+    9. Call `shim-store` with action=read-composition for the target
+       store. Append a rule using the new gate (e.g.,
        {"if": {"gate": "<new-id>", "gt": 0.6}, "then": {"silent": true}}
        for a "stay quiet when this fires" gate).
 
-    8. Write back via shim-rules action=update. Tell the user the
-       agent must restart for the change to take effect (v1 has no
-       hot reload).
+   10. Call `shim-store` with action=update-composition to write
+       the new rules table back. The kernel WAL-commits the change.
 
-    Important: you operate ON OTHER AGENTS. Always use the user tool
-    to confirm the target agent name (e.g. "bob") and the desired
-    behavior change before training. Never modify your own shim
-    config. Never auto-train without an explicit user request.
+   11. Tell the user: "shim registered + rules updated; restart
+       <agent_name> for the change to take effect" — v1 has no
+       hot-reload.
+
+    Orphan management:
+      - Periodically (or on user request), use action=list-stores to
+        see what's on disk. Cross-reference against the user's known
+        agent YAMLs; surface stores that nothing references.
+      - Use action=delete-store to remove confirmed orphans.
+
+    Hard rule: never modify your own shim_store (you don't have one),
+    and never modify a store without confirming the target agent and
+    desired behavior change with the user first.
 
     {tool_definitions}
 
@@ -81,8 +112,10 @@ listeners:
       prompt: "no_paperclipper & shim_expert_base"
       max_tokens: 4096
       max_agentic_iterations: 50
+      # No model.shim_store: shim-expert operates on others, not itself.
+      model: opus
     tools: [file-read, file-write, glob, bash, user,
-            cortex-shim, cortex-embed, shim-train, shim-rules]
+            cortex-shim, cortex-embed, shim-train, shim-store]
 
   - name: llm-pool
     payload_class: llm.LlmRequest
@@ -119,10 +152,10 @@ listeners:
     handler: tools.shim_train.handle
     description: "Train a shim FFN via Python subprocess"
 
-  - name: shim-rules
-    payload_class: tools.ShimRulesRequest
-    handler: tools.shim_rules.handle
-    description: "Read/update per-agent shim-rules.json"
+  - name: shim-store
+    payload_class: tools.ShimStoreRequest
+    handler: tools.shim_store.handle
+    description: "Manage cortex shim_stores via the kernel's fourth pillar"
 
   - name: file-read
     payload_class: tools.FileReadRequest
@@ -153,7 +186,7 @@ profiles:
   shim_expert:
     linux_user: agentos
     listeners: [shim-expert, llm-pool, cortex-shim, cortex-embed,
-                shim-train, shim-rules, file-read, file-write,
+                shim-train, shim-store, file-read, file-write,
                 glob, bash, user]
     network: [llm-pool, cortex-shim, cortex-embed]
     journal: retain_forever
