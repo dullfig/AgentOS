@@ -183,11 +183,7 @@ impl ThreadTable {
             return thread_id.to_string();
         }
 
-        let chain = if self.root_uuid.is_some() {
-            format!("{}.{initiator}.{target}", self.root_chain)
-        } else {
-            format!("{initiator}.{target}")
-        };
+        let chain = self.chain_for(initiator, target);
 
         if let Some(existing) = self.chain_to_uuid.get(&chain) {
             return existing.clone();
@@ -195,6 +191,17 @@ impl ThreadTable {
 
         self.insert_record(thread_id.to_string(), chain, profile.to_string());
         thread_id.to_string()
+    }
+
+    /// Compute the chain `register_thread(initiator, target, ...)` would
+    /// assign, without inserting. Lets the WAL entry and the in-memory
+    /// state share chain logic so replay reproduces the same record.
+    pub fn chain_for(&self, initiator: &str, target: &str) -> String {
+        if self.root_uuid.is_some() {
+            format!("{}.{initiator}.{target}", self.root_chain)
+        } else {
+            format!("{initiator}.{target}")
+        }
     }
 
     /// Extend a chain with a new hop. Returns UUID for the extended chain.

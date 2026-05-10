@@ -225,6 +225,75 @@ impl Kernel {
         Ok(new_uuid)
     }
 
+    /// Register a platform-allocated thread durably.
+    ///
+    /// The platform layer mints its own thread UUIDs (registry-side) and
+    /// hands them to the kernel for state allocation. Unlike `dispatch_message`
+    /// which mints a fresh UUID via `extend_chain`, this preserves the
+    /// platform's UUID so the address↔thread_id mapping is stable across
+    /// restarts (registry snapshot points at this same id, kernel WAL
+    /// replays the thread under this same id).
+    ///
+    /// Atomic batch: ThreadCreate (with chain `[root.]platform.{organism}`)
+    /// + ContextAllocate. The chain is computed via `ThreadTable::chain_for`
+    /// so WAL replay reconstructs exactly what `register_thread` would have
+    /// inserted in-memory.
+    pub fn register_platform_thread(
+        &mut self,
+        thread_id: &str,
+        organism: &str,
+        profile: &str,
+    ) -> KernelResult<()> {
+        // Compute the chain that ThreadTable would assign in-memory, so the
+        // WAL ThreadCreate entry replays into an identical record.
+        let chain = self.threads.chain_for("platform", organism);
+
+        let mut create_payload = Vec::new();
+        create_payload.extend_from_slice(thread_id.as_bytes());
+        create_payload.push(0);
+        create_payload.extend_from_slice(chain.as_bytes());
+        create_payload.push(0);
+        create_payload.extend_from_slice(profile.as_bytes());
+
+        let batch = vec![
+            wal::WalEntry::new(wal::EntryType::ThreadCreate, create_payload),
+            wal::WalEntry::new(
+                wal::EntryType::ContextAllocate,
+                thread_id.as_bytes().to_vec(),
+            ),
+        ];
+
+        self.wal.append_batch(&batch)?;
+        self.threads.register_thread(thread_id, "platform", organism, profile);
+        self.contexts.create(thread_id)?;
+
+        Ok(())
+    }
+
+    /// Evict a platform-allocated thread durably.
+    ///
+    /// Counterpart to `register_platform_thread`: drops the thread record
+    /// and releases its context, recording both ops in a single WAL batch
+    /// so a crash mid-eviction either replays both or neither.
+    pub fn evict_platform_thread(&mut self, thread_id: &str) -> KernelResult<()> {
+        let batch = vec![
+            wal::WalEntry::new(
+                wal::EntryType::ThreadCleanup,
+                thread_id.as_bytes().to_vec(),
+            ),
+            wal::WalEntry::new(
+                wal::EntryType::ContextRelease,
+                thread_id.as_bytes().to_vec(),
+            ),
+        ];
+
+        self.wal.append_batch(&batch)?;
+        self.threads.cleanup(thread_id);
+        self.contexts.release(thread_id)?;
+
+        Ok(())
+    }
+
     /// Get a reference to the thread table.
     pub fn threads(&self) -> &ThreadTable {
         &self.threads
@@ -310,6 +379,64 @@ mod tests {
         let kernel = Kernel::open(&data_dir).unwrap();
         // The root should exist (either from mmap or WAL replay)
         assert!(kernel.threads().root_uuid().is_some());
+    }
+
+    #[test]
+    fn register_platform_thread_replays_after_crash() {
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+
+        // Round 1: register a platform-managed thread, drop without
+        // explicit shutdown so we exercise the WAL-replay path.
+        {
+            let mut kernel = Kernel::open(&data_dir).unwrap();
+            kernel.initialize_root("agentos", "default").unwrap();
+            kernel
+                .register_platform_thread("inst-platform-001", "bob", "default")
+                .unwrap();
+            assert!(kernel.threads().lookup("inst-platform-001").is_some());
+            assert!(kernel.contexts().exists("inst-platform-001"));
+            // Drop kernel without flushing — WAL is the source of truth.
+        }
+
+        // Round 2: reopen. Replay must restore the thread and its context.
+        let kernel = Kernel::open(&data_dir).unwrap();
+        assert!(
+            kernel.threads().lookup("inst-platform-001").is_some(),
+            "platform thread must replay from WAL"
+        );
+        assert!(
+            kernel.contexts().exists("inst-platform-001"),
+            "platform thread's context must replay from WAL"
+        );
+    }
+
+    #[test]
+    fn evict_platform_thread_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+
+        let mut kernel = Kernel::open(&data_dir).unwrap();
+        kernel.initialize_root("agentos", "default").unwrap();
+        kernel
+            .register_platform_thread("inst-platform-002", "bob", "default")
+            .unwrap();
+        kernel.evict_platform_thread("inst-platform-002").unwrap();
+
+        assert!(kernel.threads().lookup("inst-platform-002").is_none());
+        assert!(!kernel.contexts().exists("inst-platform-002"));
+
+        // Drop + reopen — neither thread nor context should reappear.
+        drop(kernel);
+        let kernel = Kernel::open(&data_dir).unwrap();
+        assert!(
+            kernel.threads().lookup("inst-platform-002").is_none(),
+            "evicted thread must stay evicted after replay"
+        );
+        assert!(
+            !kernel.contexts().exists("inst-platform-002"),
+            "evicted context must stay released after replay"
+        );
     }
 
     #[test]
