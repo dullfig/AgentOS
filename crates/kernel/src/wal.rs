@@ -46,6 +46,17 @@ pub enum EntryType {
     JournalDelivered = 21,
     JournalFailed = 22,
 
+    // Shim store ops (fourth pillar — manages cognitive substrate per
+    // project_shim_store_design.md). Files for ONNX blobs and JSON
+    // metadata are written to disk first; these WAL entries record
+    // the metadata + content_hash that lets replay verify the disk
+    // state matches what the kernel committed.
+    ShimStoreCreate = 30,    // payload: store_name\0manifest_json
+    ShimAdd = 31,            // payload: store_name\0shim_id\0shim_manifest_json\0content_hash
+    ShimRetire = 32,         // payload: store_name\0shim_id
+    ShimStoreDelete = 33,    // payload: store_name
+    CompositionUpdate = 34,  // payload: store_name\0content_hash
+
     // Compound
     AtomicBatch = 50,
 }
@@ -70,6 +81,11 @@ impl EntryType {
             20 => Some(Self::JournalDispatched),
             21 => Some(Self::JournalDelivered),
             22 => Some(Self::JournalFailed),
+            30 => Some(Self::ShimStoreCreate),
+            31 => Some(Self::ShimAdd),
+            32 => Some(Self::ShimRetire),
+            33 => Some(Self::ShimStoreDelete),
+            34 => Some(Self::CompositionUpdate),
             50 => Some(Self::AtomicBatch),
             _ => None,
         }

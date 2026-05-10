@@ -1,15 +1,18 @@
 //! Kernel — durable state for AgentOS.
 //!
-//! Three pieces of nuclear-proof state:
+//! Four pieces of nuclear-proof state:
 //! - Thread table (call stack)
 //! - Context store (VMM)
 //! - Message journal (audit/tape)
+//! - Shim store (cognitive substrate — fourth pillar; see
+//!   `project_shim_store_design.md`)
 //!
 //! One WAL, atomic ops. Everything else is ephemeral userspace.
 
 pub mod context_store;
 pub mod error;
 pub mod journal;
+pub mod shim_store;
 pub mod thread_table;
 pub mod wal;
 
@@ -18,15 +21,17 @@ use std::path::{Path, PathBuf};
 use context_store::ContextStore;
 use error::KernelResult;
 use journal::Journal;
+use shim_store::ShimStore;
 use thread_table::ThreadTable;
 use wal::Wal;
 
-/// The kernel: wraps all three stores and provides atomic cross-store operations.
+/// The kernel: wraps all four stores and provides atomic cross-store operations.
 pub struct Kernel {
     pub wal: Wal,
     pub threads: ThreadTable,
     pub contexts: ContextStore,
     pub journal: Journal,
+    pub shims: ShimStore,
     data_dir: PathBuf,
 }
 
@@ -40,13 +45,17 @@ impl Kernel {
         let mut threads = ThreadTable::open(&data_dir.join("threads.bin"))?;
         let mut contexts = ContextStore::open(&data_dir.join("contexts"))?;
         let mut journal = Journal::open(&data_dir.join("journal.bin"))?;
+        let mut shims = ShimStore::open(data_dir.join("shim_stores"))?;
 
-        // Replay WAL and apply any entries not yet reflected in state
+        // Replay WAL and apply any entries not yet reflected in state.
+        // Each pillar's apply_wal_entry is a no-op for entry types it
+        // doesn't recognize, so the same stream feeds all four.
         let entries = wal.replay()?;
         for entry in &entries {
             threads.apply_wal_entry(entry);
             contexts.apply_wal_entry(entry);
             journal.apply_wal_entry(entry);
+            shims.apply_wal_entry(entry);
         }
 
         Ok(Self {
@@ -54,6 +63,7 @@ impl Kernel {
             threads,
             contexts,
             journal,
+            shims,
             data_dir: data_dir.to_path_buf(),
         })
     }
@@ -292,6 +302,87 @@ impl Kernel {
         self.contexts.release(thread_id)?;
 
         Ok(())
+    }
+
+    // ── Shim store (fourth pillar) ──
+    //
+    // Each method delegates the file-write + in-memory-update work to
+    // `ShimStore`, which returns a `WalEntry` the kernel commits via
+    // `wal.append`. Same shape as `register_platform_thread`: file/state
+    // first, WAL second, durability provided by atomic rename + fsync
+    // before any WAL write that references the file.
+
+    /// Create a new shim_store directory + manifest, idempotent. Same
+    /// store_name twice = no-op (returns success without changing state).
+    pub fn create_shim_store(
+        &mut self,
+        name: &str,
+        base_compat: Vec<String>,
+    ) -> KernelResult<()> {
+        let entry = self.shims.create_store(name, base_compat)?;
+        self.wal.append(&entry)?;
+        Ok(())
+    }
+
+    /// Add a trained shim (manifest sidecar + ONNX bytes) to a store.
+    /// Errors if the store doesn't exist — caller must `create_shim_store`
+    /// first or invoke via the shim-expert agent's `create-store` action.
+    pub fn add_shim_to_store(
+        &mut self,
+        store_name: &str,
+        shim_id: &str,
+        manifest_json: Vec<u8>,
+        onnx_bytes: Vec<u8>,
+    ) -> KernelResult<()> {
+        let entry = self
+            .shims
+            .add_shim(store_name, shim_id, manifest_json, onnx_bytes)?;
+        self.wal.append(&entry)?;
+        Ok(())
+    }
+
+    /// Soft-retire a shim: moves files to `<store>/retired/`, drops the
+    /// in-memory record. Reversible (manual file move back) but exposes
+    /// no kernel-level revival API in v1.
+    pub fn retire_shim_from_store(
+        &mut self,
+        store_name: &str,
+        shim_id: &str,
+    ) -> KernelResult<()> {
+        let entry = self.shims.retire_shim(store_name, shim_id)?;
+        self.wal.append(&entry)?;
+        Ok(())
+    }
+
+    /// Replace a store's `composition.json` with the given raw bytes.
+    /// Caller is responsible for schema validation (kernel doesn't
+    /// interpret the format — see crate-level docs for rationale).
+    pub fn update_composition(
+        &mut self,
+        store_name: &str,
+        composition_bytes: Vec<u8>,
+    ) -> KernelResult<()> {
+        let entry = self.shims.update_composition(store_name, composition_bytes)?;
+        self.wal.append(&entry)?;
+        Ok(())
+    }
+
+    /// Delete a shim_store entirely (directory + in-memory state).
+    /// No undo. Used for orphan cleanup.
+    pub fn delete_shim_store(&mut self, name: &str) -> KernelResult<()> {
+        let entry = self.shims.delete_store(name)?;
+        self.wal.append(&entry)?;
+        Ok(())
+    }
+
+    /// Get a reference to the shim store.
+    pub fn shim_store(&self) -> &ShimStore {
+        &self.shims
+    }
+
+    /// Get a mutable reference to the shim store.
+    pub fn shim_store_mut(&mut self) -> &mut ShimStore {
+        &mut self.shims
     }
 
     /// Get a reference to the thread table.
@@ -728,5 +819,88 @@ mod tests {
 
         kernel.fold_thread(&child, b"[done]").unwrap();
         assert!(!kernel.contexts().exists(&child));
+    }
+
+    #[test]
+    fn shim_store_survives_kernel_restart() {
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+
+        // Round 1: create a store, add a shim, update composition, then drop.
+        {
+            let mut kernel = Kernel::open(&data_dir).unwrap();
+            kernel
+                .create_shim_store("bob", vec!["qwen-2.5-3b".into()])
+                .unwrap();
+            kernel
+                .add_shim_to_store(
+                    "bob",
+                    "should_respond",
+                    br#"{"id":"should_respond","phase":"gate"}"#.to_vec(),
+                    vec![1, 2, 3, 4, 5, 6, 7, 8],
+                )
+                .unwrap();
+            kernel
+                .update_composition(
+                    "bob",
+                    br#"{"gate_shims":["should_respond"]}"#.to_vec(),
+                )
+                .unwrap();
+            // Drop without a graceful shutdown — WAL is the source of truth.
+        }
+
+        // Round 2: reopen. Boot scan + WAL replay should reconstruct
+        // both the manifest, the shim record (with content_hash verified
+        // against the on-disk ONNX), and the composition bytes.
+        let kernel = Kernel::open(&data_dir).unwrap();
+        let store = kernel.shim_store();
+        assert!(store.exists("bob"));
+        assert_eq!(store.manifest_for("bob").unwrap().name, "bob");
+        let shims = store.shims_in("bob").unwrap();
+        assert_eq!(shims.len(), 1);
+        assert!(shims.contains_key("should_respond"));
+        assert_eq!(
+            store.composition_bytes_for("bob").unwrap(),
+            br#"{"gate_shims":["should_respond"]}"#
+        );
+    }
+
+    #[test]
+    fn shim_store_retire_persists_through_restart() {
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+
+        {
+            let mut kernel = Kernel::open(&data_dir).unwrap();
+            kernel.create_shim_store("alice", vec![]).unwrap();
+            kernel
+                .add_shim_to_store("alice", "x", b"{}".to_vec(), vec![9, 9, 9])
+                .unwrap();
+            kernel.retire_shim_from_store("alice", "x").unwrap();
+        }
+
+        let kernel = Kernel::open(&data_dir).unwrap();
+        let shims = kernel.shim_store().shims_in("alice").unwrap();
+        assert!(
+            shims.is_empty(),
+            "retired shim must stay retired across restart"
+        );
+        // The boot-scan in ShimStore::open re-loads the active shims
+        // from <store>/shims/. The retired/ subdirectory is ignored.
+    }
+
+    #[test]
+    fn shim_store_delete_persists_through_restart() {
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+
+        {
+            let mut kernel = Kernel::open(&data_dir).unwrap();
+            kernel.create_shim_store("ephemeral", vec![]).unwrap();
+            kernel.delete_shim_store("ephemeral").unwrap();
+        }
+
+        let kernel = Kernel::open(&data_dir).unwrap();
+        assert!(!kernel.shim_store().exists("ephemeral"));
     }
 }
