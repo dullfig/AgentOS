@@ -14,7 +14,7 @@ use tui_tree_widget::TreeItem;
 
 use super::app::ContextView;
 use super::dashboard;
-use crate::kernel::context_store::SegmentStatus;
+use agentos_kernel::context_store::SegmentStatus;
 
 /// Build a tree from a ContextView.
 pub fn build_context_tree<'a>(ctx: &ContextView) -> Vec<TreeItem<'a, String>> {
@@ -164,7 +164,7 @@ pub fn relevance_color(relevance: f32) -> Color {
 mod tests {
     use super::*;
     use crate::tui::app::{ContextView, SegmentView};
-    use crate::kernel::context_store::SegmentStatus;
+    use agentos_kernel::context_store::SegmentStatus;
 
     #[test]
     fn build_tree_empty() {
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn context_view_folded_count() {
-        use crate::kernel::context_store::{ContextInventory, SegmentMeta};
+        use agentos_kernel::context_store::{ContextInventory, SegmentMeta};
         let inv = ContextInventory {
             thread_id: "t1".into(),
             segments: vec![

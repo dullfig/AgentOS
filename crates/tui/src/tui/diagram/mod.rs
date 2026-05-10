@@ -6,7 +6,7 @@
 
 use ratatui::text::Line;
 
-use crate::organism::{ListenerDef, Organism};
+use agentos_organism::{ListenerDef, Organism};
 
 /// Render D2 source text to styled ratatui Lines.
 ///
@@ -78,8 +78,8 @@ pub fn organism_to_d2(org: &Organism) -> String {
 #[cfg(test)]
 mod organism_tests {
     use super::*;
-    use crate::organism::{ListenerDef, Organism};
-    use crate::organism::AgentConfig;
+    use agentos_organism::{ListenerDef, Organism};
+    use agentos_organism::AgentConfig;
 
     fn sample_listener(name: &str) -> ListenerDef {
         ListenerDef {
@@ -134,7 +134,7 @@ mod organism_tests {
     fn wasm_tool_gets_cylinder() {
         let mut org = Organism::new("test");
         let mut tool = sample_listener("my-wasm");
-        tool.wasm = Some(crate::organism::WasmToolConfig {
+        tool.wasm = Some(agentos_organism::WasmToolConfig {
             path: "tools/my.wasm".into(),
             capabilities: Default::default(),
         });
@@ -148,7 +148,7 @@ mod organism_tests {
     fn buffer_gets_hexagon() {
         let mut org = Organism::new("test");
         let mut tool = sample_listener("sub-agent");
-        tool.buffer = Some(crate::organism::BufferConfig {
+        tool.buffer = Some(agentos_organism::BufferConfig {
             description: "A sub-agent".into(),
             parameters: vec![],
             required: vec![],

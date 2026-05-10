@@ -18,9 +18,9 @@ use tokio::time::interval;
 
 use rust_pipeline::prelude::build_envelope;
 
-use crate::kernel::Kernel;
-use crate::pipeline::AgentPipeline;
-use crate::tools::xml_escape;
+use agentos_kernel::Kernel;
+use agentos_pipeline::AgentPipeline;
+use agentos_tools::xml_escape;
 
 use super::app::{ContextView, MessageView, ThreadView, TuiApp};
 use super::event::TuiMessage;
@@ -97,10 +97,10 @@ pub async fn run_tui(
     pipeline: &mut AgentPipeline,
     debug: bool,
     organism_yaml: &str,
-    models_config: crate::config::ModelsConfig,
-    agents_config: crate::config::AgentsConfig,
+    models_config: agentos_config::ModelsConfig,
+    agents_config: agentos_config::AgentsConfig,
     has_pool: bool,
-    drive_slot: crate::tools::vdrive_tools::DriveSlot,
+    drive_slot: agentos_tools::vdrive_tools::DriveSlot,
     auto_mount_msg: Option<String>,
     startup_errors: Vec<String>,
 ) -> anyhow::Result<()> {
@@ -276,9 +276,9 @@ pub async fn run_tui(
                 config.providers.get(&pc.provider).and_then(|p| p.base_url.clone())
             };
             let client = if let Some(ref url) = base_url {
-                crate::llm::client::AnthropicClient::with_base_url(pc.api_key.clone(), url.clone())
+                agentos_llm::client::AnthropicClient::with_base_url(pc.api_key.clone(), url.clone())
             } else {
-                crate::llm::client::AnthropicClient::new(pc.api_key.clone())
+                agentos_llm::client::AnthropicClient::new(pc.api_key.clone())
             };
 
             match client.list_models().await {
@@ -302,7 +302,7 @@ pub async fn run_tui(
                         existing.api_key = Some(pc.api_key.clone());
                         existing.models = model_map.clone();
                     } else {
-                        config.providers.insert(pc.provider.clone(), crate::config::ProviderConfig {
+                        config.providers.insert(pc.provider.clone(), agentos_config::ProviderConfig {
                             api_key: Some(pc.api_key.clone()),
                             base_url: base_url.clone(),
                             models: model_map.clone(),
@@ -555,8 +555,8 @@ fn add_friendly_aliases(model_map: &mut std::collections::HashMap<String, String
 /// Rebuild or create the LlmPool from updated config.
 /// If a pool exists, rebuilds it in-place. If not, creates a new one.
 /// Returns a suffix message for user feedback (e.g., " — pool connected").
-fn rebuild_pool(app: &mut TuiApp, config: &crate::config::ModelsConfig) -> String {
-    use crate::llm::LlmPool;
+fn rebuild_pool(app: &mut TuiApp, config: &agentos_config::ModelsConfig) -> String {
+    use agentos_llm::LlmPool;
 
     if let Some(ref pool_arc) = app.llm_pool {
         // Pool exists — rebuild in place
@@ -583,7 +583,7 @@ fn rebuild_pool(app: &mut TuiApp, config: &crate::config::ModelsConfig) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::events::PipelineEvent;
+    use agentos_pipeline::events::PipelineEvent;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -607,11 +607,11 @@ mod tests {
         let root = kernel.initialize_root("org", "admin").unwrap();
         kernel.contexts_mut().create(&root).unwrap();
 
-        let seg = crate::kernel::context_store::ContextSegment {
+        let seg = agentos_kernel::context_store::ContextSegment {
             id: "s1".into(),
             tag: "code".into(),
             content: b"fn main()".to_vec(),
-            status: crate::kernel::context_store::SegmentStatus::Active,
+            status: agentos_kernel::context_store::SegmentStatus::Active,
             relevance: 0.8,
             created_at: 0,
             fold_ref: None,
@@ -652,7 +652,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_pipeline_to_tui() {
-        use crate::organism::parser::parse_organism;
+        use agentos_organism::parser::parse_organism;
         use rust_pipeline::prelude::{
             build_envelope, FnHandler, HandlerContext, HandlerResponse, ValidatedPayload,
         };
@@ -681,7 +681,7 @@ profiles:
             Box::pin(async move { Ok(HandlerResponse::Reply { payload_xml: p.xml }) })
         });
 
-        let mut pipeline = crate::pipeline::AgentPipelineBuilder::new(org, &dir.path().join("data"))
+        let mut pipeline = agentos_pipeline::AgentPipelineBuilder::new(org, &dir.path().join("data"))
             .register("echo", echo)
             .unwrap()
             .build()

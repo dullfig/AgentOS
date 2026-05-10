@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::organism::{OnboardingChoice, OnboardingStep};
+use agentos_organism::{OnboardingChoice, OnboardingStep};
 
 /// Actions the runner must execute after calling `advance()`.
 pub enum OnboardingAction {
@@ -165,7 +165,7 @@ impl OnboardingEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::organism::{OnboardingChoice, OnboardingStep};
+    use agentos_organism::{OnboardingChoice, OnboardingStep};
 
     #[test]
     fn empty_steps_returns_none() {

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::llm::LlmPool;
+use agentos_llm::LlmPool;
 
 use super::app::{ChatEntry, InputMode, TuiApp};
 
@@ -358,7 +358,7 @@ pub async fn execute(
             } else {
                 // No pool — try to create one from config
                 let config = app.models_config.lock().await;
-                match crate::llm::LlmPool::from_config(&config) {
+                match agentos_llm::LlmPool::from_config(&config) {
                     Ok(mut new_pool) => {
                         match new_pool.rebuild_for_alias(&config, arg) {
                             Ok(()) => {
@@ -765,13 +765,13 @@ async fn execute_models(
                         // API query failed — fall back to config list
                         output.push_str(&format!("API query failed: {e}\n\n"));
                         let config = app.models_config.lock().await;
-                        output.push_str(&crate::config::format_model_list(&config));
+                        output.push_str(&agentos_config::format_model_list(&config));
                     }
                 }
             } else {
                 // No pool — show config only
                 let config = app.models_config.lock().await;
-                output.push_str(&crate::config::format_model_list(&config));
+                output.push_str(&agentos_config::format_model_list(&config));
             }
 
             CommandResult {

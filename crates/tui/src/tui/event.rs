@@ -9,7 +9,7 @@
 //! All events flow through a single mpsc channel as TuiMessages.
 
 use crossterm::event::KeyEvent;
-use crate::pipeline::events::PipelineEvent;
+use agentos_pipeline::events::PipelineEvent;
 
 /// Messages that drive the TUI update loop.
 #[derive(Debug, Clone)]

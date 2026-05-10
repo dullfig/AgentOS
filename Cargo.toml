@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism", "crates/wasm", "crates/config", "crates/llm", "crates/routing", "crates/librarian", "crates/agent", "crates/wit", "crates/tools", "crates/cloud", "crates/trigger", "crates/kv-store", "crates/platform", "crates/gui", "crates/security", "crates/ports", "crates/treesitter", "crates/pipeline", "crates/server", "crates/cortex-shim"]
+members = [".", "crates/kernel", "crates/events", "crates/vdrive", "crates/bitnet", "crates/embedding", "crates/organism", "crates/wasm", "crates/config", "crates/llm", "crates/routing", "crates/librarian", "crates/agent", "crates/wit", "crates/tools", "crates/cloud", "crates/trigger", "crates/kv-store", "crates/platform", "crates/gui", "crates/security", "crates/ports", "crates/treesitter", "crates/pipeline", "crates/server", "crates/cortex-shim", "crates/tui"]
 
 [package]
 name = "agentos"
@@ -32,61 +32,20 @@ agentos-ports = { path = "crates/ports" }
 agentos-treesitter = { path = "crates/treesitter" }
 agentos-pipeline = { path = "crates/pipeline" }
 
+# The bundled IDE. Apps that need a developer-facing terminal UI
+# depend on the platform via this crate; apps that don't (RingHub,
+# headless server deployments) link the platform crates directly.
+agentos-tui = { path = "crates/tui" }
+
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-memmap2 = "0.9"
-crc32fast = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 schemars = { version = "0.8", features = ["derive"] }
-uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
-urlencoding = "2"
-futures-util = "0.3"
 async-trait = "0.1"
-
-# D2 diagram rendering engine
-d2-ascii = { path = "../d2" }
-
-# TUI presentation layer
-ratatui = { version = "0.30", features = ["crossterm"] }
-crossterm = { version = "0.29", features = ["event-stream"] }
-tui-tree-widget = "0.24"
-ratatui-code-editor = { git = "https://github.com/dullfig/ratatui-code-editor", branch = "ratatui-0.30" }
-tui-markdown = "0.3"
-unicode-width = "0.2"
-unicode-segmentation = "1"
-
-# WASM component runtime
-wasmtime = { version = "41", features = ["component-model"] }
-wasmtime-wasi = "41"
-
-# Tree-sitter core + language grammars
-tree-sitter = "0.26"
-tree-sitter-rust = "0.24"
-tree-sitter-python = "0.25"
-
-# Language intelligence (in-process LSP data types, no transport)
-lsp-types = "0.97"
-
-# Constrained decoding — local LLM inference for form filling
-code-llm = { path = "../code-llm" }
-
-# Clipboard access (input bar Ctrl+V paste)
-arboard = "3"
-
-# Virtual drive workspaces (QCOW2)
-imago = "0.2"
-
-# Core tool dependencies
-glob = "0.3"
-regex = "1"
-similar = "2"
-tempfile = "3"
-zip = { version = "2", default-features = false, features = ["deflate"] }

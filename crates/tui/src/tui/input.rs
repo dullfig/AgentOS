@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::lsp::LanguageService;
 
-use crate::agent::permissions::ApprovalVerdict;
+use agentos_agent::permissions::ApprovalVerdict;
 use super::app::{TabId, AgentStatus, ChatEntry, InputMode, MenuAction, MessagesFocus, ProviderCompletion, ThreadsFocus, TuiApp};
 
 /// Dispatch a selected menu action.
@@ -1428,7 +1428,7 @@ mod tests {
     #[test]
     fn models_menu_with_provider() {
         use super::super::app::build_menu_items;
-        use crate::config::{ModelsConfig, ProviderConfig};
+        use agentos_config::{ModelsConfig, ProviderConfig};
         use std::collections::HashMap;
 
         let mut providers = HashMap::new();

@@ -1,0 +1,75 @@
+[package]
+name = "agentos-tui"
+version = "0.1.0"
+edition = "2021"
+description = "AgentOS bundled IDE — ratatui terminal UI + LSP integration. Apps that don't need an IDE (RingHub, headless server deployments) skip this crate; the root agentos library is platform-only."
+
+[dependencies]
+# Platform crates the TUI consumes
+agentos-agent = { path = "../agent" }
+agentos-config = { path = "../config" }
+agentos-embedding = { path = "../embedding" }
+agentos-events = { path = "../events" }
+agentos-kernel = { path = "../kernel" }
+agentos-librarian = { path = "../librarian" }
+agentos-llm = { path = "../llm" }
+agentos-organism = { path = "../organism" }
+agentos-pipeline = { path = "../pipeline" }
+agentos-ports = { path = "../ports" }
+agentos-routing = { path = "../routing" }
+agentos-security = { path = "../security" }
+agentos-tools = { path = "../tools" }
+agentos-treesitter = { path = "../treesitter" }
+agentos-vdrive = { path = "../vdrive" }
+agentos-wasm = { path = "../wasm" }
+agentos-wit = { path = "../wit" }
+
+rust-pipeline = { path = "../../../rust-pipeline" }
+
+# Core
+async-trait = "0.1"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+regex = "1"
+similar = "2"
+glob = "0.3"
+tempfile = "3"
+futures-util = "0.3"
+
+# TUI presentation layer
+ratatui = { version = "0.30", features = ["crossterm"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+tui-tree-widget = "0.24"
+ratatui-code-editor = { git = "https://github.com/dullfig/ratatui-code-editor", branch = "ratatui-0.30" }
+tui-markdown = "0.3"
+unicode-width = "0.2"
+unicode-segmentation = "1"
+
+# Clipboard (Ctrl+V paste)
+arboard = "3"
+
+# LSP types — in-process, no transport
+lsp-types = "0.97"
+
+# Tree-sitter for LSP parsing
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+
+# D2 diagram rendering
+d2-ascii = { path = "../../../d2" }
+
+# QCOW2 vdrive UI
+imago = "0.2"
+
+# Constrained decoding for form-filler (used by TUI's input flows)
+code-llm = { path = "../../../code-llm" }
+
+[dev-dependencies]
+tempfile = "3"

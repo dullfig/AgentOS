@@ -10,17 +10,17 @@ use ratatui::layout::Rect;
 use tokio::sync::Mutex;
 use super::menu::{MenuBarState, MenuDef};
 
-use crate::config::{AgentsConfig, ModelsConfig};
-use crate::kernel::context_store::{ContextInventory, SegmentMeta, SegmentStatus};
-use crate::kernel::journal::JournalEntry;
-use crate::kernel::thread_table::ThreadRecord;
-use crate::llm::LlmPool;
+use agentos_config::{AgentsConfig, ModelsConfig};
+use agentos_kernel::context_store::{ContextInventory, SegmentMeta, SegmentStatus};
+use agentos_kernel::journal::JournalEntry;
+use agentos_kernel::thread_table::ThreadRecord;
+use agentos_llm::LlmPool;
 use crate::lsp::command_line::CommandLineService;
 use crate::lsp::organism::OrganismYamlService;
 use crate::lsp::{HoverInfo, LanguageService};
-use crate::agent::permissions::ToolApprovalRequest;
-use crate::organism::Organism;
-use crate::pipeline::events::PipelineEvent;
+use agentos_agent::permissions::ToolApprovalRequest;
+use agentos_organism::Organism;
+use agentos_pipeline::events::PipelineEvent;
 
 use super::event::TuiMessage;
 
@@ -492,7 +492,7 @@ pub struct TuiApp {
     /// Viewport height of the activity trace pane (set by renderer).
     pub activity_viewport_height: u16,
     /// Per-thread conversation entries (populated by ConversationSync events).
-    pub thread_conversations: std::collections::HashMap<String, Vec<crate::pipeline::events::ConversationEntry>>,
+    pub thread_conversations: std::collections::HashMap<String, Vec<agentos_pipeline::events::ConversationEntry>>,
     /// Scroll offset for the conversation pane (Threads tab).
     pub conversation_scroll: u16,
     /// When true, auto-scroll conversation to bottom on next render.
@@ -561,7 +561,7 @@ pub struct TuiApp {
     /// When Some, the TUI shows an inline approval bar and waits for user input.
     pub pending_approval: Option<ToolApprovalRequest>,
     /// Pending user query from an agent (awaiting user's typed response).
-    pub pending_query: Option<crate::tools::user_channel::UserQueryRequest>,
+    pub pending_query: Option<agentos_tools::user_channel::UserQueryRequest>,
     /// Agent name to show in query mode prompt (e.g., "plan-expert >").
     pub query_prompt: Option<String>,
     /// Cached layout regions for mouse hit-testing (updated each render frame).
@@ -582,7 +582,7 @@ pub struct TuiApp {
     pub input_cursor_last: usize,
     /// Shared drive slot — the agent's sandboxed workspace.
     /// Shared with all VDrive tools so mount/unmount is instantly visible.
-    pub drive_slot: crate::tools::vdrive_tools::DriveSlot,
+    pub drive_slot: agentos_tools::vdrive_tools::DriveSlot,
     /// Cached D2 source for the Graph tab (generated from organism).
     pub graph_d2_source: String,
     /// Cached rendered lines for the Graph tab.
@@ -626,7 +626,7 @@ const ACTIVITY_LOG_CAPACITY: usize = 512;
 pub fn build_menu_items(
     available_agents: &[String],
     debug_mode: bool,
-    models_config: Option<&crate::config::ModelsConfig>,
+    models_config: Option<&agentos_config::ModelsConfig>,
     current_model: Option<&str>,
 ) -> Vec<MenuDef<MenuAction>> {
     // ── File menu ──
@@ -721,7 +721,7 @@ pub fn build_menu_items(
 /// └── Add Endpoint...
 /// ```
 fn build_models_menu(
-    config: Option<&crate::config::ModelsConfig>,
+    config: Option<&agentos_config::ModelsConfig>,
     current_model: Option<&str>,
 ) -> Vec<MenuDef<MenuAction>> {
     let mut items = Vec::new();
@@ -885,7 +885,7 @@ impl TuiApp {
             rendered_messages_scroll: 0,
             input_scroll: 0,
             input_cursor_last: 0,
-            drive_slot: crate::tools::vdrive_tools::empty_slot(),
+            drive_slot: agentos_tools::vdrive_tools::empty_slot(),
             graph_d2_source: String::new(),
             graph_rendered_lines: Vec::new(),
             graph_rendered_width: 0,
@@ -1521,9 +1521,9 @@ impl Default for TuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::context_store::{ContextInventory, SegmentMeta, SegmentStatus};
-    use crate::kernel::thread_table::ThreadRecord;
-    use crate::pipeline::events::PipelineEvent;
+    use agentos_kernel::context_store::{ContextInventory, SegmentMeta, SegmentStatus};
+    use agentos_kernel::thread_table::ThreadRecord;
+    use agentos_pipeline::events::PipelineEvent;
     use crate::tui::input::handle_key;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -2013,7 +2013,7 @@ mod tests {
 
     #[test]
     fn conversation_sync_populates_thread_conversations() {
-        use crate::pipeline::events::ConversationEntry;
+        use agentos_pipeline::events::ConversationEntry;
         let mut app = TuiApp::new();
         let entries = vec![
             ConversationEntry {

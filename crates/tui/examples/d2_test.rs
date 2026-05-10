@@ -176,7 +176,7 @@ fn main() -> anyhow::Result<()> {
             let area = frame.area();
             let max_width = (area.width as usize).saturating_sub(2);
 
-            let lines = agentos::tui::diagram::render_d2(&ex.source, max_width);
+            let lines = agentos_tui::tui::diagram::render_d2(&ex.source, max_width);
 
             let title = format!(
                 " {} ({}/{}) ── Tab/Shift+Tab to cycle, q to quit ",

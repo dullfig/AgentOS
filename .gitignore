@@ -1,6 +1,6 @@
 /target
 /.bestcode
-/.claude
+.claude/
 /tools/*/target
 .agentos/
 *.env
@@ -11,3 +11,8 @@ __pycache__/
 *.pyc
 models/
 *.gguf
+
+# Session scratch / untracked-by-default artifacts
+/documentation.md
+/crates/bitnet/design-turboquant-kv-cache.md
+/crates/bitnet/iCE40UltraWearableDevPlatformUserGuideEB100.pdf

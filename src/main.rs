@@ -22,7 +22,7 @@ use agentos::tools::vdrive_tools::{
     self, DriveSlot, VDriveFileRead, VDriveFileWrite, VDriveFileEdit,
     VDriveGlob, VDriveGrep, VDriveListDir, VDriveCommandExec,
 };
-use agentos::tui::runner::run_tui;
+use agentos::tui::run_tui;
 
 /// Default organism configuration embedded in the binary.
 const DEFAULT_ORGANISM: &str = r#"
@@ -834,7 +834,7 @@ fn try_auto_mount(
     }
 
     // Mount it
-    match agentos::vdrive::mount(&canonical) {
+    match agentos::tui::vdrive::mount(&canonical) {
         Ok(drive) => {
             let name = drive.name().to_string();
             let root = drive.root().display().to_string();
