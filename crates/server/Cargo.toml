@@ -1,0 +1,46 @@
+[package]
+name = "agentos-server"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP+SSE server frontend for AgentOS — multi-tenant chat-bubble Bob endpoint per the v1 API contract."
+
+[[bin]]
+name = "agentos-server"
+path = "src/bin/agentos-server.rs"
+
+[dependencies]
+# Workspace crates
+agentos-events = { path = "../events" }
+agentos-organism = { path = "../organism" }
+agentos-pipeline = { path = "../pipeline" }
+agentos-platform = { path = "../platform" }
+
+# HTTP + SSE
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Async + serialization
+async-stream = "0.3"
+futures-core = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+# Errors
+thiserror = "2"
+
+# CLI for the bin
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+agentos-kernel = { path = "../kernel" }
+rust-pipeline = { path = "../../../rust-pipeline" }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tempfile = "3"
+futures = "0.3"
