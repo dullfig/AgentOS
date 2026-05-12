@@ -117,12 +117,20 @@ async fn main() -> Result<()> {
     let shared_router = Arc::new(pipeline.shared_router(0, Duration::from_secs(60)));
     let _eviction = shared_router.start_eviction_timer();
 
+    let idempotency = agentos_server::idempotency::IdempotencyCache::new();
+    // Periodic TTL sweep; the handle is dropped on shutdown which
+    // stops the sweeper (the cache itself remains usable).
+    let _sweeper = idempotency.clone().spawn_sweeper(
+        agentos_server::idempotency::DEFAULT_SWEEP_INTERVAL,
+    );
+
     let state = Arc::new(ServerState {
         router: shared_router,
         events: event_tx,
         organism: Arc::new(pipeline.organism().clone()),
         agent_name: cli.agent,
         auth_token: token,
+        idempotency,
     });
 
     let app = build_router(state);

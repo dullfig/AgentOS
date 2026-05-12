@@ -6,6 +6,7 @@
 //! integration tests) wire up to an [`AgentPipeline`] + platform router.
 
 pub mod handler;
+pub mod idempotency;
 pub mod sse;
 pub mod state;
 

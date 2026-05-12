@@ -20,6 +20,8 @@ use agentos_platform::address::Address;
 use agentos_platform::buffers::BufferId;
 use agentos_platform::router::Envelope;
 
+use crate::idempotency::{IdempotencyCache, LookupResult};
+
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -37,7 +39,7 @@ use crate::state::ServerState;
 ///
 /// Unknown fields are accepted (forward-compat) — serde's default is
 /// to ignore them since `deny_unknown_fields` is not set.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PostMessagesRequest {
     pub user_id: String,
     pub user_tier: String,
@@ -99,12 +101,20 @@ fn request_id_from_headers(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| Uuid::new_v4().to_string())
 }
 
+/// Boxed-and-pinned stream type returned by `post_messages`. Both the
+/// live path (agent emits events as it responds) and the replay path
+/// (cached events re-emitted) produce `async_stream::stream!` blocks
+/// with anonymous types; boxing erases the difference so both paths
+/// can return through the same function signature.
+pub type EventStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
+
 /// `POST /v1/messages` handler.
 pub async fn post_messages(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     Json(req): Json<PostMessagesRequest>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, PreStreamError> {
+) -> Result<Sse<EventStream>, PreStreamError> {
     let request_id = request_id_from_headers(&headers);
 
     // 1. Auth
@@ -161,6 +171,62 @@ pub async fn post_messages(
             message: "user_id must be non-empty".into(),
             request_id,
         });
+    }
+
+    // 2.5. Idempotency. Probe the cache; if the same (token, key) was
+    //      seen before, either replay the cached SSE stream (same body)
+    //      or 409 (different body / in-flight). Per the v1 API contract.
+    let body_hash = match serde_json::to_vec(&req) {
+        Ok(bytes) => IdempotencyCache::body_hash(&bytes),
+        Err(_) => {
+            // Re-serializing the parsed body should not fail, but if it
+            // did the safe move is to skip idempotency rather than 500.
+            // Zero hash is unique-by-construction (no real body produces
+            // it) so a conflict can't false-positive here.
+            [0u8; 32]
+        }
+    };
+    let cache_key = IdempotencyCache::key(&state.auth_token, &req.idempotency_key);
+    let replay_data = match state.idempotency.lookup_or_claim(cache_key.clone(), body_hash) {
+        LookupResult::Miss => None,
+        LookupResult::Replay { ack, chunks, done } => Some((ack, chunks, done)),
+        LookupResult::Conflict => {
+            return Err(PreStreamError {
+                status: StatusCode::CONFLICT,
+                code: "idempotency_conflict",
+                message: "idempotency_key reused with a different request body".into(),
+                request_id,
+            });
+        }
+        LookupResult::InFlight => {
+            return Err(PreStreamError {
+                status: StatusCode::CONFLICT,
+                code: "idempotency_conflict",
+                message: "idempotency_key is in-flight; retry after the prior request completes"
+                    .into(),
+                request_id,
+            });
+        }
+    };
+
+    // Replay path: cached payloads are the answer. Don't materialize,
+    // don't send, don't subscribe — just yield ack/text/done from cache.
+    if let Some((ack, chunks, done)) = replay_data {
+        let stream = async_stream::stream! {
+            if let Ok(ev) = ack_event(&ack) {
+                yield Ok(ev);
+            }
+            for chunk in chunks {
+                if let Ok(ev) = text_event(&chunk) {
+                    yield Ok(ev);
+                }
+            }
+            if let Ok(ev) = done_event(&done) {
+                yield Ok(ev);
+            }
+        };
+        let boxed: EventStream = Box::pin(stream);
+        return Ok(Sse::new(boxed).keep_alive(KeepAlive::default()));
     }
 
     // 3. IDs. conversation_id resume is punted to Step 3.5 (depends on
@@ -246,26 +312,35 @@ pub async fn post_messages(
 
     // 9. Build the SSE stream. ack first, then filter events for our
     //    buffer thread, emit text per AgentResponse, terminate on done.
+    //    Along the way, accumulate the emitted payloads into the
+    //    idempotency cache so subsequent retries with the same key
+    //    replay these exact events.
     let started = Instant::now();
     let conv_for_done = conversation_id.clone();
     let req_for_done = request_id.clone();
+    let cached_ack = AckPayload {
+        request_id: request_id.clone(),
+        conversation_id: conversation_id.clone(),
+    };
+    let idempotency = state.idempotency.clone();
+    let cache_key_for_stream = cache_key.clone();
 
     let stream = async_stream::stream! {
         // --- ack ---
-        match ack_event(&AckPayload {
-            request_id: request_id.clone(),
-            conversation_id: conversation_id.clone(),
-        }) {
+        match ack_event(&cached_ack) {
             Ok(ev) => yield Ok(ev),
             Err(_) => {
                 // Serialization can't realistically fail on these types,
                 // but if it does, terminate without ack — the connection
-                // closes and the client observes an empty stream.
+                // closes and the client observes an empty stream. Release
+                // the cache slot so a retry can proceed.
+                idempotency.release(&cache_key_for_stream);
                 return;
             }
         }
 
         let mut silent = true;
+        let mut cached_chunks: Vec<String> = Vec::new();
         let mut shim_decisions: std::collections::HashMap<String, f32> =
             std::collections::HashMap::new();
         let mut active_steers: Vec<String> = Vec::new();
@@ -304,6 +379,7 @@ pub async fn post_messages(
                                 silent = false;
                                 if let Ok(ev) = text_event(&text) {
                                     yield Ok(ev);
+                                    cached_chunks.push(text);
                                 }
                             }
                             break;
@@ -331,12 +407,27 @@ pub async fn post_messages(
                 signals,
             },
         };
+        let done_for_commit = done.clone();
         if let Ok(ev) = done_event(&done) {
             yield Ok(ev);
         }
+
+        // Commit cached payloads to the idempotency cache so a retry
+        // with the same (token, idempotency_key, body) replays this
+        // exact stream. Timeouts and broadcast-closed paths also
+        // commit — by contract, the key identifies the request, not
+        // the outcome; clients use a fresh key when they want to
+        // "try again with hope of a different result."
+        idempotency.commit(
+            &cache_key_for_stream,
+            cached_ack,
+            cached_chunks,
+            done_for_commit,
+        );
     };
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    let boxed: EventStream = Box::pin(stream);
+    Ok(Sse::new(boxed).keep_alive(KeepAlive::default()))
 }
 
 /// XML-escape user input before embedding it in a payload tag. Matches

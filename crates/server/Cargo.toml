@@ -15,6 +15,10 @@ agentos-organism = { path = "../organism" }
 agentos-pipeline = { path = "../pipeline" }
 agentos-platform = { path = "../platform" }
 
+# Idempotency cache: DashMap for concurrent storage, sha2 for body+token hashing
+dashmap = "6"
+sha2 = "0.10"
+
 # HTTP + SSE
 axum = "0.7"
 tower = "0.5"

@@ -10,7 +10,7 @@ use axum::response::sse::Event;
 use serde::Serialize;
 
 /// `event: ack` — sent immediately on request receipt.
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 pub struct AckPayload {
     pub request_id: String,
     pub conversation_id: String,
@@ -23,7 +23,7 @@ pub struct TextPayload {
 }
 
 /// `event: done` — terminal event with metadata.
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 pub struct DonePayload {
     pub conversation_id: String,
     pub turn_id: String,
@@ -41,7 +41,7 @@ pub struct DonePayload {
 /// or no shims attached). `memex_corpora_queried` is reserved for
 /// memex integration; populated as `[]` until the retrieval layer
 /// surfaces it.
-#[derive(Serialize, Default)]
+#[derive(Serialize, Clone, Debug, Default)]
 pub struct DoneMetadata {
     pub generation_ms: u64,
     pub model: String,

@@ -8,6 +8,8 @@ use agentos_pipeline::runtime_impl::PipelineRuntime;
 use agentos_platform::concurrent::SharedRouter;
 use tokio::sync::broadcast;
 
+use crate::idempotency::IdempotencyCache;
+
 /// State shared across all axum handlers.
 ///
 /// Holds the platform router (for routing chat messages to materialized
@@ -28,4 +30,8 @@ pub struct ServerState {
     pub agent_name: String,
     /// Static bearer token. Requests must present `Authorization: Bearer <token>`.
     pub auth_token: String,
+    /// 24h in-memory idempotency cache. Same (service_token,
+    /// idempotency_key) → replay cached SSE stream. See
+    /// `crate::idempotency` for the design.
+    pub idempotency: Arc<IdempotencyCache>,
 }

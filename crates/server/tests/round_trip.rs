@@ -85,6 +85,7 @@ async fn post_messages_round_trip() {
         organism: Arc::new(pipeline.organism().clone()),
         agent_name: "bob".to_string(),
         auth_token: "test-token".to_string(),
+        idempotency: agentos_server::idempotency::IdempotencyCache::new(),
     });
 
     // Bind the server on an ephemeral port so the test never collides.
@@ -182,6 +183,7 @@ async fn post_messages_rejects_anon_tier() {
         organism: Arc::new(pipeline.organism().clone()),
         agent_name: "bob".to_string(),
         auth_token: "test-token".to_string(),
+        idempotency: agentos_server::idempotency::IdempotencyCache::new(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -233,6 +235,7 @@ async fn post_messages_rejects_missing_bearer() {
         organism: Arc::new(pipeline.organism().clone()),
         agent_name: "bob".to_string(),
         auth_token: "test-token".to_string(),
+        idempotency: agentos_server::idempotency::IdempotencyCache::new(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -307,6 +310,7 @@ async fn shim_silent_emits_no_text_events() {
         organism: Arc::new(pipeline.organism().clone()),
         agent_name: "bob".to_string(),
         auth_token: "test-token".to_string(),
+        idempotency: agentos_server::idempotency::IdempotencyCache::new(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -399,6 +403,7 @@ async fn shim_non_silent_populates_done_metadata() {
         organism: Arc::new(pipeline.organism().clone()),
         agent_name: "bob".to_string(),
         auth_token: "test-token".to_string(),
+        idempotency: agentos_server::idempotency::IdempotencyCache::new(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
