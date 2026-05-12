@@ -19,6 +19,9 @@ pub mod kv;
 pub mod peer;
 pub mod python_runtime;
 pub mod runtime;
+pub mod session;
+
+pub use session::WasmSession;
 
 /// Workspace root for test fixtures — two levels up from this crate.
 #[cfg(test)]

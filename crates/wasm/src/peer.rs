@@ -9,12 +9,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rust_pipeline::prelude::*;
-use wasmtime::component::{Linker, Val};
-use wasmtime::Store;
+use wasmtime::component::Val;
 
 use super::capabilities::WasmCapabilities;
 use super::error::WasmError;
-use super::runtime::{ToolMetadata, ToolState, WasmComponent, WasmRuntime};
+use super::runtime::{ToolMetadata, WasmComponent, WasmRuntime};
 use agentos_events::{ToolPeer, ToolResponse};
 
 /// Timeout for WASM tool execution (5 minutes).
@@ -116,41 +115,29 @@ impl ToolPeer for WasmToolPeer {
 
 /// Execute a WASM tool call synchronously (called inside spawn_blocking).
 ///
-/// Creates a fresh Store + WASI context, instantiates the component,
-/// and calls handle(xml). Returns (success, payload).
-/// Capabilities determine the WASI grants for this invocation.
+/// Instantiates the component via the session abstraction — one fresh
+/// Store + WASI context per call, dropped at the end of the function —
+/// then calls `handle(xml)`. Returns (success, payload). The session
+/// path is shared with stateful consumers (memex); the difference is
+/// only that AgentOS tools drop the session immediately while memex
+/// drivers hold it across many calls.
 fn execute_wasm_tool(
     runtime: &WasmRuntime,
     component: &WasmComponent,
     xml: &str,
     capabilities: &WasmCapabilities,
 ) -> Result<(bool, String), WasmError> {
-    let state = if capabilities.filesystem.is_empty()
-        && capabilities.env_vars.is_empty()
-        && !capabilities.stdio
-    {
-        ToolState::minimal()
-    } else {
-        ToolState::with_ctx(super::capabilities::build_wasi_ctx(capabilities)?)
-    };
-    let mut store = Store::new(runtime.engine(), state);
+    let mut session = component.instantiate_session(runtime, capabilities)?;
 
-    let mut linker = Linker::new(runtime.engine());
-    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
-        .map_err(|e| WasmError::Instantiation(format!("WASI link failed: {e}")))?;
-
-    let instance = linker
-        .instantiate(&mut store, &component.component)
-        .map_err(|e| WasmError::Instantiation(e.to_string()))?;
-
-    let handle_fn = instance
-        .get_func(&mut store, "handle")
+    let handle_fn = session
+        .instance
+        .get_func(&mut session.store, "handle")
         .ok_or_else(|| WasmError::Execution("export 'handle' not found".into()))?;
 
     let args = [Val::String(xml.into())];
     let mut results = [Val::Bool(false)]; // single record result
     handle_fn
-        .call(&mut store, &args, &mut results)
+        .call(&mut session.store, &args, &mut results)
         .map_err(|e| WasmError::Execution(format!("handle call failed: {e}")))?;
 
     // Extract fields from the tool-result record

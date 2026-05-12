@@ -39,7 +39,7 @@ impl std::fmt::Debug for WasmComponent {
 }
 
 /// Store data for WASM tool execution — implements WasiView.
-pub(crate) struct ToolState {
+pub struct ToolState {
     ctx: WasiCtx,
     table: ResourceTable,
 }
