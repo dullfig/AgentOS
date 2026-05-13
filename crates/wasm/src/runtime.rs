@@ -30,6 +30,24 @@ pub struct WasmComponent {
     pub metadata: ToolMetadata,
 }
 
+/// A compiled WASM component loaded WITHOUT invoking any consumer-specific
+/// metadata-extraction step. Use when your WIT contract does not include
+/// AgentOS's `get-metadata` export — e.g., memex's `ingestion-driver` world,
+/// which exports `init` / `next-chunk` / `finish` instead.
+///
+/// Shares [`WasmSession`](crate::session::WasmSession) instantiation with
+/// `WasmComponent`; only the metadata-extraction step is skipped. See
+/// [`WasmRuntime::load_component_raw`].
+pub struct RawWasmComponent {
+    pub component: Component,
+}
+
+impl std::fmt::Debug for RawWasmComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawWasmComponent").finish_non_exhaustive()
+    }
+}
+
 impl std::fmt::Debug for WasmComponent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WasmComponent")
@@ -117,6 +135,34 @@ impl WasmRuntime {
             component,
             metadata,
         })
+    }
+
+    /// Load a WASM component WITHOUT invoking the AgentOS-specific
+    /// `get-metadata` export. Pairs with
+    /// [`RawWasmComponent::instantiate_session`].
+    ///
+    /// AgentOS's tool world bakes a 7-field `tool-metadata` record into its
+    /// WIT and consumers expect `extract_metadata` to populate it — that's
+    /// what [`load_component`](Self::load_component) does. Other consumers
+    /// (memex's `ingestion-driver` world, future BYO-WIT crates) author
+    /// their own WIT that does NOT include `get-metadata`. For them, the
+    /// metadata step is a hard failure on load. This entry point skips it.
+    ///
+    /// Behaviorally identical to `load_component` minus the extract step.
+    pub fn load_component_raw(&self, bytes: &[u8]) -> Result<RawWasmComponent, WasmError> {
+        let component = Component::new(&self.engine, bytes)
+            .map_err(|e| WasmError::Compilation(e.to_string()))?;
+        Ok(RawWasmComponent { component })
+    }
+
+    /// Filesystem variant of [`load_component_raw`](Self::load_component_raw).
+    pub fn load_component_raw_from_path(
+        &self,
+        path: &Path,
+    ) -> Result<RawWasmComponent, WasmError> {
+        let component = Component::from_file(&self.engine, path)
+            .map_err(|e| WasmError::Compilation(format!("{}: {e}", path.display())))?;
+        Ok(RawWasmComponent { component })
     }
 
     /// Create a fresh Store with a linker for sync execution.

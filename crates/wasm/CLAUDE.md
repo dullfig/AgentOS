@@ -110,13 +110,21 @@ Set on the session at instantiation time; immutable thereafter.
   AgentOS's pipeline crate; memex will have its own equivalent.
 - **A bundled python-runtime.wasm** — consumer compiles + ships its
   own.
-- **An opinion about WIT world names** — `WasmRuntime::load_component`
-  doesn't read metadata or call any export by name. The runtime gives
-  you a component; you decide how to call into it. (Note:
-  `extract_metadata` IS in this crate today, but it's AgentOS-specific
-  — calls the `get-metadata` export expecting AgentOS's tool record
-  shape. Memex doesn't use it; memex calls its own exports via its
-  own bindings.)
+- **An opinion about WIT world names** — the runtime gives you a
+  component; you decide how to call into it. Two entry points exist:
+  - [`WasmRuntime::load_component`] / `..._from_path` for the AgentOS
+    tool world. Calls the `get-metadata` export at load time and
+    populates `WasmComponent.metadata` with the 7-field record AgentOS
+    expects.
+  - [`WasmRuntime::load_component_raw`] / `..._raw_from_path` for any
+    BYO-WIT consumer whose contract doesn't include `get-metadata`
+    (memex's `ingestion-driver` world is the first example). Returns
+    a `RawWasmComponent` with no metadata extraction; the
+    `instantiate_session` impl is the same as `WasmComponent`'s.
+
+  Use the raw variant from external consumers whose WIT contract was
+  authored independently of AgentOS's tool model. Memex uses it from
+  `memex-ingest::driver::IngestionDriverPeer`.
 
 ## When to extend
 

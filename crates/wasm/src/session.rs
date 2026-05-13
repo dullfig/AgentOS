@@ -27,7 +27,7 @@ use wasmtime::Store;
 
 use crate::capabilities::{build_wasi_ctx, WasmCapabilities};
 use crate::error::WasmError;
-use crate::runtime::{ToolState, WasmComponent, WasmRuntime};
+use crate::runtime::{RawWasmComponent, ToolState, WasmComponent, WasmRuntime};
 
 /// A long-lived WASM component instance. State persists across
 /// calls to exported functions until the session is dropped.
@@ -75,22 +75,47 @@ impl WasmComponent {
         runtime: &WasmRuntime,
         capabilities: &WasmCapabilities,
     ) -> Result<WasmSession, WasmError> {
-        let state = if capabilities.filesystem.is_empty()
-            && capabilities.env_vars.is_empty()
-            && !capabilities.stdio
-        {
-            ToolState::minimal()
-        } else {
-            ToolState::with_ctx(build_wasi_ctx(capabilities)?)
-        };
-
-        let (mut store, linker) = runtime.make_store_and_linker(state)?;
-        let instance = linker
-            .instantiate(&mut store, &self.component)
-            .map_err(|e| WasmError::Instantiation(e.to_string()))?;
-
-        Ok(WasmSession { store, instance })
+        instantiate_session_inner(&self.component, runtime, capabilities)
     }
+}
+
+impl RawWasmComponent {
+    /// Instantiate this component with a long-lived `Store`. Mirrors
+    /// [`WasmComponent::instantiate_session`] — the only difference between
+    /// the two component types is whether `extract_metadata` ran at load
+    /// time. Both share the same WASI linker setup.
+    pub fn instantiate_session(
+        &self,
+        runtime: &WasmRuntime,
+        capabilities: &WasmCapabilities,
+    ) -> Result<WasmSession, WasmError> {
+        instantiate_session_inner(&self.component, runtime, capabilities)
+    }
+}
+
+/// Shared instantiation core for `WasmComponent` and `RawWasmComponent`.
+/// Builds a `ToolState` from the capability grants, creates the linker,
+/// and instantiates the component against it.
+fn instantiate_session_inner(
+    component: &wasmtime::component::Component,
+    runtime: &WasmRuntime,
+    capabilities: &WasmCapabilities,
+) -> Result<WasmSession, WasmError> {
+    let state = if capabilities.filesystem.is_empty()
+        && capabilities.env_vars.is_empty()
+        && !capabilities.stdio
+    {
+        ToolState::minimal()
+    } else {
+        ToolState::with_ctx(build_wasi_ctx(capabilities)?)
+    };
+
+    let (mut store, linker) = runtime.make_store_and_linker(state)?;
+    let instance = linker
+        .instantiate(&mut store, component)
+        .map_err(|e| WasmError::Instantiation(e.to_string()))?;
+
+    Ok(WasmSession { store, instance })
 }
 
 #[cfg(test)]
@@ -109,6 +134,19 @@ mod tests {
         )
         .unwrap();
         let component = runtime.load_component(&bytes).unwrap();
+        (runtime, component)
+    }
+
+    fn load_echo_raw() -> (Arc<WasmRuntime>, RawWasmComponent) {
+        let runtime = Arc::new(WasmRuntime::new().unwrap());
+        let bytes = std::fs::read(
+            crate::workspace_root()
+                .join("tests")
+                .join("fixtures")
+                .join("echo.wasm"),
+        )
+        .unwrap();
+        let component = runtime.load_component_raw(&bytes).unwrap();
         (runtime, component)
     }
 
@@ -157,5 +195,36 @@ mod tests {
                 .post_return(&mut session.store)
                 .unwrap_or_else(|e| panic!("post_return {i}: {e}"));
         }
+    }
+
+    /// Memex's path: `load_component_raw` skips the AgentOS-specific
+    /// `get-metadata` extraction at load time, then `instantiate_session`
+    /// on the `RawWasmComponent` produces a session that's functionally
+    /// identical to one from `WasmComponent`. Locks in the shared
+    /// `instantiate_session_inner` so a future regression in the raw
+    /// path is caught by AgentOS CI (not just memex's).
+    #[test]
+    fn raw_component_instantiates_callable_session() {
+        let (runtime, component) = load_echo_raw();
+        let mut session = component
+            .instantiate_session(&runtime, &WasmCapabilities::default())
+            .expect("raw component session creation should succeed");
+
+        // The echo fixture exports `handle` (and also `get-metadata`,
+        // but the raw path doesn't care — it didn't probe). Confirm
+        // the export is reachable through the raw-loaded session.
+        let handle_fn = session
+            .instance
+            .get_func(&mut session.store, "handle")
+            .expect("raw-loaded session must reach exports");
+
+        let args = [Val::String("<EchoRequest><message>raw</message></EchoRequest>".into())];
+        let mut results = [Val::Bool(false)];
+        handle_fn
+            .call(&mut session.store, &args, &mut results)
+            .expect("raw-loaded session must execute exports");
+        handle_fn
+            .post_return(&mut session.store)
+            .expect("raw-loaded session must accept post_return");
     }
 }
