@@ -21,6 +21,7 @@ use agentos_platform::buffers::BufferId;
 use agentos_platform::router::Envelope;
 
 use crate::idempotency::{IdempotencyCache, LookupResult};
+use crate::metrics;
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -71,6 +72,34 @@ pub struct PreStreamError {
     request_id: String,
 }
 
+impl PreStreamError {
+    /// Build an error and record the request-duration metric in one
+    /// step. Used at every error-return site in `post_messages` so the
+    /// metric is captured regardless of the failure mode. The status
+    /// class (4xx → `client_error`, 5xx → `server_error`) is derived
+    /// from `status` so callers don't have to think about it.
+    fn record(
+        started: Instant,
+        status: StatusCode,
+        code: &'static str,
+        message: impl Into<String>,
+        request_id: &str,
+    ) -> Self {
+        let class = if status.is_client_error() {
+            metrics::STATUS_CLIENT_ERROR
+        } else {
+            metrics::STATUS_SERVER_ERROR
+        };
+        metrics::record_request(class, started.elapsed());
+        Self {
+            status,
+            code,
+            message: message.into(),
+            request_id: request_id.to_string(),
+        }
+    }
+}
+
 impl IntoResponse for PreStreamError {
     fn into_response(self) -> axum::response::Response {
         let body = ErrorBody {
@@ -116,61 +145,70 @@ pub async fn post_messages(
     Json(req): Json<PostMessagesRequest>,
 ) -> Result<Sse<EventStream>, PreStreamError> {
     let request_id = request_id_from_headers(&headers);
+    // Single time-origin used by every error-return and the success path.
+    // Records into `agentos_request_duration_seconds` histogram on completion.
+    let started = Instant::now();
 
     // 1. Auth
     match bearer_token(&headers) {
         Some(t) if t == state.auth_token => {}
         Some(_) => {
-            return Err(PreStreamError {
-                status: StatusCode::FORBIDDEN,
-                code: "unauthorized",
-                message: "bearer token did not match".into(),
-                request_id,
-            });
+            return Err(PreStreamError::record(
+                started,
+                StatusCode::FORBIDDEN,
+                "unauthorized",
+                "bearer token did not match",
+                &request_id,
+            ));
         }
         None => {
-            return Err(PreStreamError {
-                status: StatusCode::UNAUTHORIZED,
-                code: "unauthenticated",
-                message: "missing or malformed Authorization header".into(),
-                request_id,
-            });
+            return Err(PreStreamError::record(
+                started,
+                StatusCode::UNAUTHORIZED,
+                "unauthenticated",
+                "missing or malformed Authorization header",
+                &request_id,
+            ));
         }
     }
 
     // 2. Validate. The contract says "anon" never reaches this endpoint —
     //    AgentOS MUST 400 it.
     if req.user_tier == "anon" {
-        return Err(PreStreamError {
-            status: StatusCode::BAD_REQUEST,
-            code: "invalid_request",
-            message: "user_tier=anon is not accepted; anon traffic is handled client-side".into(),
-            request_id,
-        });
+        return Err(PreStreamError::record(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "user_tier=anon is not accepted; anon traffic is handled client-side",
+            &request_id,
+        ));
     }
     if !matches!(req.user_tier.as_str(), "warm" | "member") {
-        return Err(PreStreamError {
-            status: StatusCode::BAD_REQUEST,
-            code: "invalid_request",
-            message: "user_tier must be one of: warm, member".into(),
-            request_id,
-        });
+        return Err(PreStreamError::record(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "user_tier must be one of: warm, member",
+            &request_id,
+        ));
     }
     if req.text.trim().is_empty() {
-        return Err(PreStreamError {
-            status: StatusCode::BAD_REQUEST,
-            code: "invalid_request",
-            message: "text must be non-empty".into(),
-            request_id,
-        });
+        return Err(PreStreamError::record(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "text must be non-empty",
+            &request_id,
+        ));
     }
     if req.user_id.trim().is_empty() {
-        return Err(PreStreamError {
-            status: StatusCode::BAD_REQUEST,
-            code: "invalid_request",
-            message: "user_id must be non-empty".into(),
-            request_id,
-        });
+        return Err(PreStreamError::record(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "user_id must be non-empty",
+            &request_id,
+        ));
     }
 
     // 2.5. Idempotency. Probe the cache; if the same (token, key) was
@@ -188,30 +226,40 @@ pub async fn post_messages(
     };
     let cache_key = IdempotencyCache::key(&state.auth_token, &req.idempotency_key);
     let replay_data = match state.idempotency.lookup_or_claim(cache_key.clone(), body_hash) {
-        LookupResult::Miss => None,
-        LookupResult::Replay { ack, chunks, done } => Some((ack, chunks, done)),
+        LookupResult::Miss => {
+            metrics::record_idempotency_lookup(metrics::RESULT_MISS);
+            None
+        }
+        LookupResult::Replay { ack, chunks, done } => {
+            metrics::record_idempotency_lookup(metrics::RESULT_REPLAY);
+            Some((ack, chunks, done))
+        }
         LookupResult::Conflict => {
-            return Err(PreStreamError {
-                status: StatusCode::CONFLICT,
-                code: "idempotency_conflict",
-                message: "idempotency_key reused with a different request body".into(),
-                request_id,
-            });
+            metrics::record_idempotency_lookup(metrics::RESULT_CONFLICT);
+            return Err(PreStreamError::record(
+                started,
+                StatusCode::CONFLICT,
+                "idempotency_conflict",
+                "idempotency_key reused with a different request body",
+                &request_id,
+            ));
         }
         LookupResult::InFlight => {
-            return Err(PreStreamError {
-                status: StatusCode::CONFLICT,
-                code: "idempotency_conflict",
-                message: "idempotency_key is in-flight; retry after the prior request completes"
-                    .into(),
-                request_id,
-            });
+            metrics::record_idempotency_lookup(metrics::RESULT_INFLIGHT);
+            return Err(PreStreamError::record(
+                started,
+                StatusCode::CONFLICT,
+                "idempotency_conflict",
+                "idempotency_key is in-flight; retry after the prior request completes",
+                &request_id,
+            ));
         }
     };
 
     // Replay path: cached payloads are the answer. Don't materialize,
     // don't send, don't subscribe — just yield ack/text/done from cache.
     if let Some((ack, chunks, done)) = replay_data {
+        metrics::inc_active_sse_streams();
         let stream = async_stream::stream! {
             if let Ok(ev) = ack_event(&ack) {
                 yield Ok(ev);
@@ -224,6 +272,8 @@ pub async fn post_messages(
             if let Ok(ev) = done_event(&done) {
                 yield Ok(ev);
             }
+            metrics::record_request(metrics::STATUS_OK, started.elapsed());
+            metrics::dec_active_sse_streams();
         };
         let boxed: EventStream = Box::pin(stream);
         return Ok(Sse::new(boxed).keep_alive(KeepAlive::default()));
@@ -243,11 +293,14 @@ pub async fn post_messages(
     //    address parsing rejects keys with characters that break the
     //    grammar so this also doubles as a sanity check on user_id shape.
     let address_str = format!("{}[{}]", state.agent_name, req.user_id);
-    let address = Address::parse(&address_str).map_err(|e| PreStreamError {
-        status: StatusCode::BAD_REQUEST,
-        code: "invalid_request",
-        message: format!("user_id produced invalid address: {e}"),
-        request_id: request_id.clone(),
+    let address = Address::parse(&address_str).map_err(|e| {
+        PreStreamError::record(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("user_id produced invalid address: {e}"),
+            &request_id,
+        )
     })?;
 
     // 6. Wrap the user text in the listener's payload XML. Bob's
@@ -258,11 +311,14 @@ pub async fn post_messages(
         .organism
         .get_listener(&state.agent_name)
         .map(|l| l.payload_tag.clone())
-        .ok_or_else(|| PreStreamError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: "internal_error",
-            message: format!("agent listener '{}' not in organism", state.agent_name),
-            request_id: request_id.clone(),
+        .ok_or_else(|| {
+            PreStreamError::record(
+                started,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                format!("agent listener '{}' not in organism", state.agent_name),
+                &request_id,
+            )
         })?;
 
     let body_xml = format!(
@@ -281,11 +337,14 @@ pub async fn post_messages(
     // 7. Send. After this, the instance is materialized and the message
     //    is in flight. Errors here haven't reached "ack sent" yet so we
     //    surface as HTTP errors per the contract.
-    state.router.send_to(&envelope).await.map_err(|e| PreStreamError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        code: "internal_error",
-        message: format!("router send failed: {e}"),
-        request_id: request_id.clone(),
+    state.router.send_to(&envelope).await.map_err(|e| {
+        PreStreamError::record(
+            started,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            format!("router send failed: {e}"),
+            &request_id,
+        )
     })?;
 
     // 8. Look up the buffer thread_id we just delivered to. The router
@@ -303,11 +362,14 @@ pub async fn post_messages(
                 .get(&BufferId::default_buffer())
                 .map(|b| b.thread_id.clone())
         })
-        .ok_or_else(|| PreStreamError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: "internal_error",
-            message: "could not resolve buffer thread_id after materialization".into(),
-            request_id: request_id.clone(),
+        .ok_or_else(|| {
+            PreStreamError::record(
+                started,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "could not resolve buffer thread_id after materialization",
+                &request_id,
+            )
         })?;
 
     // 9. Build the SSE stream. ack first, then filter events for our
@@ -315,7 +377,7 @@ pub async fn post_messages(
     //    Along the way, accumulate the emitted payloads into the
     //    idempotency cache so subsequent retries with the same key
     //    replay these exact events.
-    let started = Instant::now();
+    metrics::inc_active_sse_streams();
     let conv_for_done = conversation_id.clone();
     let req_for_done = request_id.clone();
     let cached_ack = AckPayload {
@@ -385,7 +447,10 @@ pub async fn post_messages(
                             break;
                         }
                         Ok(_) => continue,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            metrics::record_broadcast_lag();
+                            continue;
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
@@ -424,6 +489,12 @@ pub async fn post_messages(
             cached_chunks,
             done_for_commit,
         );
+
+        // Stream complete — record the success metric and release the
+        // active-stream gauge slot. Done event was the terminal yield,
+        // so this fires after the client has received everything.
+        metrics::record_request(metrics::STATUS_OK, started.elapsed());
+        metrics::dec_active_sse_streams();
     };
 
     let boxed: EventStream = Box::pin(stream);

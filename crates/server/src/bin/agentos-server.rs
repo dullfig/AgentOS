@@ -124,6 +124,23 @@ async fn main() -> Result<()> {
         agentos_server::idempotency::DEFAULT_SWEEP_INTERVAL,
     );
 
+    // Periodic gauge updater for the idempotency cache size. Counters
+    // and histograms are pull-friendly (each event updates them), but
+    // a gauge over a DashMap needs an active sampler — every 10s is
+    // plenty for capacity monitoring (the cache changes on human-paced
+    // request rates, not microseconds).
+    let _gauge_updater = {
+        let cache = idempotency.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(10));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                agentos_server::metrics::set_idempotency_cache_entries(cache.len());
+            }
+        })
+    };
+
     let state = Arc::new(ServerState {
         router: shared_router,
         events: event_tx,
