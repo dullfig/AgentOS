@@ -13,6 +13,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod glob_tool;
 pub mod grep;
+pub mod http_request;
 pub mod list_agents;
 pub mod model_download;
 pub mod model_search;
