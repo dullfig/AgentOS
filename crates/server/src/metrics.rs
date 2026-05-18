@@ -26,6 +26,7 @@ pub const REQUEST_DURATION_SECONDS: &str = "agentos_request_duration_seconds";
 pub const REQUESTS_TOTAL: &str = "agentos_requests_total";
 pub const IDEMPOTENCY_LOOKUPS_TOTAL: &str = "agentos_idempotency_lookups_total";
 pub const IDEMPOTENCY_CACHE_ENTRIES: &str = "agentos_idempotency_cache_entries";
+pub const IDEMPOTENCY_LRU_EVICTIONS_TOTAL: &str = "agentos_idempotency_lru_evictions_total";
 pub const BROADCAST_LAG_TOTAL: &str = "agentos_broadcast_lag_total";
 pub const ACTIVE_SSE_STREAMS: &str = "agentos_active_sse_streams";
 
@@ -97,6 +98,12 @@ fn describe_all() {
         "Current number of entries in the idempotency cache."
     );
     metrics::describe_counter!(
+        IDEMPOTENCY_LRU_EVICTIONS_TOTAL,
+        "Idempotency-cache entries dropped by LRU eviction when the \
+         entry ceiling was breached. Non-zero indicates sustained insert \
+         rate is outpacing 24h TTL — bump max_entries or shorten TTL."
+    );
+    metrics::describe_counter!(
         BROADCAST_LAG_TOTAL,
         "Times the SSE handler observed pipeline broadcast lag (a Lagged \
          recv error). Non-zero indicates the broadcast buffer was too small \
@@ -118,6 +125,10 @@ pub fn record_request(status: &'static str, duration: Duration) {
 
 pub fn record_idempotency_lookup(result: &'static str) {
     metrics::counter!(IDEMPOTENCY_LOOKUPS_TOTAL, "result" => result).increment(1);
+}
+
+pub fn record_idempotency_lru_evictions(n: usize) {
+    metrics::counter!(IDEMPOTENCY_LRU_EVICTIONS_TOTAL).increment(n as u64);
 }
 
 pub fn record_broadcast_lag() {

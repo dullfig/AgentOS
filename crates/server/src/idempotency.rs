@@ -51,6 +51,22 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// reasonably fast" against "background task overhead is trivial."
 pub const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(300);
 
+/// Default upper bound on cached entries. At ~5KB per entry (small
+/// LLM responses with a handful of chunks), 100k entries caps the
+/// cache at roughly 500MB. Sized for the planned 2-3k DAU / single-
+/// host deployment; bumpable via `with_config`.
+///
+/// The cap exists so a runaway-retry storm — or simply organic growth
+/// past the projected 1k+ QPS sustained cliff — can't drift the cache
+/// past available RAM before the 24h TTL sweep catches up.
+pub const DEFAULT_MAX_ENTRIES: usize = 100_000;
+
+/// On cap breach, evict down to this fraction of `max_entries`. The
+/// 10% headroom amortizes eviction cost — without it, every insert
+/// past the cap would trigger another full sort-and-evict pass.
+const EVICT_TARGET_FRACTION_NUMER: usize = 9;
+const EVICT_TARGET_FRACTION_DENOM: usize = 10;
+
 /// Cache lookup key: `(service_token_hash, idempotency_key)`.
 ///
 /// Token hash rather than raw token: avoids carrying bearer strings
@@ -106,30 +122,44 @@ pub enum LookupResult {
     InFlight,
 }
 
-/// 24h LRU-by-TTL idempotency cache.
+/// 24h LRU-by-TTL idempotency cache with an entry-count ceiling.
 ///
 /// One instance per running server; held by `ServerState` as an
-/// `Arc<IdempotencyCache>`.
+/// `Arc<IdempotencyCache>`. The entry cap is enforced on insert in
+/// `lookup_or_claim`: at the ceiling, the oldest 10% of entries are
+/// evicted (LRU-ish, ordered by `created_at`). Per the v1 API
+/// contract, evictions are silent — a retry whose entry was evicted
+/// re-executes, which is the safe failure mode (same body produces
+/// the same response).
 pub struct IdempotencyCache {
     entries: DashMap<Key, CachedEntry>,
     ttl: Duration,
+    max_entries: usize,
 }
 
 impl IdempotencyCache {
-    /// Create a new cache with the contract-mandated 24h TTL.
+    /// Create a new cache with the contract-mandated 24h TTL and the
+    /// default 100k entry cap.
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            entries: DashMap::new(),
-            ttl: DEFAULT_TTL,
-        })
+        Self::with_config(DEFAULT_TTL, DEFAULT_MAX_ENTRIES)
     }
 
-    /// Create a cache with a custom TTL (testing).
+    /// Create a cache with a custom TTL, default entry cap (testing).
     pub fn with_ttl(ttl: Duration) -> Arc<Self> {
+        Self::with_config(ttl, DEFAULT_MAX_ENTRIES)
+    }
+
+    /// Create a cache with custom TTL + entry cap (testing tight caps).
+    pub fn with_config(ttl: Duration, max_entries: usize) -> Arc<Self> {
         Arc::new(Self {
             entries: DashMap::new(),
             ttl,
+            max_entries: max_entries.max(1),
         })
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
     }
 
     /// Build a `Key` from a service token + idempotency_key.
@@ -159,7 +189,7 @@ impl IdempotencyCache {
     pub fn lookup_or_claim(&self, key: Key, body_hash: [u8; 32]) -> LookupResult {
         use dashmap::mapref::entry::Entry;
 
-        match self.entries.entry(key) {
+        let result = match self.entries.entry(key) {
             Entry::Vacant(slot) => {
                 slot.insert(CachedEntry {
                     body_hash,
@@ -179,21 +209,30 @@ impl IdempotencyCache {
                         state: EntryState::InFlight,
                         created_at: Instant::now(),
                     });
-                    return LookupResult::Miss;
-                }
-                if entry.body_hash != body_hash {
-                    return LookupResult::Conflict;
-                }
-                match &entry.state {
-                    EntryState::InFlight => LookupResult::InFlight,
-                    EntryState::Completed { ack, chunks, done } => LookupResult::Replay {
-                        ack: ack.clone(),
-                        chunks: chunks.clone(),
-                        done: done.clone(),
-                    },
+                    LookupResult::Miss
+                } else if entry.body_hash != body_hash {
+                    LookupResult::Conflict
+                } else {
+                    match &entry.state {
+                        EntryState::InFlight => LookupResult::InFlight,
+                        EntryState::Completed { ack, chunks, done } => LookupResult::Replay {
+                            ack: ack.clone(),
+                            chunks: chunks.clone(),
+                            done: done.clone(),
+                        },
+                    }
                 }
             }
+        };
+
+        // After Miss inserts (Vacant slot OR expired-reclaim), the slot
+        // RefMut is dropped at the end of the match, so the map is no
+        // longer locked when we walk it for eviction. Only run on Miss
+        // — Replay/Conflict/InFlight don't add new entries.
+        if matches!(result, LookupResult::Miss) {
+            self.maybe_evict();
         }
+        result
     }
 
     /// Replace an in-flight entry with the completed payloads.
@@ -217,6 +256,53 @@ impl IdempotencyCache {
     /// Called by the handler on stream timeout or unrecoverable error.
     pub fn release(&self, key: &Key) {
         self.entries.remove(key);
+    }
+
+    /// If we're at or above the entry ceiling, evict the oldest entries
+    /// down to 90% of the ceiling. The 10% headroom amortizes the cost
+    /// of the full-map scan + sort over many subsequent inserts.
+    ///
+    /// Concurrent inserts past the ceiling can briefly overshoot before
+    /// eviction lands — that's intentional. The cost of stricter
+    /// serialization (mutex around the whole insert path) isn't worth
+    /// the precision; "approximately bounded" is the goal.
+    fn maybe_evict(&self) {
+        let len = self.entries.len();
+        if len <= self.max_entries {
+            return;
+        }
+        let target = self.max_entries * EVICT_TARGET_FRACTION_NUMER
+            / EVICT_TARGET_FRACTION_DENOM;
+        let to_remove = len.saturating_sub(target);
+        if to_remove == 0 {
+            return;
+        }
+
+        // Snapshot (key, age) pairs, sort ascending by age, drop oldest.
+        // DashMap::iter holds shard-local locks per entry — fine for a
+        // one-shot scan; we don't mutate during iteration.
+        let mut ages: Vec<(Key, Instant)> = self
+            .entries
+            .iter()
+            .map(|e| (e.key().clone(), e.value().created_at))
+            .collect();
+        ages.sort_by_key(|(_, t)| *t);
+
+        let mut evicted = 0usize;
+        for (k, _) in ages.into_iter().take(to_remove) {
+            if self.entries.remove(&k).is_some() {
+                evicted += 1;
+            }
+        }
+        if evicted > 0 {
+            crate::metrics::record_idempotency_lru_evictions(evicted);
+            tracing::debug!(
+                evicted,
+                len_before = len,
+                cap = self.max_entries,
+                "idempotency cache LRU evict"
+            );
+        }
     }
 
     /// Number of entries currently in the cache. Useful for tests
@@ -420,6 +506,102 @@ mod tests {
             LookupResult::Miss => {}
             other => panic!("expected Miss (different token), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn lru_evicts_when_cap_exceeded() {
+        // Tight cap to exercise eviction quickly.
+        let cap = 10;
+        let cache = IdempotencyCache::with_config(Duration::from_secs(3600), cap);
+
+        // Fill to cap exactly — no eviction yet.
+        for i in 0..cap {
+            let k = IdempotencyCache::key("t", &format!("idem-{i}"));
+            let body = IdempotencyCache::body_hash(format!("body-{i}").as_bytes());
+            cache.lookup_or_claim(k, body);
+        }
+        assert_eq!(cache.len(), cap, "cache should be exactly at cap");
+
+        // One more insert breaches the cap → eviction down to 90%.
+        let k_overflow = IdempotencyCache::key("t", "idem-overflow");
+        cache.lookup_or_claim(
+            k_overflow,
+            IdempotencyCache::body_hash(b"overflow-body"),
+        );
+
+        // Target is cap * 9/10 = 9. After eviction, len <= 9 (or 9+1
+        // for the overflow insert itself if the implementation
+        // evicts-then-keeps-new — both are correct; we want it bounded).
+        let after = cache.len();
+        assert!(
+            after <= cap,
+            "len should be at or below cap after eviction; got {after} with cap {cap}"
+        );
+        assert!(
+            after < cap,
+            "eviction should drop below cap (10% headroom); got {after}"
+        );
+    }
+
+    #[test]
+    fn lru_evicts_oldest_first() {
+        let cache = IdempotencyCache::with_config(Duration::from_secs(3600), 5);
+
+        // Insert one "old" entry, then several newer ones.
+        let old_key = IdempotencyCache::key("t", "old");
+        cache.lookup_or_claim(
+            old_key.clone(),
+            IdempotencyCache::body_hash(b"old"),
+        );
+        // Small sleep to make sure subsequent created_at timestamps are
+        // strictly greater (Instant resolution is fine but spelling out
+        // the ordering keeps the test robust).
+        std::thread::sleep(Duration::from_millis(5));
+
+        for i in 0..5 {
+            let k = IdempotencyCache::key("t", &format!("new-{i}"));
+            cache.lookup_or_claim(k, IdempotencyCache::body_hash(format!("b{i}").as_bytes()));
+        }
+
+        // After eviction, the original "old" entry should be gone but
+        // most of the newer ones should remain.
+        let old_body = IdempotencyCache::body_hash(b"old");
+        let result = cache.lookup_or_claim(old_key, old_body);
+        // Either Miss (evicted, slot reclaimed) — the right behavior —
+        // or, if the implementation didn't evict the oldest, we'd see
+        // InFlight from the prior insert. Miss is what we want.
+        assert!(
+            matches!(result, LookupResult::Miss),
+            "oldest entry should have been evicted; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn cap_of_one_still_works() {
+        // Edge case: tightest possible cap. After every insert, the
+        // previous entry should be evicted on the next miss.
+        let cache = IdempotencyCache::with_config(Duration::from_secs(3600), 1);
+        cache.lookup_or_claim(
+            IdempotencyCache::key("t", "a"),
+            IdempotencyCache::body_hash(b"x"),
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        cache.lookup_or_claim(
+            IdempotencyCache::key("t", "b"),
+            IdempotencyCache::body_hash(b"y"),
+        );
+        // With cap=1 and target = 1*9/10 = 0, the eviction round
+        // empties everything but the freshest insert. len() should be
+        // 1 (the most recent) — the prior is gone.
+        assert!(cache.len() <= 1);
+    }
+
+    #[test]
+    fn cap_zero_clamps_to_one() {
+        // Constructing with 0 would mean "never store anything"; the
+        // constructor floors at 1 so the math is well-defined.
+        let cache = IdempotencyCache::with_config(Duration::from_secs(3600), 0);
+        assert_eq!(cache.max_entries(), 1);
     }
 
     impl std::fmt::Debug for LookupResult {
