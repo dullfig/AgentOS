@@ -28,6 +28,10 @@ regex = "1"
 zip = "2"
 imago = "0.2"
 
+# Prometheus exposition-format parser — used by the prom-parse tool to
+# turn /metrics text into structured JSON for QA-expert.
+prometheus-parse = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
