@@ -122,6 +122,23 @@ async fn metrics_endpoint_returns_prometheus_format() {
     let (addr, _counter, _dir, _pipeline) = boot_server().await;
     let client = reqwest::Client::new();
 
+    // Drive one request through the handler so the global recorder has
+    // at least one sample. `metrics-exporter-prometheus` only emits a
+    // metric (with its HELP/TYPE preamble) once it has data — pure
+    // describe_*! calls don't pre-allocate. In production a server that
+    // has never served a request legitimately exposes an empty body;
+    // for this test we want to verify the format, so prime it first.
+    let _ = client
+        .post(format!("http://{addr}/v1/messages"))
+        .bearer_auth("test-token")
+        .json(&post_body("warmup", "metrics-fmt-warmup"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
     let resp = client
         .get(format!("http://{addr}/metrics"))
         .send()
@@ -140,8 +157,6 @@ async fn metrics_endpoint_returns_prometheus_format() {
     );
 
     let body = resp.text().await.unwrap();
-    // Even before any request fires, the describe_* calls in metrics::init
-    // emit HELP/TYPE headers. Body shouldn't be empty.
     assert!(
         body.contains("# HELP") || body.contains("# TYPE"),
         "metrics body should contain at least one HELP or TYPE header; got: {body:?}"

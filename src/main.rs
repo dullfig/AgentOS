@@ -10,8 +10,11 @@ use agentos::organism::Organism;
 use agentos::organism::parser::parse_organism;
 use agentos::pipeline::{AgentPipeline, AgentPipelineBuilder};
 use agentos::tools::compile_wasm::CompileWasmTool;
+use agentos::tools::http_request::HttpRequestTool;
 use agentos::tools::list_agents::ListAgentsTool;
+use agentos::tools::prom_parse::PromParseTool;
 use agentos::tools::safe_commands::{SafeCommandTool, ALL_SAFE_COMMANDS};
+use agentos::tools::tickets::TicketsTool;
 use agentos::tools::user_channel::UserChannelHandler;
 use std::sync::Arc;
 use agentos::tools::dispatch::{DispatchHandles, DispatchTool};
@@ -755,6 +758,15 @@ fn build_pipeline(
     // compile-wasm tool
     let wit_dir = PathBuf::from(work_dir).join("tools").join("wit");
     builder = builder.register_tool("compile-wasm", CompileWasmTool::new(wit_dir))?;
+
+    // QA-expert toolbox: outbound HTTP + Prometheus parse + async tickets.
+    // Stateless tools register inline; tickets is filesystem-backed at
+    // {data_dir}/tickets/.
+    builder = builder.register_tool("http-request", HttpRequestTool::new())?;
+    builder = builder.register_tool("prom-parse", PromParseTool)?;
+    let tickets_tool = TicketsTool::new(data_dir)
+        .map_err(|e| format!("open ticket store at {}: {e}", data_dir.display()))?;
+    builder = builder.register_tool("tickets", tickets_tool)?;
 
     // Python tools (handler: "python" listeners in organism)
     let wasm_dir = PathBuf::from(work_dir).join("tools").join("python-runtime");
