@@ -32,6 +32,10 @@ imago = "0.2"
 # turn /metrics text into structured JSON for QA-expert.
 prometheus-parse = "0.2"
 
+# Ticket identifiers (UUID v4) — used by the tickets tool.
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }

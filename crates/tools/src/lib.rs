@@ -22,6 +22,7 @@ pub mod model_verify;
 pub mod safe_commands;
 pub mod shim_store;
 pub mod shim_train;
+pub mod tickets;
 pub mod user_channel;
 pub mod package_organism;
 pub mod validate_organism;

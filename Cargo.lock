@@ -349,6 +349,7 @@ dependencies = [
  "agentos-vdrive",
  "agentos-wit",
  "async-trait",
+ "chrono",
  "crc32fast",
  "futures-util",
  "glob",
@@ -364,6 +365,7 @@ dependencies = [
  "tokio",
  "tracing",
  "urlencoding",
+ "uuid",
  "wiremock",
  "zip 2.4.2",
 ]
@@ -1134,6 +1136,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
