@@ -349,6 +349,7 @@ impl ShimStore {
         name: &str,
         base_compat: Vec<String>,
     ) -> KernelResult<WalEntry> {
+        validate_name("shim_store name", name)?;
         let dir = self.base_dir.join(name);
         fs::create_dir_all(dir.join("shims"))?;
         fs::create_dir_all(dir.join("retired"))?;
@@ -395,6 +396,8 @@ impl ShimStore {
         manifest_json: Vec<u8>,
         onnx_bytes: Vec<u8>,
     ) -> KernelResult<WalEntry> {
+        validate_name("shim_store name", store_name)?;
+        validate_name("shim_id", shim_id)?;
         if !self.stores.contains_key(store_name) {
             return Err(KernelError::InvalidData(format!(
                 "shim_store `{store_name}` does not exist; create it first"
@@ -436,6 +439,8 @@ impl ShimStore {
         store_name: &str,
         shim_id: &str,
     ) -> KernelResult<WalEntry> {
+        validate_name("shim_store name", store_name)?;
+        validate_name("shim_id", shim_id)?;
         let state = self.stores.get_mut(store_name).ok_or_else(|| {
             KernelError::InvalidData(format!("shim_store `{store_name}` does not exist"))
         })?;
@@ -475,6 +480,7 @@ impl ShimStore {
         store_name: &str,
         composition_bytes: Vec<u8>,
     ) -> KernelResult<WalEntry> {
+        validate_name("shim_store name", store_name)?;
         if !self.stores.contains_key(store_name) {
             return Err(KernelError::InvalidData(format!(
                 "shim_store `{store_name}` does not exist"
@@ -495,6 +501,7 @@ impl ShimStore {
     }
 
     pub fn delete_store(&mut self, name: &str) -> KernelResult<WalEntry> {
+        validate_name("shim_store name", name)?;
         let dir = self.base_dir.join(name);
         if dir.exists() {
             fs::remove_dir_all(&dir)?;
@@ -508,6 +515,29 @@ impl ShimStore {
 }
 
 // ── Helpers ──
+
+/// Validate a shim_store name or shim_id. Strict ASCII allowlist so
+/// these strings are safe to splice into filesystem paths without
+/// `..` traversal, drive-letter override (Windows `C:\Users\foo`), or
+/// path-separator injection. Used at every public boundary that turns
+/// a name into a file path.
+///
+/// Charset: `[A-Za-z0-9_-]`, 1-64 chars. Real-world names like
+/// `bob-coastliners` or `should_respond_v3` fit; nothing else does.
+fn validate_name(kind: &str, s: &str) -> KernelResult<()> {
+    let len = s.len();
+    if !(1..=64).contains(&len) {
+        return Err(KernelError::InvalidData(format!(
+            "{kind} must be 1-64 chars (got {len})"
+        )));
+    }
+    if !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(KernelError::InvalidData(format!(
+            "{kind} contains invalid characters; allowed: [A-Za-z0-9_-]"
+        )));
+    }
+    Ok(())
+}
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> KernelResult<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -800,5 +830,111 @@ mod tests {
             b"bob".to_vec(),
         ));
         assert!(!s.exists("bob"));
+    }
+
+    #[test]
+    fn create_store_rejects_path_traversal_in_name() {
+        let (dir, mut s) = fresh();
+        let bad_names = [
+            "../escape",
+            "../../etc/agentos-evil",
+            "good/../bad",
+            "a/b",
+            "a\\b",
+            "..",
+            ".",
+        ];
+        for name in bad_names {
+            let err = s.create_store(name, vec![]).unwrap_err();
+            assert!(
+                matches!(err, KernelError::InvalidData(_)),
+                "expected InvalidData for {name:?}, got {err:?}"
+            );
+        }
+        // No directories created outside the base.
+        let parent = dir.path().parent().unwrap();
+        let escape_dir = parent.join("escape");
+        assert!(
+            !escape_dir.exists(),
+            "path traversal created directory at {}",
+            escape_dir.display()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn create_store_rejects_drive_letter_override_on_windows() {
+        // On Windows, Path::join with an absolute path overrides the
+        // base entirely. validate_name must reject `:` and `\` etc.
+        let (_dir, mut s) = fresh();
+        let err = s.create_store("C:\\Users\\evil", vec![]).unwrap_err();
+        assert!(matches!(err, KernelError::InvalidData(_)));
+    }
+
+    #[test]
+    fn add_shim_rejects_traversal_in_shim_id_and_store() {
+        let (_dir, mut s) = fresh();
+        s.create_store("bob", vec![]).unwrap();
+        // Bad shim_id.
+        let err = s
+            .add_shim("bob", "../../etc/cron.d/x", b"{}".to_vec(), vec![1])
+            .unwrap_err();
+        assert!(matches!(err, KernelError::InvalidData(_)));
+        // Bad store_name.
+        let err = s
+            .add_shim("../escape", "ok", b"{}".to_vec(), vec![1])
+            .unwrap_err();
+        assert!(matches!(err, KernelError::InvalidData(_)));
+    }
+
+    #[test]
+    fn delete_store_rejects_traversal_and_preserves_unrelated_dirs() {
+        let (dir, mut s) = fresh();
+        // Plant a directory we don't want destroyed.
+        let sibling = dir.path().parent().unwrap().join("agentos-keep-me");
+        fs::create_dir_all(&sibling).unwrap();
+
+        let err = s.delete_store("../agentos-keep-me").unwrap_err();
+        assert!(matches!(err, KernelError::InvalidData(_)));
+        assert!(
+            sibling.exists(),
+            "delete_store with traversal destroyed sibling at {}",
+            sibling.display()
+        );
+        fs::remove_dir_all(&sibling).ok();
+    }
+
+    #[test]
+    fn empty_and_oversize_names_rejected() {
+        let (_dir, mut s) = fresh();
+        assert!(matches!(
+            s.create_store("", vec![]).unwrap_err(),
+            KernelError::InvalidData(_)
+        ));
+        let huge = "a".repeat(65);
+        assert!(matches!(
+            s.create_store(&huge, vec![]).unwrap_err(),
+            KernelError::InvalidData(_)
+        ));
+        let just_right = "a".repeat(64);
+        s.create_store(&just_right, vec![]).unwrap();
+    }
+
+    #[test]
+    fn typical_names_still_accepted() {
+        let (_dir, mut s) = fresh();
+        for name in [
+            "bob",
+            "bob-coastliners",
+            "qa_expert_dev",
+            "tenant-2026-05",
+        ] {
+            s.create_store(name, vec![]).unwrap();
+            assert!(s.exists(name));
+        }
+        // Typical shim_id shapes from shim-expert workflows.
+        for id in ["should_respond_v3", "gate-eager", "steer_polite_v1"] {
+            s.add_shim("bob", id, b"{}".to_vec(), vec![1]).unwrap();
+        }
     }
 }
