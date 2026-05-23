@@ -216,6 +216,27 @@ pub async fn post_messages(
             &request_id,
         ));
     }
+    // user_id must NOT contain address-grammar characters. Without this
+    // check `user_id="alice].dm[evil"` produces the address string
+    // `bob[alice].dm[evil]` which `Address::parse` accepts as the
+    // instance `bob[alice]` plus a buffer segment `dm[evil]` — i.e., a
+    // confused-deputy that routes attacker traffic into a different
+    // buffer in another user's instance with a different channel type.
+    // `+` is also reserved for the cache-composition operator (see
+    // [[multi-tier-cache-composition]] memory note).
+    //
+    // Restrictive positive allowlist: ASCII alphanumeric + `-`, `_`,
+    // `:`. Matches what realistic upstream IDs use (UUIDs, integers,
+    // namespaced keys) without admitting any address syntax.
+    if !is_valid_user_id(&req.user_id) {
+        return Err(PreStreamError::record(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "user_id must be 1-128 chars of [A-Za-z0-9_-:]",
+            &request_id,
+        ));
+    }
 
     // 2.5. Idempotency. Probe the cache; if the same (token, key) was
     //      seen before, either replay the cached SSE stream (same body)
@@ -517,6 +538,20 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Reject `user_id`s that could escape the `bob[user_id]` address
+/// formatter or collide with reserved grammar (`+` for the cache-
+/// composition operator). 128-char cap bounds key length in the
+/// idempotency cache and any downstream identifier surfaces.
+fn is_valid_user_id(s: &str) -> bool {
+    let len = s.len();
+    if !(1..=128).contains(&len) {
+        return false;
+    }
+    s.bytes().all(|b| {
+        b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':'
+    })
+}
+
 /// Constant-time bearer-token check.
 ///
 /// `PartialEq` on `str` / `String` short-circuits at the first
@@ -529,4 +564,56 @@ fn ct_eq_token(supplied: &str, expected: &str) -> bool {
     let s = Sha256::digest(supplied.as_bytes());
     let e = Sha256::digest(expected.as_bytes());
     s.ct_eq(&e).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_id_accepts_typical_identifiers() {
+        // UUID, integer, namespaced — all real-world shapes.
+        assert!(is_valid_user_id("alice"));
+        assert!(is_valid_user_id("42"));
+        assert!(is_valid_user_id("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(is_valid_user_id("org:1234"));
+        assert!(is_valid_user_id("user_with_underscore"));
+        assert!(is_valid_user_id("A"));
+    }
+
+    #[test]
+    fn user_id_rejects_address_grammar_characters() {
+        // These are the ones that would escape `bob[user_id]` formatting.
+        assert!(!is_valid_user_id("alice]"));
+        assert!(!is_valid_user_id("alice[evil"));
+        assert!(!is_valid_user_id("alice].dm[evil"));
+        assert!(!is_valid_user_id("alice.admin"));
+        // Reserved cache-composition operator.
+        assert!(!is_valid_user_id("alice+admin"));
+    }
+
+    #[test]
+    fn user_id_rejects_whitespace_and_control() {
+        assert!(!is_valid_user_id("alice bob"));
+        assert!(!is_valid_user_id("alice\tbob"));
+        assert!(!is_valid_user_id("alice\nbob"));
+        assert!(!is_valid_user_id("alice\0bob"));
+    }
+
+    #[test]
+    fn user_id_rejects_empty_and_oversize() {
+        assert!(!is_valid_user_id(""));
+        let huge: String = "a".repeat(129);
+        assert!(!is_valid_user_id(&huge));
+        let just_right: String = "a".repeat(128);
+        assert!(is_valid_user_id(&just_right));
+    }
+
+    #[test]
+    fn user_id_rejects_non_ascii() {
+        // Unicode look-alikes are a classic homoglyph attack vector.
+        // Strict ASCII allowlist sidesteps the whole category.
+        assert!(!is_valid_user_id("álice"));
+        assert!(!is_valid_user_id("аlice")); // Cyrillic 'а'
+    }
 }
