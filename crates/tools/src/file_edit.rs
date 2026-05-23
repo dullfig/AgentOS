@@ -1,4 +1,11 @@
-//! FileEditTool — surgical old→new text replacement with unified diff output.
+//! UnsafeFileEditTool — surgical old→new text replacement with unified diff output.
+//!
+//! **DO NOT REGISTER IN PRODUCTION.** Same risk as `UnsafeFileWriteTool`
+//! — absolute host paths, no sandbox. Production uses
+//! [`crate::vdrive_tools::VDriveFileEdit`] under the same WIT name
+//! (`file-edit`), confined to the workspace root.
+//!
+//! Test fixture only. The `Unsafe` prefix is the lint.
 
 use async_trait::async_trait;
 use rust_pipeline::prelude::*;
@@ -7,11 +14,12 @@ use std::path::Path;
 
 use super::{extract_tag, ToolPeer, ToolResponse};
 
-/// Surgical text replacement in files. Returns unified diff.
-pub struct FileEditTool;
+/// Test fixture: edit any file the server process can write. Unsandboxed.
+/// See module docs — do not register in production.
+pub struct UnsafeFileEditTool;
 
 #[async_trait]
-impl Handler for FileEditTool {
+impl Handler for UnsafeFileEditTool {
     async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
         let xml_str = String::from_utf8_lossy(&payload.xml);
 
@@ -102,7 +110,7 @@ impl Handler for FileEditTool {
 }
 
 #[async_trait]
-impl ToolPeer for FileEditTool {
+impl ToolPeer for UnsafeFileEditTool {
     fn name(&self) -> &str {
         "file-edit"
     }
@@ -171,7 +179,7 @@ mod tests {
         let xml = format!(
             "<FileEditRequest><path>{path_str}</path><old_string>fn hello()</old_string><new_string>fn world()</new_string></FileEditRequest>"
         );
-        let (ok, content) = get_result(FileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("-fn hello()"));
         assert!(content.contains("+fn world()"));
@@ -192,7 +200,7 @@ mod tests {
         let xml = format!(
             "<FileEditRequest><path>{path_str}</path><old_string>nonexistent</old_string><new_string>replacement</new_string></FileEditRequest>"
         );
-        let (ok, content) = get_result(FileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("not found"));
     }
@@ -207,7 +215,7 @@ mod tests {
         let xml = format!(
             "<FileEditRequest><path>{path_str}</path><old_string>foo</old_string><new_string>replaced</new_string></FileEditRequest>"
         );
-        let (ok, content) = get_result(FileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("3 matches"));
         assert!(content.contains("lines:"));
@@ -223,7 +231,7 @@ mod tests {
         let xml = format!(
             "<FileEditRequest><path>{path_str}</path><old_string>bbb\nccc</old_string><new_string>BBB\nCCC\nEEE</new_string></FileEditRequest>"
         );
-        let (ok, content) = get_result(FileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("-bbb"));
         assert!(content.contains("+BBB"));
@@ -235,7 +243,7 @@ mod tests {
     #[tokio::test]
     async fn edit_missing_file() {
         let xml = "<FileEditRequest><path>/nonexistent/file.txt</path><old_string>x</old_string><new_string>y</new_string></FileEditRequest>";
-        let (ok, content) = get_result(FileEditTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileEditTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("file not found"));
     }
@@ -243,7 +251,7 @@ mod tests {
     #[tokio::test]
     async fn edit_missing_old_string() {
         let xml = "<FileEditRequest><path>/tmp/x</path><new_string>y</new_string></FileEditRequest>";
-        let (ok, content) = get_result(FileEditTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileEditTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("missing required"));
     }
@@ -258,7 +266,7 @@ mod tests {
         let xml = format!(
             "<FileEditRequest><path>{path_str}</path><old_string>remove this\n</old_string><new_string></new_string></FileEditRequest>"
         );
-        let (ok, _) = get_result(FileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, _) = get_result(UnsafeFileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -276,7 +284,7 @@ mod tests {
         let xml = format!(
             "<FileEditRequest><path>{path_str}</path><old_string>a &lt; b</old_string><new_string>a &gt; b</new_string></FileEditRequest>"
         );
-        let (ok, _) = get_result(FileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, _) = get_result(UnsafeFileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -294,7 +302,7 @@ mod tests {
         let xml = format!(
             "<FileEditRequest><path>{path_str}</path><old_string>beta</old_string><new_string>BETA</new_string></FileEditRequest>"
         );
-        let (ok, diff) = get_result(FileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, diff) = get_result(UnsafeFileEditTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         // Diff should have context lines (space prefix) and changes (+/-)
         assert!(diff.contains(" alpha\n"));
@@ -305,7 +313,7 @@ mod tests {
 
     #[test]
     fn file_edit_metadata() {
-        let tool = FileEditTool;
+        let tool = UnsafeFileEditTool;
         assert_eq!(tool.name(), "file-edit");
         let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "file-edit");

@@ -1,4 +1,16 @@
-//! FileReadTool — read file contents with line numbers, offset/limit.
+//! UnsafeFileReadTool — read file contents with line numbers, offset/limit.
+//!
+//! **DO NOT REGISTER IN PRODUCTION.** This variant accepts absolute host
+//! paths and has no sandbox. Reads `/etc/passwd`, `C:\Users\dan\.aws\
+//! credentials`, anything the server process can read. Production code
+//! uses [`crate::vdrive_tools::VDriveFileRead`] under the same WIT name
+//! (`file-read`), which canonicalizes against the workspace root before
+//! every read.
+//!
+//! This struct is kept only as a test fixture for pipeline-level tests
+//! that don't want to wire up a DriveSlot. The `Unsafe` prefix is a
+//! lint signal — if you see `UnsafeFileReadTool` in non-test code,
+//! that's a security bug.
 
 use async_trait::async_trait;
 use rust_pipeline::prelude::*;
@@ -6,10 +18,11 @@ use std::path::Path;
 
 use super::{extract_tag, ToolPeer, ToolResponse};
 
-/// Read file contents with optional offset and limit.
-pub struct FileReadTool;
+/// Test fixture: read any file the server process can read. Unsandboxed.
+/// See module docs — do not register in production.
+pub struct UnsafeFileReadTool;
 
-impl FileReadTool {
+impl UnsafeFileReadTool {
     /// Check if a byte slice looks like binary (contains null bytes in first 8KB).
     fn is_binary(data: &[u8]) -> bool {
         let check_len = data.len().min(8192);
@@ -18,7 +31,7 @@ impl FileReadTool {
 }
 
 #[async_trait]
-impl Handler for FileReadTool {
+impl Handler for UnsafeFileReadTool {
     async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
         let xml_str = String::from_utf8_lossy(&payload.xml);
 
@@ -102,7 +115,7 @@ impl Handler for FileReadTool {
 }
 
 #[async_trait]
-impl ToolPeer for FileReadTool {
+impl ToolPeer for UnsafeFileReadTool {
     fn name(&self) -> &str {
         "file-read"
     }
@@ -171,7 +184,7 @@ mod tests {
 
         let path = f.path().to_str().unwrap();
         let xml = format!("<FileReadRequest><path>{path}</path></FileReadRequest>");
-        let (ok, content) = get_result(FileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("1| line one"));
         assert!(content.contains("2| line two"));
@@ -189,7 +202,7 @@ mod tests {
         let xml = format!(
             "<FileReadRequest><path>{path}</path><offset>5</offset><limit>3</limit></FileReadRequest>"
         );
-        let (ok, content) = get_result(FileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("5| line 5"));
         assert!(content.contains("6| line 6"));
@@ -208,7 +221,7 @@ mod tests {
         let xml = format!(
             "<FileReadRequest><path>{path}</path><limit>10</limit></FileReadRequest>"
         );
-        let (ok, content) = get_result(FileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("... (90 more lines, 100 total)"));
     }
@@ -216,7 +229,7 @@ mod tests {
     #[tokio::test]
     async fn read_missing_file() {
         let xml = "<FileReadRequest><path>/nonexistent/file.txt</path></FileReadRequest>";
-        let (ok, content) = get_result(FileReadTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileReadTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("file not found"));
     }
@@ -224,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn read_missing_path_tag() {
         let xml = "<FileReadRequest></FileReadRequest>";
-        let (ok, content) = get_result(FileReadTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileReadTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("missing required"));
     }
@@ -234,7 +247,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
         let xml = format!("<FileReadRequest><path>{path}</path></FileReadRequest>");
-        let (ok, content) = get_result(FileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("directory"));
     }
@@ -246,7 +259,7 @@ mod tests {
 
         let path = f.path().to_str().unwrap();
         let xml = format!("<FileReadRequest><path>{path}</path></FileReadRequest>");
-        let (ok, content) = get_result(FileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("binary file"));
     }
@@ -256,7 +269,7 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().to_str().unwrap();
         let xml = format!("<FileReadRequest><path>{path}</path></FileReadRequest>");
-        let (ok, _content) = get_result(FileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, _content) = get_result(UnsafeFileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
     }
 
@@ -269,7 +282,7 @@ mod tests {
 
         let path = f.path().to_str().unwrap();
         let xml = format!("<FileReadRequest><path>{path}</path></FileReadRequest>");
-        let (ok, content) = get_result(FileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileReadTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("2000| line 2000"));
         assert!(!content.contains("2001| line 2001"));
@@ -278,7 +291,7 @@ mod tests {
 
     #[test]
     fn file_read_metadata() {
-        let tool = FileReadTool;
+        let tool = UnsafeFileReadTool;
         assert_eq!(tool.name(), "file-read");
         let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "file-read");

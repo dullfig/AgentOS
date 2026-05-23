@@ -1,4 +1,14 @@
-//! FileWriteTool — write/create files with automatic parent directory creation.
+//! UnsafeFileWriteTool — write/create files with automatic parent directory creation.
+//!
+//! **DO NOT REGISTER IN PRODUCTION.** This variant accepts absolute host
+//! paths with no sandbox. An agent can plant `C:\Users\Public\Desktop\
+//! pwn.bat`, drop `.profile` files, overwrite arbitrary configuration.
+//! Production uses [`crate::vdrive_tools::VDriveFileWrite`] under the
+//! same WIT name (`file-write`), which confines writes to the workspace
+//! root via canonicalize + prefix check.
+//!
+//! Kept as a test fixture. The `Unsafe` prefix is the lint — if you see
+//! this in non-test code, that's a security bug.
 
 use async_trait::async_trait;
 use rust_pipeline::prelude::*;
@@ -6,11 +16,12 @@ use std::path::Path;
 
 use super::{extract_tag, ToolPeer, ToolResponse};
 
-/// Write or create files. Auto-creates parent directories.
-pub struct FileWriteTool;
+/// Test fixture: write any file the server process can write. Unsandboxed.
+/// See module docs — do not register in production.
+pub struct UnsafeFileWriteTool;
 
 #[async_trait]
-impl Handler for FileWriteTool {
+impl Handler for UnsafeFileWriteTool {
     async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
         let xml_str = String::from_utf8_lossy(&payload.xml);
 
@@ -54,7 +65,7 @@ impl Handler for FileWriteTool {
 }
 
 #[async_trait]
-impl ToolPeer for FileWriteTool {
+impl ToolPeer for UnsafeFileWriteTool {
     fn name(&self) -> &str {
         "file-write"
     }
@@ -120,7 +131,7 @@ mod tests {
         let xml = format!(
             "<FileWriteRequest><path>{path_str}</path><content>hello world</content></FileWriteRequest>"
         );
-        let (ok, content) = get_result(FileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("11 bytes"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
@@ -135,7 +146,7 @@ mod tests {
         let xml = format!(
             "<FileWriteRequest><path>{path_str}</path><content>deep content</content></FileWriteRequest>"
         );
-        let (ok, _) = get_result(FileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, _) = get_result(UnsafeFileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "deep content");
     }
@@ -150,7 +161,7 @@ mod tests {
         let xml = format!(
             "<FileWriteRequest><path>{path_str}</path><content>new content</content></FileWriteRequest>"
         );
-        let (ok, _) = get_result(FileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, _) = get_result(UnsafeFileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new content");
     }
@@ -164,7 +175,7 @@ mod tests {
         let xml = format!(
             "<FileWriteRequest><path>{path_str}</path><content></content></FileWriteRequest>"
         );
-        let (ok, content) = get_result(FileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("0 bytes"));
     }
@@ -172,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn write_missing_path() {
         let xml = "<FileWriteRequest><content>hello</content></FileWriteRequest>";
-        let (ok, content) = get_result(FileWriteTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeFileWriteTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("missing required"));
     }
@@ -186,14 +197,14 @@ mod tests {
         let xml = format!(
             "<FileWriteRequest><path>{path_str}</path><content>a &lt; b &amp; c</content></FileWriteRequest>"
         );
-        let (ok, _) = get_result(FileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, _) = get_result(UnsafeFileWriteTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "a < b & c");
     }
 
     #[test]
     fn file_write_metadata() {
-        let tool = FileWriteTool;
+        let tool = UnsafeFileWriteTool;
         assert_eq!(tool.name(), "file-write");
         let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "file-write");
