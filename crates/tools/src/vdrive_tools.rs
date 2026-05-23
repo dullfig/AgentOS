@@ -497,6 +497,17 @@ interface list-dir {
 pub struct VDriveCommandExec {
     slot: DriveSlot,
     allowlist: Vec<String>,
+    /// If non-empty, only listeners whose name appears here may dispatch
+    /// to this tool. Empty = no caller restriction (back-compat for tests
+    /// + sandbox demos). Production should always supply an allowlist for
+    /// shell-capable tools — see `src/main.rs` where bash is restricted
+    /// to `["coding-expert"]`.
+    ///
+    /// This is a *structural* gate, not a YAML gate. Even if an organism
+    /// lists `tools: [bash]`, the platform refuses the dispatch unless
+    /// the calling listener matches. Bob can't grow a shell by being
+    /// prompt-injected.
+    allowed_callers: Vec<String>,
 }
 
 const DEFAULT_ALLOWLIST: &[&str] = &[
@@ -512,7 +523,24 @@ impl VDriveCommandExec {
         Self {
             slot,
             allowlist: DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect(),
+            allowed_callers: Vec::new(),
         }
+    }
+
+    /// Restrict who may dispatch to this tool. Listener names match
+    /// against `HandlerContext::from`. Set at registration time.
+    pub fn with_allowed_callers<I, S>(mut self, callers: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_callers = callers.into_iter().map(Into::into).collect();
+        self
+    }
+
+    fn caller_allowed(&self, from: &str) -> bool {
+        self.allowed_callers.is_empty()
+            || self.allowed_callers.iter().any(|c| c == from)
     }
 
     fn is_allowed(&self, command: &str) -> bool {
@@ -546,7 +574,22 @@ impl VDriveCommandExec {
 
 #[async_trait]
 impl Handler for VDriveCommandExec {
-    async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
+    async fn handle(&self, payload: ValidatedPayload, ctx: HandlerContext) -> HandlerResult {
+        // Caller gate — structural restriction independent of YAML.
+        // If the registration site supplied an allowlist, the caller's
+        // listener name must be in it. Any other caller gets a refusal
+        // before the command is even parsed.
+        if !self.caller_allowed(&ctx.from) {
+            return Ok(HandlerResponse::Reply {
+                payload_xml: ToolResponse::err(&format!(
+                    "bash tool refused: caller '{}' is not in the allowed-callers \
+                     list for this registration (allowed: {})",
+                    ctx.from,
+                    self.allowed_callers.join(", ")
+                )),
+            });
+        }
+
         let drive = require_drive!(self.slot);
         let xml_str = String::from_utf8_lossy(&payload.xml);
 

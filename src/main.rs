@@ -728,7 +728,15 @@ fn build_pipeline(
     // Code index
     builder = builder.with_code_index()?;
 
-    // VDrive-sandboxed file tools
+    // VDrive-sandboxed file tools.
+    //
+    // bash carries a structural caller restriction: only the coding-
+    // expert listener may dispatch to it. This is independent of YAML
+    // — even an organism that lists `tools: [bash]` for Bob cannot
+    // grow a shell. The platform refuses dispatch on `ctx.from` before
+    // the command is parsed. Buffer-nested sub-agents inside coding-
+    // expert have their own listener names and need to be added here
+    // explicitly when they need shell access.
     builder = builder
         .register_tool("file-read", VDriveFileRead::new(slot.clone()))?
         .register_tool("file-write", VDriveFileWrite::new(slot.clone()))?
@@ -736,7 +744,11 @@ fn build_pipeline(
         .register_tool("glob", VDriveGlob::new(slot.clone()))?
         .register_tool("grep", VDriveGrep::new(slot.clone()))?
         .register_tool("list-dir", VDriveListDir::new(slot.clone()))?
-        .register_tool("bash", VDriveCommandExec::new(slot.clone()))?;
+        .register_tool(
+            "bash",
+            VDriveCommandExec::new(slot.clone())
+                .with_allowed_callers(["coding-expert"]),
+        )?;
 
     // Safe commands (cargo-test, git-status, etc.)
     for def in ALL_SAFE_COMMANDS {

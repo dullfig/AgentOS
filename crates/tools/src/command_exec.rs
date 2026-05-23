@@ -19,6 +19,11 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
 /// Execute allowed shell commands with timeout and output capture.
 pub struct CommandExecTool {
     allowlist: Vec<String>,
+    /// Caller listener-name allowlist. Empty = no restriction (test
+    /// fixture default). Production registrations should always
+    /// supply one — see `VDriveCommandExec::with_allowed_callers`
+    /// for the equivalent on the sandboxed variant.
+    allowed_callers: Vec<String>,
 }
 
 impl CommandExecTool {
@@ -26,12 +31,30 @@ impl CommandExecTool {
     pub fn new() -> Self {
         Self {
             allowlist: DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect(),
+            allowed_callers: Vec::new(),
         }
     }
 
     /// Create with custom allowlist.
     pub fn with_allowlist(allowlist: Vec<String>) -> Self {
-        Self { allowlist }
+        Self {
+            allowlist,
+            allowed_callers: Vec::new(),
+        }
+    }
+
+    pub fn with_allowed_callers<I, S>(mut self, callers: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_callers = callers.into_iter().map(Into::into).collect();
+        self
+    }
+
+    fn caller_allowed(&self, from: &str) -> bool {
+        self.allowed_callers.is_empty()
+            || self.allowed_callers.iter().any(|c| c == from)
     }
 
     /// Check if a command's first token is in the allowlist.
@@ -74,7 +97,18 @@ impl Default for CommandExecTool {
 
 #[async_trait]
 impl Handler for CommandExecTool {
-    async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
+    async fn handle(&self, payload: ValidatedPayload, ctx: HandlerContext) -> HandlerResult {
+        if !self.caller_allowed(&ctx.from) {
+            return Ok(HandlerResponse::Reply {
+                payload_xml: ToolResponse::err(&format!(
+                    "bash tool refused: caller '{}' is not in the allowed-callers \
+                     list (allowed: {})",
+                    ctx.from,
+                    self.allowed_callers.join(", ")
+                )),
+            });
+        }
+
         let xml_str = String::from_utf8_lossy(&payload.xml);
 
         let command = extract_tag(&xml_str, "command").unwrap_or_default();
@@ -339,5 +373,86 @@ mod tests {
         assert_eq!(iface.name, "bash");
         assert_eq!(iface.request_tag(), "BashRequest");
         assert!(iface.request.fields.iter().any(|f| f.name == "command"));
+    }
+
+    fn ctx_from(name: &str) -> HandlerContext {
+        HandlerContext {
+            thread_id: "t1".into(),
+            from: name.into(),
+            own_name: "bash".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_allowed_callers_accepts_anyone() {
+        // Back-compat: tools registered without an allowlist (the
+        // default) behave as before.
+        let tool = CommandExecTool::new();
+        let xml = "<CommandExecRequest><command>echo hi</command></CommandExecRequest>";
+        let (ok, _) = get_result(tool.handle(make_payload(xml), ctx_from("anyone")).await.unwrap());
+        assert!(ok);
+    }
+
+    #[tokio::test]
+    async fn allowed_caller_passes() {
+        let tool = CommandExecTool::new().with_allowed_callers(["coding-expert"]);
+        let xml = "<CommandExecRequest><command>echo hi</command></CommandExecRequest>";
+        let (ok, _) = get_result(
+            tool.handle(make_payload(xml), ctx_from("coding-expert"))
+                .await
+                .unwrap(),
+        );
+        assert!(ok);
+    }
+
+    #[tokio::test]
+    async fn disallowed_caller_refused_before_command_parse() {
+        // The refusal must happen BEFORE any command parsing, so even
+        // a perfectly-formed allowlisted command from bob gets blocked.
+        let tool = CommandExecTool::new().with_allowed_callers(["coding-expert"]);
+        let xml = "<CommandExecRequest><command>echo hi</command></CommandExecRequest>";
+        let (ok, msg) = get_result(
+            tool.handle(make_payload(xml), ctx_from("bob")).await.unwrap(),
+        );
+        assert!(!ok, "bob should be refused");
+        assert!(
+            msg.contains("refused") && msg.contains("bob"),
+            "error should name the rejected caller: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_caller_allowlist() {
+        let tool = CommandExecTool::new()
+            .with_allowed_callers(["coding-expert", "test-runner"]);
+        let xml = "<CommandExecRequest><command>echo hi</command></CommandExecRequest>";
+        for allowed in ["coding-expert", "test-runner"] {
+            let (ok, _) = get_result(
+                tool.handle(make_payload(xml), ctx_from(allowed)).await.unwrap(),
+            );
+            assert!(ok, "{allowed} should pass");
+        }
+        let (ok, _) = get_result(
+            tool.handle(make_payload(xml), ctx_from("plan-expert"))
+                .await
+                .unwrap(),
+        );
+        assert!(!ok, "plan-expert should be refused");
+    }
+
+    #[tokio::test]
+    async fn buffer_child_of_coding_expert_is_refused() {
+        // The "only root threads" semantics: a buffer-nested sub-agent
+        // inside coding-expert has its own listener name (e.g.,
+        // "tester"). The allowlist matches `ctx.from` exactly — sub-
+        // agents don't inherit coding-expert's grants. They have to be
+        // added explicitly. Matches Daniel's "only root threads should
+        // have access to such tools" framing.
+        let tool = CommandExecTool::new().with_allowed_callers(["coding-expert"]);
+        let xml = "<CommandExecRequest><command>echo hi</command></CommandExecRequest>";
+        let (ok, _) = get_result(
+            tool.handle(make_payload(xml), ctx_from("tester")).await.unwrap(),
+        );
+        assert!(!ok);
     }
 }
