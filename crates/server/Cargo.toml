@@ -19,6 +19,11 @@ agentos-platform = { path = "../platform" }
 dashmap = "6"
 sha2 = "0.10"
 
+# Constant-time byte comparison for bearer-token check (defeats remote
+# timing oracles). subtle is the dalek-cryptography crate, ~200 LOC, no
+# transitive deps.
+subtle = "2"
+
 # Prometheus /metrics — feeds the capacity dashboard pinned in the roadmap.
 metrics = "0.23"
 metrics-exporter-prometheus = { version = "0.15", default-features = false }

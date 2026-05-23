@@ -23,6 +23,9 @@ use agentos_platform::router::Envelope;
 use crate::idempotency::{IdempotencyCache, LookupResult};
 use crate::metrics;
 
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -149,9 +152,12 @@ pub async fn post_messages(
     // Records into `agentos_request_duration_seconds` histogram on completion.
     let started = Instant::now();
 
-    // 1. Auth
+    // 1. Auth. Constant-time comparison via SHA-256 of both sides
+    //    (defeats remote byte-by-byte timing oracles; the hash also
+    //    erases length-difference leakage that a raw ct_eq on the raw
+    //    bytes would still have via its short-circuit length check).
     match bearer_token(&headers) {
-        Some(t) if t == state.auth_token => {}
+        Some(t) if ct_eq_token(t, &state.auth_token) => {}
         Some(_) => {
             return Err(PreStreamError::record(
                 started,
@@ -509,4 +515,18 @@ fn xml_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Constant-time bearer-token check.
+///
+/// `PartialEq` on `str` / `String` short-circuits at the first
+/// mismatching byte → enables remote byte-by-byte timing oracle. Both
+/// tokens go through SHA-256 (fixed 32-byte output) and the digests
+/// are compared with `subtle::ConstantTimeEq`. Hashing makes the
+/// comparison length-independent — supplying a 5-byte vs 500-byte
+/// token both pay the same SHA-256 + 32-byte compare cost.
+fn ct_eq_token(supplied: &str, expected: &str) -> bool {
+    let s = Sha256::digest(supplied.as_bytes());
+    let e = Sha256::digest(expected.as_bytes());
+    s.ct_eq(&e).into()
 }
