@@ -26,6 +26,15 @@ use crate::metrics;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
+/// Per-turn `text` cap (security audit H3). Natural-language chat
+/// turns fit easily; pathological payloads that would otherwise
+/// amplify through the 80-message sliding window are rejected.
+const MAX_TEXT_BYTES: usize = 8 * 1024;
+/// Cap on `idempotency_key` and `conversation_id`. UUID v4 strings
+/// are 36 chars; 128 leaves room for namespaced variants without
+/// admitting arbitrary-size keys into the idempotency cache.
+const MAX_KEY_CHARS: usize = 128;
+
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -206,6 +215,43 @@ pub async fn post_messages(
             "text must be non-empty",
             &request_id,
         ));
+    }
+    // Length caps (security audit H3). Without these, an attacker
+    // could send a 1 MiB `text` field × N concurrent requests × the
+    // 80-message sliding window per user → memory amplification well
+    // beyond what the projected DAU suggests. 8 KiB per turn is plenty
+    // for natural-language input. idempotency_key and conversation_id
+    // are bounded to 128 chars — UUID-shaped IDs fit easily and
+    // arbitrary long strings can't bloat the idempotency cache key
+    // space.
+    if req.text.len() > MAX_TEXT_BYTES {
+        return Err(PreStreamError::record(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("text exceeds {MAX_TEXT_BYTES}-byte cap"),
+            &request_id,
+        ));
+    }
+    if req.idempotency_key.len() > MAX_KEY_CHARS {
+        return Err(PreStreamError::record(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("idempotency_key exceeds {MAX_KEY_CHARS}-char cap"),
+            &request_id,
+        ));
+    }
+    if let Some(ref cid) = req.conversation_id {
+        if cid.len() > MAX_KEY_CHARS {
+            return Err(PreStreamError::record(
+                started,
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("conversation_id exceeds {MAX_KEY_CHARS}-char cap"),
+                &request_id,
+            ));
+        }
     }
     if req.user_id.trim().is_empty() {
         return Err(PreStreamError::record(
@@ -615,5 +661,22 @@ mod tests {
         // Strict ASCII allowlist sidesteps the whole category.
         assert!(!is_valid_user_id("álice"));
         assert!(!is_valid_user_id("аlice")); // Cyrillic 'а'
+    }
+
+    #[test]
+    fn text_cap_constant_is_sane() {
+        // Sanity check: 8 KiB easily holds a natural chat turn but
+        // bounds the amplification window. Documenting the magic
+        // number with an explicit assertion so any future change
+        // shows up in code review.
+        assert_eq!(MAX_TEXT_BYTES, 8 * 1024);
+    }
+
+    #[test]
+    fn key_cap_accommodates_uuid_v4_and_namespacing() {
+        // UUID v4 is 36 chars; with prefixes / suffixes 128 leaves
+        // plenty of headroom.
+        assert!(MAX_KEY_CHARS >= 36);
+        assert_eq!(MAX_KEY_CHARS, 128);
     }
 }
