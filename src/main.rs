@@ -774,7 +774,24 @@ fn build_pipeline(
     // QA-expert toolbox: outbound HTTP + Prometheus parse + async tickets.
     // Stateless tools register inline; tickets is filesystem-backed at
     // {data_dir}/tickets/.
-    builder = builder.register_tool("http-request", HttpRequestTool::new())?;
+    //
+    // http-request is registered with the QA-expert allowlist: cortex,
+    // memex, agentos (all loopback / internal). Per B4 of the security
+    // audit, a non-empty allowlist closes SSRF — IMDS / GCP metadata /
+    // arbitrary external hosts are refused before any network request
+    // fires. Future organisms needing different outbound surfaces
+    // should register their own http-request listener under a
+    // distinct name (e.g., "http-external") with their own allowlist.
+    builder = builder.register_tool(
+        "http-request",
+        HttpRequestTool::new().with_allowed_hosts([
+            "cortex.local",
+            "memex.local",
+            "agentos.local",
+            "127.0.0.1",
+            "localhost",
+        ]),
+    )?;
     builder = builder.register_tool("prom-parse", PromParseTool)?;
     let tickets_tool = TicketsTool::new(data_dir)
         .map_err(|e| format!("open ticket store at {}: {e}", data_dir.display()))?;
