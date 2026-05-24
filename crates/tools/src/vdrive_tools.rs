@@ -543,12 +543,11 @@ impl VDriveCommandExec {
             || self.allowed_callers.iter().any(|c| c == from)
     }
 
-    fn is_allowed(&self, command: &str) -> bool {
-        let first_token = command.split_whitespace().next().unwrap_or("");
-        let exe_name = std::path::Path::new(first_token)
+    fn is_allowed_exe(&self, exe: &str) -> bool {
+        let exe_name = std::path::Path::new(exe)
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or(first_token);
+            .unwrap_or(exe);
 
         self.allowlist.iter().any(|allowed| {
             if cfg!(windows) {
@@ -600,11 +599,30 @@ impl Handler for VDriveCommandExec {
             });
         }
 
-        if !self.is_allowed(&command) {
-            let first = command.split_whitespace().next().unwrap_or("(empty)");
+        // shlex-split into argv. No `sh -c` / `cmd /C` reinterpretation
+        // — see B1 in the security audit. Shell metacharacters become
+        // literal arguments (or a parse error from shlex).
+        let tokens = match shlex::split(&command) {
+            Some(t) if !t.is_empty() => t,
+            Some(_) => {
+                return Ok(HandlerResponse::Reply {
+                    payload_xml: ToolResponse::err("command is empty after parsing"),
+                });
+            }
+            None => {
+                return Ok(HandlerResponse::Reply {
+                    payload_xml: ToolResponse::err(
+                        "command has unmatched quotes; argv-style tokenization failed",
+                    ),
+                });
+            }
+        };
+        let (exe, args) = tokens.split_first().expect("checked non-empty above");
+
+        if !self.is_allowed_exe(exe) {
             return Ok(HandlerResponse::Reply {
                 payload_xml: ToolResponse::err(&format!(
-                    "command not allowed: {first}. Allowed: {}",
+                    "command not allowed: {exe}. Allowed: {}",
                     self.allowlist.join(", ")
                 )),
             });
@@ -617,15 +635,9 @@ impl Handler for VDriveCommandExec {
         // Always run in the drive root — ignore user-supplied working_dir
         let work_dir = drive.root().to_path_buf();
 
-        let mut cmd = if cfg!(windows) {
-            let mut c = tokio::process::Command::new("cmd");
-            c.args(["/C", &command]);
-            c
-        } else {
-            let mut c = tokio::process::Command::new("sh");
-            c.args(["-c", &command]);
-            c
-        };
+        // Direct-exec, no shell wrapper.
+        let mut cmd = tokio::process::Command::new(exe);
+        cmd.args(args);
 
         cmd.current_dir(&work_dir);
         cmd.stdout(std::process::Stdio::piped());

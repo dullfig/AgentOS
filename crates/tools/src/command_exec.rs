@@ -57,14 +57,22 @@ impl CommandExecTool {
             || self.allowed_callers.iter().any(|c| c == from)
     }
 
-    /// Check if a command's first token is in the allowlist.
+    /// Check if a command's first token is in the allowlist. Legacy
+    /// helper kept for the unit tests that exercise allowlist logic
+    /// directly. New code paths in `handle()` call `is_allowed_exe`
+    /// on the shlex-split first token instead.
     fn is_allowed(&self, command: &str) -> bool {
         let first_token = command.split_whitespace().next().unwrap_or("");
-        // Extract just the executable name (strip path)
-        let exe_name = std::path::Path::new(first_token)
+        self.is_allowed_exe(first_token)
+    }
+
+    /// Check if an executable path (post-shlex-split) is in the
+    /// allowlist. Strips directory components and (on Windows) `.exe`.
+    fn is_allowed_exe(&self, exe: &str) -> bool {
+        let exe_name = std::path::Path::new(exe)
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or(first_token);
+            .unwrap_or(exe);
 
         // Case-insensitive on Windows, case-sensitive otherwise
         self.allowlist.iter().any(|allowed| {
@@ -118,12 +126,31 @@ impl Handler for CommandExecTool {
             });
         }
 
-        // Allowlist check
-        if !self.is_allowed(&command) {
-            let first = command.split_whitespace().next().unwrap_or("(empty)");
+        // shlex-split into argv. NO SHELL. This is the B1 fix: even
+        // if an attacker writes `echo hi; rm -rf /`, the semicolon and
+        // everything after it become literal arguments to `echo` (or
+        // a quoting error). There is no `sh -c` to reinterpret them.
+        let tokens = match shlex::split(&command) {
+            Some(t) if !t.is_empty() => t,
+            Some(_) => {
+                return Ok(HandlerResponse::Reply {
+                    payload_xml: ToolResponse::err("command is empty after parsing"),
+                });
+            }
+            None => {
+                return Ok(HandlerResponse::Reply {
+                    payload_xml: ToolResponse::err(
+                        "command has unmatched quotes; argv-style tokenization failed",
+                    ),
+                });
+            }
+        };
+        let (exe, args) = tokens.split_first().expect("checked non-empty above");
+
+        if !self.is_allowed_exe(exe) {
             return Ok(HandlerResponse::Reply {
                 payload_xml: ToolResponse::err(&format!(
-                    "command not allowed: {first}. Allowed: {}",
+                    "command not allowed: {exe}. Allowed: {}",
                     self.allowlist.join(", ")
                 )),
             });
@@ -135,16 +162,10 @@ impl Handler for CommandExecTool {
 
         let working_dir = extract_tag(&xml_str, "working_dir");
 
-        // Build the command
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new("cmd");
-            c.args(["/C", &command]);
-            c
-        } else {
-            let mut c = Command::new("sh");
-            c.args(["-c", &command]);
-            c
-        };
+        // Direct-exec, no shell wrapper. `Command::new(exe).args(args)`
+        // bypasses sh/cmd entirely; the OS receives a clean argv.
+        let mut cmd = Command::new(exe);
+        cmd.args(args);
 
         if let Some(ref dir) = working_dir {
             cmd.current_dir(dir);
@@ -438,6 +459,44 @@ mod tests {
                 .unwrap(),
         );
         assert!(!ok, "plan-expert should be refused");
+    }
+
+    #[tokio::test]
+    async fn shell_injection_via_semicolon_is_neutralized() {
+        // B1 regression test. Before the argv-direct fix, this
+        // command got passed to `sh -c` / `cmd /C` and the `;`
+        // separated two statements — `echo SAFE` followed by a
+        // marker-write that proved RCE. With argv-direct, the
+        // whole `; echo PWNED >> ...` becomes literal arguments to
+        // `echo`, so `echo` prints the entire string and no second
+        // command runs.
+        //
+        // We don't need to actually verify the second command would
+        // have run; the property we want is: the output of `echo`
+        // contains the semicolon and the payload as one string, NOT
+        // two separate echo invocations.
+        let tool = CommandExecTool::new();
+        let xml = "<CommandExecRequest><command>echo SAFE ; echo PWNED</command></CommandExecRequest>";
+        let (ok, content) = get_result(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        assert!(ok, "echo with literal-args should succeed: {content}");
+
+        // Both halves of what would have been two shell statements
+        // appear in echo's argument list, so they appear in the
+        // single line of output. The PROOF that no shell ran is
+        // that the `;` itself prints verbatim — a shell would have
+        // eaten it.
+        assert!(content.contains(";"), "semicolon must survive as literal: {content}");
+        assert!(content.contains("SAFE"));
+        assert!(content.contains("PWNED"), "echo prints PWNED literally, but as an arg — not as a separate command: {content}");
+    }
+
+    #[tokio::test]
+    async fn unmatched_quotes_yield_clean_error() {
+        let tool = CommandExecTool::new();
+        let xml = r#"<CommandExecRequest><command>echo "unclosed</command></CommandExecRequest>"#;
+        let (ok, msg) = get_result(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        assert!(!ok);
+        assert!(msg.contains("unmatched quotes") || msg.contains("tokenization"), "got: {msg}");
     }
 
     #[tokio::test]

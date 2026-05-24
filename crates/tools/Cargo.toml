@@ -36,6 +36,14 @@ prometheus-parse = "0.2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+# Quote-aware shell-style argv tokenizer for the bash tool. Used in
+# place of `sh -c` / `cmd /C` (security audit B1): no shell means
+# no shell injection. shlex follows POSIX-ish word-splitting rules
+# with quoting; an attacker writing `echo hi; rm -rf /` gets ALL the
+# bytes as a single argument to `echo`, not interpreted as a shell
+# statement.
+shlex = "1"
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }

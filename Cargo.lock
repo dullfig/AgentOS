@@ -361,6 +361,7 @@ dependencies = [
  "rust-pipeline",
  "serde",
  "serde_json",
+ "shlex",
  "similar",
  "tempfile",
  "tokio",
