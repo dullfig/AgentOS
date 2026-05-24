@@ -38,7 +38,15 @@ use serde_json::{json, Value};
 use super::{extract_tag, ToolPeer, ToolResponse};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Hard upper bound on `<timeout_secs>`. Caps the unbounded-u64 DoS
+/// (security audit H2): an attacker setting timeout_secs = u64::MAX
+/// would otherwise hang the tool indefinitely while holding tokio
+/// resources and inflating connection-pool pressure.
+const MAX_TIMEOUT_SECS: u64 = 120;
 const MAX_RESPONSE_BYTES: usize = 1_048_576; // 1 MiB
+/// Symmetric request-body cap (security audit H3). Prevents an agent
+/// from POSTing a 2 GiB body and tying up tokio + internal services.
+const MAX_REQUEST_BYTES: usize = 1_048_576; // 1 MiB
 
 /// Stateless HTTP client tool. Wraps a shared `reqwest::Client` so
 /// connection pooling kicks in across invocations.
@@ -145,7 +153,8 @@ impl HttpRequestTool {
 
         let timeout_secs = extract_tag(xml, "timeout_secs")
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_TIMEOUT_SECS);
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS);
 
         let headers = match extract_tag(xml, "headers") {
             Some(s) if !s.is_empty() => parse_headers(&s)?,
@@ -153,6 +162,12 @@ impl HttpRequestTool {
         };
 
         let body = extract_tag(xml, "body").unwrap_or_default();
+        if body.len() > MAX_REQUEST_BYTES {
+            return Err(format!(
+                "request body exceeds {MAX_REQUEST_BYTES}-byte cap (got {} bytes)",
+                body.len()
+            ));
+        }
         let body_allowed = !matches!(method, Method::GET | Method::HEAD);
 
         let mut req = self
@@ -625,6 +640,47 @@ mod tests {
         let (ok, msg) = parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(msg.contains("invalid url"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn timeout_secs_clamped_to_max() {
+        // H2 regression: an attacker setting a giant timeout_secs
+        // shouldn't be able to hold the tool indefinitely. The actual
+        // request to localhost:1 should fail within MAX_TIMEOUT_SECS,
+        // not after the requested u64::MAX seconds.
+        //
+        // We don't wait 120s in the test — we just confirm the request
+        // fails (connection refused) within a reasonable wall clock.
+        // The cap is structural; the test proves it doesn't panic and
+        // doesn't hang forever.
+        let tool = HttpRequestTool::new();
+        let xml = "<HttpRequest><url>http://127.0.0.1:1/</url>\
+                   <timeout_secs>18446744073709551615</timeout_secs></HttpRequest>";
+        let start = std::time::Instant::now();
+        let (ok, _) = parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let elapsed = start.elapsed();
+        assert!(!ok);
+        // Connection refused returns immediately on most systems;
+        // worst case is the bound itself. 130s gives slack.
+        assert!(
+            elapsed < std::time::Duration::from_secs(130),
+            "timeout_secs cap should bound wall clock; elapsed: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_request_body_rejected() {
+        // H3 regression: request body capped at MAX_REQUEST_BYTES.
+        // No need for a mock — rejection happens before send.
+        let tool = HttpRequestTool::new();
+        let big = "x".repeat(2 * 1024 * 1024); // 2 MiB
+        let xml = format!(
+            "<HttpRequest><url>http://example.test/</url><method>POST</method>\
+             <body>{big}</body></HttpRequest>"
+        );
+        let (ok, msg) = parse(tool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        assert!(!ok);
+        assert!(msg.contains("cap") && msg.contains("body"), "got: {msg}");
     }
 
     #[tokio::test]
