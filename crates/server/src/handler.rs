@@ -20,7 +20,7 @@ use agentos_platform::address::Address;
 use agentos_platform::buffers::BufferId;
 use agentos_platform::router::Envelope;
 
-use crate::idempotency::{IdempotencyCache, LookupResult};
+use crate::idempotency::{IdempotencyCache, InFlightGuard, LookupResult};
 use crate::metrics;
 
 use sha2::{Digest, Sha256};
@@ -460,6 +460,13 @@ pub async fn post_messages(
     let idempotency = state.idempotency.clone();
     let cache_key_for_stream = cache_key.clone();
 
+    // RAII guard: if the stream future is dropped before commit (most
+    // commonly: client disconnected mid-stream), the guard's Drop impl
+    // calls release_if_inflight, freeing the cache slot. Without this,
+    // a flood of open-and-abort connections would fill the cache with
+    // dead InFlight entries until the 24h TTL — security audit H1.
+    let mut inflight_guard = InFlightGuard::new(idempotency.clone(), cache_key.clone());
+
     let stream = async_stream::stream! {
         // --- ack ---
         match ack_event(&cached_ack) {
@@ -467,9 +474,9 @@ pub async fn post_messages(
             Err(_) => {
                 // Serialization can't realistically fail on these types,
                 // but if it does, terminate without ack — the connection
-                // closes and the client observes an empty stream. Release
-                // the cache slot so a retry can proceed.
-                idempotency.release(&cache_key_for_stream);
+                // closes and the client observes an empty stream. Drop
+                // of `inflight_guard` at the end of this block fires
+                // release_if_inflight for us, so no explicit release here.
                 return;
             }
         }
@@ -562,6 +569,12 @@ pub async fn post_messages(
             cached_chunks,
             done_for_commit,
         );
+
+        // Tell the guard we landed in a final committed state; its
+        // Drop impl will then NOT touch the slot. Without this, the
+        // guard would race the commit and could remove the entry we
+        // just wrote.
+        inflight_guard.commit_complete();
 
         // Stream complete — record the success metric and release the
         // active-stream gauge slot. Done event was the terminal yield,

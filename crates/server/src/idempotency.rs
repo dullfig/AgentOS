@@ -258,6 +258,20 @@ impl IdempotencyCache {
         self.entries.remove(key);
     }
 
+    /// Drop an in-flight entry, but ONLY if it's still in the InFlight
+    /// state. Used by `InFlightGuard` to clean up abandoned slots
+    /// without touching successfully-committed entries — a guard that
+    /// races with a slow commit could otherwise wipe a freshly-
+    /// committed payload.
+    pub fn release_if_inflight(&self, key: &Key) {
+        if let Some(entry) = self.entries.get(key) {
+            if matches!(entry.state, EntryState::InFlight) {
+                drop(entry); // release the read lock before remove
+                self.entries.remove(key);
+            }
+        }
+    }
+
     /// If we're at or above the entry ceiling, evict the oldest entries
     /// down to 90% of the ceiling. The 10% headroom amortizes the cost
     /// of the full-map scan + sort over many subsequent inserts.
@@ -350,6 +364,54 @@ impl IdempotencyCache {
                 }
             }
         })
+    }
+}
+
+/// RAII guard ensuring an `InFlight` slot is cleaned up if the
+/// caller's flow is interrupted (client disconnect mid-SSE-stream,
+/// panic during handling, etc.) — security audit H1.
+///
+/// Hand the guard to whatever owns the in-flight scope (e.g., the
+/// SSE stream block). When the work completes successfully, the
+/// owner calls `commit_complete()`, which sets a flag the Drop impl
+/// honors by NOT releasing.
+///
+/// If the owner is dropped before `commit_complete()` (i.e., axum
+/// abandoned the stream future because the client closed the
+/// connection), the Drop impl calls `release_if_inflight` to clear
+/// the slot so subsequent retries can proceed instead of seeing 409
+/// in-flight forever.
+pub struct InFlightGuard {
+    cache: Arc<IdempotencyCache>,
+    key: Key,
+    completed: bool,
+}
+
+impl InFlightGuard {
+    pub fn new(cache: Arc<IdempotencyCache>, key: Key) -> Self {
+        Self {
+            cache,
+            key,
+            completed: false,
+        }
+    }
+
+    /// Mark the in-flight work as complete (commit or deliberate
+    /// release already done). The Drop impl will not touch the slot.
+    pub fn commit_complete(&mut self) {
+        self.completed = true;
+    }
+
+    pub fn key(&self) -> &Key {
+        &self.key
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.cache.release_if_inflight(&self.key);
+        }
     }
 }
 
@@ -602,6 +664,78 @@ mod tests {
         // constructor floors at 1 so the math is well-defined.
         let cache = IdempotencyCache::with_config(Duration::from_secs(3600), 0);
         assert_eq!(cache.max_entries(), 1);
+    }
+
+    #[test]
+    fn inflight_guard_drops_release_when_uncommitted() {
+        // H1 regression: simulate the "client disconnect mid-stream"
+        // case. Claim a slot, drop the guard without calling
+        // commit_complete — the slot must be cleared.
+        let cache = IdempotencyCache::new();
+        let k = IdempotencyCache::key("t", "drop-test");
+        let body = IdempotencyCache::body_hash(b"body");
+        assert!(matches!(
+            cache.lookup_or_claim(k.clone(), body),
+            LookupResult::Miss
+        ));
+        assert_eq!(cache.len(), 1, "slot should be claimed");
+
+        {
+            let _guard = InFlightGuard::new(cache.clone(), k.clone());
+            // _guard dropped here without commit_complete()
+        }
+
+        assert_eq!(cache.len(), 0, "guard drop should have released the slot");
+
+        // A subsequent lookup with the same key is a fresh Miss.
+        assert!(matches!(
+            cache.lookup_or_claim(k, body),
+            LookupResult::Miss
+        ));
+    }
+
+    #[test]
+    fn inflight_guard_skips_release_when_committed() {
+        // Happy path: guard is dropped AFTER commit, and Drop must
+        // NOT clobber the freshly-written entry.
+        let cache = IdempotencyCache::new();
+        let k = IdempotencyCache::key("t", "commit-test");
+        let body = IdempotencyCache::body_hash(b"body");
+        cache.lookup_or_claim(k.clone(), body);
+
+        {
+            let mut guard = InFlightGuard::new(cache.clone(), k.clone());
+            cache.commit(
+                &k,
+                ack("r", "c"),
+                vec!["hello".into()],
+                done("r", "c"),
+            );
+            guard.commit_complete();
+        }
+
+        // Entry survives — replay should still work.
+        match cache.lookup_or_claim(k, body) {
+            LookupResult::Replay { chunks, .. } => assert_eq!(chunks, vec!["hello"]),
+            other => panic!("expected Replay; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn release_if_inflight_protects_completed_entries() {
+        // Same property at the cache-level: release_if_inflight on a
+        // Completed entry must be a no-op (defense in depth against
+        // a guard racing a slow commit).
+        let cache = IdempotencyCache::new();
+        let k = IdempotencyCache::key("t", "protect-test");
+        let body = IdempotencyCache::body_hash(b"body");
+        cache.lookup_or_claim(k.clone(), body);
+        cache.commit(&k, ack("r", "c"), vec![], done("r", "c"));
+
+        cache.release_if_inflight(&k);
+
+        // Still there.
+        assert_eq!(cache.len(), 1);
     }
 
     impl std::fmt::Debug for LookupResult {
