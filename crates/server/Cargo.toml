@@ -30,8 +30,8 @@ metrics-exporter-prometheus = { version = "0.15", default-features = false }
 
 # HTTP + SSE
 axum = "0.7"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["trace"] }
+tower = { version = "0.5", features = ["limit", "timeout", "load-shed"] }
+tower-http = { version = "0.6", features = ["trace", "limit", "timeout"] }
 
 # Async + serialization
 async-stream = "0.3"
