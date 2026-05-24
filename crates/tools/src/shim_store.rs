@@ -20,7 +20,6 @@
 //! The tool follows the dispatch.rs pattern for kernel access: holds a
 //! `ShimStoreHandles` populated post-pipeline-build via `connect()`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use agentos_kernel::Kernel;
@@ -30,6 +29,7 @@ use rust_pipeline::prelude::*;
 use serde_json::json;
 use tokio::sync::Mutex;
 
+use super::vdrive_tools::DriveSlot;
 use super::{extract_tag, ToolPeer, ToolResponse};
 
 /// Deferred handle to the kernel. Tool is registered pre-build;
@@ -52,22 +52,33 @@ impl ShimStoreHandles {
 }
 
 /// Tool wrapper around the kernel's shim_store APIs.
+///
+/// `slot` is the workspace sandbox the `add-shim` action reads
+/// `<onnx_path>` through. Without it, an attacker passing
+/// `<onnx_path>/etc/shadow</onnx_path>` would write attacker-readable
+/// shim records pointing at arbitrary host files (security audit B6).
 #[derive(Clone)]
 pub struct ShimStoreTool {
     handles: ShimStoreHandles,
+    slot: DriveSlot,
 }
 
 impl ShimStoreTool {
-    pub fn new(handles: ShimStoreHandles) -> Self {
-        Self { handles }
+    pub fn new(handles: ShimStoreHandles, slot: DriveSlot) -> Self {
+        Self { handles, slot }
     }
 
-    /// Construct with an already-connected kernel (testing convenience).
+    /// Construct with an already-connected kernel + an empty workspace
+    /// slot. Tests that don't exercise `add-shim` (which is the only
+    /// path that touches the slot) can use this.
     pub fn with_kernel(kernel: Arc<Mutex<Kernel>>) -> Self {
         let handles = ShimStoreHandles {
             kernel: Arc::new(Mutex::new(Some(kernel))),
         };
-        Self { handles }
+        Self {
+            handles,
+            slot: super::vdrive_tools::empty_slot(),
+        }
     }
 
     async fn kernel(&self) -> Result<Arc<Mutex<Kernel>>, String> {
@@ -167,7 +178,16 @@ impl ShimStoreTool {
         let shim_id = required_tag(xml_str, "shim_id")?;
         let manifest = required_tag(xml_str, "manifest")?;
         let onnx_path = required_tag(xml_str, "onnx_path")?;
-        let onnx_bytes = std::fs::read(PathBuf::from(&onnx_path))
+        // Sandbox the path through VDrive so an attacker can't smuggle
+        // arbitrary host files into the shim_store (security audit B6).
+        let drive = {
+            let guard = self.slot.read().await;
+            guard
+                .clone()
+                .ok_or_else(|| "no workspace mounted; mount before add-shim".to_string())?
+        };
+        let onnx_bytes = drive
+            .read_bytes(&onnx_path)
             .map_err(|e| format!("read onnx file `{onnx_path}`: {e}"))?;
 
         let kernel = self.kernel().await?;
@@ -330,7 +350,19 @@ mod tests {
     fn fresh_tool() -> (TempDir, ShimStoreTool) {
         let dir = TempDir::new().unwrap();
         let kernel = Kernel::open(&dir.path().join("data")).unwrap();
-        let tool = ShimStoreTool::with_kernel(Arc::new(Mutex::new(kernel)));
+        // Mount the temp dir as the VDrive workspace so add-shim can
+        // read ONNX files via the sandboxed path. The tests below
+        // place ONNX files at the workspace root and reference them
+        // by basename. Construct the slot directly with the drive
+        // inside (rather than empty_slot()+blocking_write, which would
+        // deadlock inside the async test runtime).
+        let drive = agentos_vdrive::VDrive::open(dir.path()).unwrap();
+        let slot: crate::vdrive_tools::DriveSlot =
+            Arc::new(tokio::sync::RwLock::new(Some(Arc::new(drive))));
+        let handles = ShimStoreHandles {
+            kernel: Arc::new(Mutex::new(Some(Arc::new(Mutex::new(kernel))))),
+        };
+        let tool = ShimStoreTool::new(handles, slot);
         (dir, tool)
     }
 
@@ -416,21 +448,18 @@ mod tests {
         let xml = "<ShimStore><action>create-store</action><name>bob</name></ShimStore>";
         parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
 
-        // Place a tiny "ONNX" file on disk for the tool to read.
-        let onnx_input = dir.path().join("input.onnx");
-        std::fs::write(&onnx_input, b"\x00\x01ONNX-fake-bytes").unwrap();
+        // ONNX placed at workspace root; referenced by relative name
+        // through the VDrive sandbox (security audit B6).
+        std::fs::write(dir.path().join("input.onnx"), b"\x00\x01ONNX-fake-bytes").unwrap();
 
-        let xml = format!(
-            "<ShimStore>\
+        let xml = "<ShimStore>\
                 <action>add-shim</action>\
                 <store>bob</store>\
                 <shim_id>should_respond</shim_id>\
-                <manifest>{{\"id\":\"should_respond\",\"phase\":\"gate\"}}</manifest>\
-                <onnx_path>{}</onnx_path>\
-            </ShimStore>",
-            onnx_input.display(),
-        );
-        let (ok, body) = parse(tool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+                <manifest>{\"id\":\"should_respond\",\"phase\":\"gate\"}</manifest>\
+                <onnx_path>input.onnx</onnx_path>\
+            </ShimStore>";
+        let (ok, body) = parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(ok, "{body}");
         assert!(body.contains("should_respond"));
 
@@ -446,15 +475,11 @@ mod tests {
         let xml = "<ShimStore><action>create-store</action><name>bob</name></ShimStore>";
         parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
 
-        let onnx_input = dir.path().join("input.onnx");
-        std::fs::write(&onnx_input, b"x").unwrap();
-        let xml = format!(
-            "<ShimStore><action>add-shim</action><store>bob</store>\
-             <shim_id>x</shim_id><manifest>{{}}</manifest>\
-             <onnx_path>{}</onnx_path></ShimStore>",
-            onnx_input.display(),
-        );
-        parse(tool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        std::fs::write(dir.path().join("input.onnx"), b"x").unwrap();
+        let xml = "<ShimStore><action>add-shim</action><store>bob</store>\
+             <shim_id>x</shim_id><manifest>{}</manifest>\
+             <onnx_path>input.onnx</onnx_path></ShimStore>";
+        parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
 
         let xml = "<ShimStore><action>retire-shim</action><store>bob</store><shim_id>x</shim_id></ShimStore>";
         let (ok, _) = parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
@@ -487,10 +512,78 @@ mod tests {
     #[tokio::test]
     async fn unconnected_kernel_errors_cleanly() {
         // Tool registered but kernel never connected (deferred handles).
-        let tool = ShimStoreTool::new(ShimStoreHandles::new());
+        let tool = ShimStoreTool::new(
+            ShimStoreHandles::new(),
+            crate::vdrive_tools::empty_slot(),
+        );
         let xml = "<ShimStore><action>list-stores</action></ShimStore>";
         let (ok, msg) = parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(msg.contains("kernel not connected"));
+    }
+
+    #[tokio::test]
+    async fn add_shim_rejects_path_traversal_in_onnx_path() {
+        // B6 regression test. Attacker controls `<onnx_path>`; without
+        // VDrive sandboxing, `..\..\.aws\credentials` would be read and
+        // shipped into the shim store. With the slot, VDrive's
+        // canonicalize-and-prefix-check rejects it.
+        let (dir, tool) = fresh_tool();
+        parse(
+            tool.handle(
+                make_payload("<ShimStore><action>create-store</action><name>bob</name></ShimStore>"),
+                make_ctx(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        // Plant a sensitive file OUTSIDE the workspace.
+        let outside = dir.path().parent().unwrap().join("secret.txt");
+        std::fs::write(&outside, b"AKIA-fake-aws-key").unwrap();
+
+        // Try to read it via traversal.
+        let xml = "<ShimStore><action>add-shim</action><store>bob</store>\
+                   <shim_id>oops</shim_id><manifest>{}</manifest>\
+                   <onnx_path>../secret.txt</onnx_path></ShimStore>";
+        let (ok, msg) = parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        assert!(!ok, "VDrive should reject path traversal");
+        // The error should mention the read failed; the actual VDrive
+        // error includes the path and a "not within root" or similar.
+        assert!(
+            msg.contains("onnx") || msg.contains("path") || msg.contains("root"),
+            "unexpected error: {msg}"
+        );
+
+        // Cleanup.
+        std::fs::remove_file(&outside).ok();
+    }
+
+    #[tokio::test]
+    async fn add_shim_requires_mounted_workspace() {
+        // Empty slot → add-shim fails before reading anything. Also a
+        // B6 regression test: the unmounted-slot path must error
+        // rather than fall back to raw fs::read.
+        let dir = TempDir::new().unwrap();
+        let kernel = Kernel::open(&dir.path().join("data")).unwrap();
+        let handles = ShimStoreHandles {
+            kernel: Arc::new(Mutex::new(Some(Arc::new(Mutex::new(kernel))))),
+        };
+        let tool = ShimStoreTool::new(handles, crate::vdrive_tools::empty_slot());
+        parse(
+            tool.handle(
+                make_payload("<ShimStore><action>create-store</action><name>bob</name></ShimStore>"),
+                make_ctx(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let xml = "<ShimStore><action>add-shim</action><store>bob</store>\
+                   <shim_id>x</shim_id><manifest>{}</manifest>\
+                   <onnx_path>anything.onnx</onnx_path></ShimStore>";
+        let (ok, msg) = parse(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        assert!(!ok);
+        assert!(msg.contains("no workspace mounted"), "got: {msg}");
     }
 }

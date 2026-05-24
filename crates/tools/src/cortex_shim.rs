@@ -10,7 +10,6 @@
 //! (the AgentPipelineBuilder does this at register-tool time, sourcing
 //! `base_url` + bearer from deployment config).
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -19,21 +18,31 @@ use serde_json::json;
 
 use agentos_cortex_shim::{CortexShimClient, ShimClientError, ShimManifest};
 
+use super::vdrive_tools::DriveSlot;
 use super::{extract_tag, ToolPeer, ToolResponse};
 
 /// Tool wrapper around `CortexShimClient`.
+///
+/// The `slot` is the workspace sandbox the `register` action reads
+/// `<onnx_path>` through. Without it, an attacker passing
+/// `<onnx_path>C:\Users\dan\.aws\credentials</onnx_path>` would
+/// exfiltrate that file to cortex (security audit B6). With the slot,
+/// VDrive's canonicalize-and-prefix-check rejects anything outside
+/// the workspace.
 #[derive(Clone)]
 pub struct CortexShimTool {
     client: Arc<CortexShimClient>,
+    slot: DriveSlot,
 }
 
 impl CortexShimTool {
-    /// Construct from a pre-configured client. The client holds the
-    /// cortex base URL and bearer; AgentPipelineBuilder sets these
-    /// once per deployment.
-    pub fn new(client: CortexShimClient) -> Self {
+    /// Construct from a pre-configured client + the workspace drive
+    /// slot. The client holds cortex base URL + bearer; the slot
+    /// holds the path sandbox used by the `register` action.
+    pub fn new(client: CortexShimClient, slot: DriveSlot) -> Self {
         Self {
             client: Arc::new(client),
+            slot,
         }
     }
 
@@ -46,8 +55,20 @@ impl CortexShimTool {
         let manifest: ShimManifest = serde_json::from_str(&manifest_json)
             .map_err(|e| format!("manifest is not valid JSON: {e}"))?;
 
-        let bytes = std::fs::read(PathBuf::from(&onnx_path))
-            .map_err(|e| format!("read {onnx_path}: {e}"))?;
+        // Read through VDrive so path traversal is rejected at the
+        // sandbox boundary. The slot must be mounted; tests that don't
+        // exercise register can use an empty slot (any register call
+        // then returns the "no storage mounted" error, which is the
+        // safe default).
+        let drive = {
+            let guard = self.slot.read().await;
+            guard
+                .clone()
+                .ok_or_else(|| "no workspace mounted; mount before registering shims".to_string())?
+        };
+        let bytes = drive
+            .read_bytes(&onnx_path)
+            .map_err(|e| format!("read onnx file `{onnx_path}`: {e}"))?;
 
         match self.client.register(&manifest, bytes).await {
             Ok(()) => Ok(json!({
@@ -213,7 +234,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let tool = CortexShimTool::new(CortexShimClient::new(server.uri(), None));
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            crate::vdrive_tools::empty_slot(),
+        );
         let xml = "<CortexShim><action>list</action></CortexShim>";
         let resp = tool.handle(make_payload(xml), make_ctx()).await.unwrap();
         let (ok, body) = parse_response(resp);
@@ -224,7 +248,10 @@ mod tests {
     #[tokio::test]
     async fn missing_action_errors() {
         let server = MockServer::start().await;
-        let tool = CortexShimTool::new(CortexShimClient::new(server.uri(), None));
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            crate::vdrive_tools::empty_slot(),
+        );
         let xml = "<CortexShim></CortexShim>";
         let (ok, msg) = parse_response(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
@@ -234,7 +261,10 @@ mod tests {
     #[tokio::test]
     async fn unknown_action_errors() {
         let server = MockServer::start().await;
-        let tool = CortexShimTool::new(CortexShimClient::new(server.uri(), None));
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            crate::vdrive_tools::empty_slot(),
+        );
         let xml = "<CortexShim><action>noop</action></CortexShim>";
         let (ok, msg) = parse_response(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
@@ -250,7 +280,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let tool = CortexShimTool::new(CortexShimClient::new(server.uri(), None));
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            crate::vdrive_tools::empty_slot(),
+        );
         let xml = "<CortexShim><action>get</action><id>missing</id></CortexShim>";
         let (ok, msg) = parse_response(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
@@ -267,7 +300,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let tool = CortexShimTool::new(CortexShimClient::new(server.uri(), None));
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            crate::vdrive_tools::empty_slot(),
+        );
         let xml = "<CortexShim><action>delete</action><id>voice_bob</id></CortexShim>";
         let (ok, body) = parse_response(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(ok, "{body}");
@@ -286,7 +322,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let tool = CortexShimTool::new(CortexShimClient::new(server.uri(), None));
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            crate::vdrive_tools::empty_slot(),
+        );
         let xml = r#"<CortexShim>
             <action>infer</action>
             <id>should_respond</id>
@@ -295,5 +334,112 @@ mod tests {
         let (ok, body) = parse_response(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(ok, "{body}");
         assert!(body.contains("0.91"));
+    }
+
+    #[tokio::test]
+    async fn register_reads_onnx_through_vdrive_sandbox() {
+        // B6 regression: register's onnx_path goes through VDrive.
+        // Verifies the *security property*: with a valid in-workspace
+        // path, VDrive doesn't block the read. We don't assert the
+        // cortex call succeeds (multipart upload against wiremock is
+        // delicate); we assert the error — if any — is NOT a VDrive-
+        // boundary error. Getting past VDrive into the HTTP layer is
+        // the property under test.
+        use tempfile::TempDir;
+        let workspace = TempDir::new().unwrap();
+        std::fs::write(workspace.path().join("model.onnx"), b"\x00\x01ONNX-fake").unwrap();
+
+        let server = MockServer::start().await;
+        // Permissive mock — any POST gets 200. If VDrive read works,
+        // the cortex call fires and returns 200 → tool succeeds.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let drive = agentos_vdrive::VDrive::open(workspace.path()).unwrap();
+        let slot: crate::vdrive_tools::DriveSlot =
+            std::sync::Arc::new(tokio::sync::RwLock::new(Some(std::sync::Arc::new(drive))));
+
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            slot,
+        );
+        let xml = "<CortexShim>\
+                <action>register</action>\
+                <manifest>{\"id\":\"should_respond\",\"version\":\"0.1.0\",\"phase\":\"gate\",\"attachment\":{\"layer\":\"final\",\"pooling\":\"last_token\"},\"input_shape\":{\"hidden_dim\":4096},\"output_shape\":{\"kind\":\"scalar\"}}</manifest>\
+                <onnx_path>model.onnx</onnx_path>\
+            </CortexShim>";
+        let (ok, body) = parse_response(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        // The VDrive property: error (if any) is NOT a workspace/path
+        // rejection. "register failed" with a downstream cause is fine
+        // — that means we got past the sandbox into the HTTP layer.
+        assert!(
+            ok || (!body.contains("no workspace mounted") && !body.contains("outside")),
+            "VDrive should permit in-workspace path; got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_rejects_traversal_in_onnx_path() {
+        // B6 regression: path traversal blocked at VDrive boundary,
+        // cortex is never called.
+        use tempfile::TempDir;
+        let workspace = TempDir::new().unwrap();
+        let outside = workspace.path().parent().unwrap().join("cortex_shim_secret.txt");
+        std::fs::write(&outside, b"AKIA-fake").unwrap();
+
+        let server = MockServer::start().await;
+        // Mount cortex with .expect(0) so any call is a test failure.
+        Mock::given(method("POST"))
+            .and(path("/v1/shims/oops"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let drive = agentos_vdrive::VDrive::open(workspace.path()).unwrap();
+        let slot: crate::vdrive_tools::DriveSlot =
+            std::sync::Arc::new(tokio::sync::RwLock::new(Some(std::sync::Arc::new(drive))));
+
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            slot,
+        );
+        let xml = "<CortexShim>\
+                <action>register</action>\
+                <manifest>{\"id\":\"oops\",\"version\":\"0.1.0\",\"phase\":\"gate\",\"attachment\":{\"layer\":\"final\",\"pooling\":\"last_token\"},\"input_shape\":{\"hidden_dim\":4096},\"output_shape\":{\"kind\":\"scalar\"}}</manifest>\
+                <onnx_path>../cortex_shim_secret.txt</onnx_path>\
+            </CortexShim>";
+        let (ok, _msg) = parse_response(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        assert!(!ok, "VDrive must reject traversal");
+
+        std::fs::remove_file(&outside).ok();
+    }
+
+    #[tokio::test]
+    async fn register_requires_mounted_workspace() {
+        // Empty slot → register fails before any read attempt or
+        // cortex call.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/shims/x"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let tool = CortexShimTool::new(
+            CortexShimClient::new(server.uri(), None),
+            crate::vdrive_tools::empty_slot(),
+        );
+        let xml = "<CortexShim>\
+                <action>register</action>\
+                <manifest>{\"id\":\"x\",\"version\":\"0.1.0\",\"phase\":\"gate\",\"attachment\":{\"layer\":\"final\",\"pooling\":\"last_token\"},\"input_shape\":{\"hidden_dim\":4096},\"output_shape\":{\"kind\":\"scalar\"}}</manifest>\
+                <onnx_path>model.onnx</onnx_path>\
+            </CortexShim>";
+        let (ok, msg) = parse_response(tool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        assert!(!ok);
+        assert!(msg.contains("no workspace mounted"), "got: {msg}");
     }
 }
