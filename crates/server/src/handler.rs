@@ -546,6 +546,14 @@ pub async fn post_messages(
             std::collections::HashMap::new();
         let mut active_steers: Vec<String> = Vec::new();
         let mut signals: Vec<String> = Vec::new();
+        // Did we actually receive an AgentResponse for our thread?
+        // Used to distinguish a real terminal outcome from a timeout
+        // or broadcast-closed condition. Audit M3: timeout + empty
+        // commit cements a "nothing happened" reply in the idempotency
+        // cache and locks legitimate retries into replaying empty
+        // forever. We now skip the commit in that case so the slot is
+        // released and the retry can re-execute.
+        let mut received_response = false;
 
         // Cap how long we wait for Bob to respond. v1 contract says nothing
         // about timeout but we don't want a stuck instance to hold an HTTP
@@ -560,6 +568,7 @@ pub async fn post_messages(
                         Ok(PipelineEvent::AgentResponse { thread_id, text, shim_report, .. })
                             if thread_id == buffer_thread_id =>
                         {
+                            received_response = true;
                             // Shim outcomes (if any) drive both the silence
                             // decision and the done-event metadata. Cortex's
                             // `gate_decisions` surface as `shim_decisions` per
@@ -616,24 +625,29 @@ pub async fn post_messages(
             yield Ok(ev);
         }
 
-        // Commit cached payloads to the idempotency cache so a retry
-        // with the same (token, idempotency_key, body) replays this
-        // exact stream. Timeouts and broadcast-closed paths also
-        // commit — by contract, the key identifies the request, not
-        // the outcome; clients use a fresh key when they want to
-        // "try again with hope of a different result."
-        idempotency.commit(
-            &cache_key_for_stream,
-            cached_ack,
-            cached_chunks,
-            done_for_commit,
-        );
-
-        // Tell the guard we landed in a final committed state; its
-        // Drop impl will then NOT touch the slot. Without this, the
-        // guard would race the commit and could remove the entry we
-        // just wrote.
-        inflight_guard.commit_complete();
+        // Commit (idempotency cache) gating, audit M3:
+        // - Reached an AgentResponse → commit so subsequent retries
+        //   replay this exact stream.
+        // - Timeout / broadcast-closed without a response → DON'T
+        //   commit; let the InFlightGuard's Drop release the slot so
+        //   a retry can re-execute. Avoids cementing an empty silent
+        //   "nothing happened" into the cache for 24h.
+        if received_response {
+            idempotency.commit(
+                &cache_key_for_stream,
+                cached_ack,
+                cached_chunks,
+                done_for_commit,
+            );
+            inflight_guard.commit_complete();
+        } else {
+            tracing::warn!(
+                turn_id = %turn_id,
+                "no AgentResponse received before deadline/close; releasing \
+                 idempotency slot so a retry can re-execute"
+            );
+            // inflight_guard drops without commit_complete → release_if_inflight
+        }
 
         // Stream complete — record the success metric and release the
         // active-stream gauge slot. Done event was the terminal yield,
