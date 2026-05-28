@@ -1,17 +1,28 @@
-//! GlobTool — find files by glob pattern.
+//! UnsafeGlobTool — find files by glob pattern.
+//!
+//! **DO NOT REGISTER IN PRODUCTION.** Accepts absolute host paths
+//! and has no sandbox. `<pattern>C:\Users\*\.aws\*</pattern>` will
+//! enumerate every user's AWS config directory. Production uses
+//! [`crate::vdrive_tools::VDriveGlob`] under the same WIT name
+//! (`glob`), which canonicalizes the pattern's root against the
+//! workspace before walking.
+//!
+//! Test fixture only. The `Unsafe` prefix is the lint — accidental
+//! production use stands out in code review.
 
 use async_trait::async_trait;
 use rust_pipeline::prelude::*;
 
 use super::{extract_tag, ToolPeer, ToolResponse};
 
-/// Find files matching a glob pattern.
-pub struct GlobTool;
+/// Test fixture: glob any path the server process can read.
+/// Unsandboxed — see module docs.
+pub struct UnsafeGlobTool;
 
 const MAX_RESULTS: usize = 1000;
 
 #[async_trait]
-impl Handler for GlobTool {
+impl Handler for UnsafeGlobTool {
     async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
         let xml_str = String::from_utf8_lossy(&payload.xml);
 
@@ -78,7 +89,7 @@ impl Handler for GlobTool {
 }
 
 #[async_trait]
-impl ToolPeer for GlobTool {
+impl ToolPeer for UnsafeGlobTool {
     fn name(&self) -> &str {
         "glob"
     }
@@ -144,7 +155,7 @@ mod tests {
 
         let pattern = dir.path().join("*.rs").to_str().unwrap().to_string();
         let xml = format!("<GlobRequest><pattern>{pattern}</pattern></GlobRequest>");
-        let (ok, content) = get_result(GlobTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGlobTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("a.rs"));
         assert!(content.contains("b.rs"));
@@ -161,7 +172,7 @@ mod tests {
         let xml = format!(
             "<GlobRequest><pattern>*.txt</pattern><base_path>{base}</base_path></GlobRequest>"
         );
-        let (ok, content) = get_result(GlobTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGlobTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("test.txt"));
     }
@@ -171,7 +182,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let pattern = dir.path().join("*.nonexistent").to_str().unwrap().to_string();
         let xml = format!("<GlobRequest><pattern>{pattern}</pattern></GlobRequest>");
-        let (ok, content) = get_result(GlobTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGlobTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("0 files matched"));
     }
@@ -179,7 +190,7 @@ mod tests {
     #[tokio::test]
     async fn glob_invalid_pattern() {
         let xml = "<GlobRequest><pattern>[invalid</pattern></GlobRequest>";
-        let (ok, content) = get_result(GlobTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGlobTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("invalid glob"));
     }
@@ -187,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn glob_missing_pattern() {
         let xml = "<GlobRequest></GlobRequest>";
-        let (ok, content) = get_result(GlobTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGlobTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("missing required"));
     }
@@ -202,14 +213,14 @@ mod tests {
 
         let pattern = dir.path().join("**/*.rs").to_str().unwrap().to_string();
         let xml = format!("<GlobRequest><pattern>{pattern}</pattern></GlobRequest>");
-        let (ok, content) = get_result(GlobTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGlobTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("nested.rs"));
     }
 
     #[test]
     fn glob_metadata() {
-        let tool = GlobTool;
+        let tool = UnsafeGlobTool;
         assert_eq!(tool.name(), "glob");
         let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "glob");

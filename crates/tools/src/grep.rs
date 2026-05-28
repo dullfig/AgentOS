@@ -1,4 +1,12 @@
-//! GrepTool — regex search across files.
+//! UnsafeGrepTool — regex search across files.
+//!
+//! **DO NOT REGISTER IN PRODUCTION.** Accepts absolute host paths;
+//! a malicious `<root>/</root>` greps the entire filesystem and
+//! returns file contents to the agent. Production uses
+//! [`crate::vdrive_tools::VDriveGrep`] under the same WIT name
+//! (`grep`), confined to the workspace root.
+//!
+//! Test fixture only. The `Unsafe` prefix is the lint.
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -7,12 +15,13 @@ use std::path::Path;
 
 use super::{extract_tag, ToolPeer, ToolResponse};
 
-/// Regex search across files in a directory tree.
-pub struct GrepTool;
+/// Test fixture: regex-search any path the server process can read.
+/// Unsandboxed — see module docs.
+pub struct UnsafeGrepTool;
 
 const MAX_MATCHES: usize = 500;
 
-impl GrepTool {
+impl UnsafeGrepTool {
     /// Check if a byte slice looks like binary (contains null bytes in first 8KB).
     fn is_binary(data: &[u8]) -> bool {
         let check_len = data.len().min(8192);
@@ -90,7 +99,7 @@ impl GrepTool {
 }
 
 #[async_trait]
-impl Handler for GrepTool {
+impl Handler for UnsafeGrepTool {
     async fn handle(&self, payload: ValidatedPayload, _ctx: HandlerContext) -> HandlerResult {
         let xml_str = String::from_utf8_lossy(&payload.xml);
 
@@ -154,7 +163,7 @@ impl Handler for GrepTool {
 }
 
 #[async_trait]
-impl ToolPeer for GrepTool {
+impl ToolPeer for UnsafeGrepTool {
     fn name(&self) -> &str {
         "grep"
     }
@@ -225,7 +234,7 @@ mod tests {
         let xml = format!(
             "<GrepRequest><pattern>fn \\w+</pattern><path>{path}</path></GrepRequest>"
         );
-        let (ok, content) = get_result(GrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("fn hello"));
         assert!(content.contains("fn world"));
@@ -244,7 +253,7 @@ mod tests {
         let xml = format!(
             "<GrepRequest><pattern>fn \\w+</pattern><path>{base}</path></GrepRequest>"
         );
-        let (ok, content) = get_result(GrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("alpha"));
         assert!(content.contains("beta"));
@@ -260,7 +269,7 @@ mod tests {
         let xml = format!(
             "<GrepRequest><pattern>hello</pattern><path>{base}</path><glob_filter>*.rs</glob_filter></GrepRequest>"
         );
-        let (ok, content) = get_result(GrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("code.rs"));
         assert!(!content.contains("readme.md"));
@@ -276,7 +285,7 @@ mod tests {
         let xml = format!(
             "<GrepRequest><pattern>hello</pattern><path>{path}</path><case_insensitive>true</case_insensitive></GrepRequest>"
         );
-        let (ok, content) = get_result(GrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("3 matches"));
     }
@@ -291,7 +300,7 @@ mod tests {
         let xml = format!(
             "<GrepRequest><pattern>zzz</pattern><path>{path}</path></GrepRequest>"
         );
-        let (ok, content) = get_result(GrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("0 matches"));
     }
@@ -299,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn grep_invalid_regex() {
         let xml = "<GrepRequest><pattern>[invalid</pattern><path>.</path></GrepRequest>";
-        let (ok, content) = get_result(GrepTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("invalid regex"));
     }
@@ -307,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn grep_missing_pattern() {
         let xml = "<GrepRequest><path>.</path></GrepRequest>";
-        let (ok, content) = get_result(GrepTool.handle(make_payload(xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(xml), make_ctx()).await.unwrap());
         assert!(!ok);
         assert!(content.contains("missing required"));
     }
@@ -325,7 +334,7 @@ mod tests {
         let xml = format!(
             "<GrepRequest><pattern>findme</pattern><path>{base}</path></GrepRequest>"
         );
-        let (ok, content) = get_result(GrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("text.txt"));
         assert!(!content.contains("binary.bin"));
@@ -343,7 +352,7 @@ mod tests {
         let xml = format!(
             "<GrepRequest><pattern>findme</pattern><path>{base}</path></GrepRequest>"
         );
-        let (ok, content) = get_result(GrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
+        let (ok, content) = get_result(UnsafeGrepTool.handle(make_payload(&xml), make_ctx()).await.unwrap());
         assert!(ok);
         assert!(content.contains("visible.txt"));
         assert!(!content.contains("secret.txt"));
@@ -351,7 +360,7 @@ mod tests {
 
     #[test]
     fn grep_metadata() {
-        let tool = GrepTool;
+        let tool = UnsafeGrepTool;
         assert_eq!(tool.name(), "grep");
         let iface = agentos_wit::parser::parse_wit(tool.wit()).unwrap();
         assert_eq!(iface.name, "grep");
