@@ -57,11 +57,22 @@ pub fn init() -> &'static PrometheusHandle {
         // `set_global_recorder` errors if a recorder was already installed
         // by some other code path (rare; effectively impossible in the
         // bin, possible in mixed test setups). If it fails we still return
-        // a handle — it just won't see any new recordings. The /metrics
-        // endpoint will render with whatever state the other recorder
-        // accumulated, or empty if nothing was recorded. Either way we
-        // don't crash the server over an observability concern.
-        let _ = metrics::set_global_recorder(recorder);
+        // a handle — it just won't see any new recordings, and /metrics
+        // will render empty.
+        //
+        // Log loudly when this happens (security audit Tier 3): silent
+        // observability loss removes detection capability for every
+        // capacity / DoS class. The operator needs to know that the
+        // dashboard they're staring at is dead.
+        if let Err(e) = metrics::set_global_recorder(recorder) {
+            tracing::error!(
+                error = ?e,
+                "metrics::set_global_recorder failed — /metrics will be empty. \
+                 This usually means another library installed a recorder first. \
+                 Verify no other crate initializes the metrics global before \
+                 build_router(); your dashboard is currently flying blind."
+            );
+        }
         describe_all();
         handle
     })
