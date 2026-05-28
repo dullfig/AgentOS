@@ -58,9 +58,18 @@ struct Cli {
     #[arg(long, default_value = ".agentos")]
     data: PathBuf,
 
-    /// Static bearer token. Falls back to AGENTOS_SERVER_TOKEN env var.
+    /// Static bearer token, passed inline. **Visible in `ps`** —
+    /// prefer `--auth-token-file` for production deployments.
     #[arg(long)]
     auth_token: Option<String>,
+
+    /// Path to a file containing the bearer token. Whitespace at
+    /// either end is trimmed. Preferred over `--auth-token`: the
+    /// token doesn't appear in `ps` output, doesn't end up in shell
+    /// history, and can have tighter file permissions than the
+    /// process can have on its env.
+    #[arg(long)]
+    auth_token_file: Option<PathBuf>,
 
     /// Listener name to handle /v1/messages traffic. Defaults to "bob".
     #[arg(long, default_value = "bob")]
@@ -78,12 +87,26 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let token = cli
-        .auth_token
-        .or_else(|| std::env::var("AGENTOS_SERVER_TOKEN").ok())
-        .context(
-            "no auth token: pass --auth-token or set AGENTOS_SERVER_TOKEN env var",
-        )?;
+    // Token sourcing precedence: --auth-token-file > --auth-token >
+    // AGENTOS_SERVER_TOKEN env var. The file is the recommended path
+    // for production; the inline flag and env var are dev conveniences
+    // that leak to local-attacker recon (ps, /proc/<pid>/environ).
+    let token = if let Some(ref path) = cli.auth_token_file {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("reading auth-token-file {}", path.display()))?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("auth-token-file {} is empty", path.display());
+        }
+        trimmed.to_string()
+    } else {
+        cli.auth_token
+            .or_else(|| std::env::var("AGENTOS_SERVER_TOKEN").ok())
+            .context(
+                "no auth token: pass --auth-token-file (preferred), --auth-token, \
+                 or set AGENTOS_SERVER_TOKEN env var",
+            )?
+    };
 
     let yaml = match cli.organism {
         Some(ref p) => std::fs::read_to_string(p)
@@ -154,6 +177,30 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(&cli.bind)
         .await
         .with_context(|| format!("binding {}", cli.bind))?;
+
+    // Operator safety: shout when binding to anything other than
+    // loopback unless the operator has explicitly opted in. The
+    // server has no TLS termination of its own (HTTPS is delegated
+    // to a reverse proxy); binding 0.0.0.0 / a routable address
+    // without a reverse proxy = bearer token traversing cleartext.
+    //
+    // Override with AGENTOS_INSECURE_PUBLIC=1 (e.g., behind a
+    // confirmed reverse proxy).
+    let resolved = listener.local_addr().ok();
+    let is_loopback = resolved
+        .map(|a| a.ip().is_loopback())
+        .unwrap_or(false);
+    let insecure_ack = std::env::var("AGENTOS_INSECURE_PUBLIC").ok().as_deref() == Some("1");
+    if !is_loopback && !insecure_ack {
+        tracing::warn!(
+            bind = %cli.bind,
+            "agentos-server is binding to a non-loopback address without \
+             AGENTOS_INSECURE_PUBLIC=1 set. The bearer token will traverse \
+             the network in cleartext unless a reverse proxy terminates TLS \
+             in front. If that proxy is configured, set \
+             AGENTOS_INSECURE_PUBLIC=1 to silence this warning."
+        );
+    }
     info!("agentos-server listening on {}", cli.bind);
 
     axum::serve(listener, app).await.context("axum serve")?;
