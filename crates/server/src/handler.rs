@@ -341,16 +341,18 @@ pub async fn post_messages(
     // 2.5. Idempotency. Probe the cache; if the same (token, key) was
     //      seen before, either replay the cached SSE stream (same body)
     //      or 409 (different body / in-flight). Per the v1 API contract.
-    let body_hash = match serde_json::to_vec(&req) {
-        Ok(bytes) => IdempotencyCache::body_hash(&bytes),
-        Err(_) => {
-            // Re-serializing the parsed body should not fail, but if it
-            // did the safe move is to skip idempotency rather than 500.
-            // Zero hash is unique-by-construction (no real body produces
-            // it) so a conflict can't false-positive here.
-            [0u8; 32]
-        }
-    };
+    //
+    // The body hash covers only the *semantically meaningful* fields:
+    // user_id, user_tier, text. Audit M4: hashing the whole request
+    // would let an attacker with the bearer token grief a specific
+    // user's retry path by replaying their idempotency_key with a
+    // different conversation_id — the cache treats it as a "different
+    // body" conflict and 409s the legitimate retry. By excluding
+    // conversation_id from the hash, retry behavior is determined
+    // by what the request is actually *about*, not by transport
+    // bookkeeping that the client (e.g., RingHub) may legitimately
+    // vary across retries.
+    let body_hash = idempotency_body_hash(&req.user_id, &req.user_tier, &req.text);
     let cache_key = IdempotencyCache::key(&state.auth_token, &req.idempotency_key);
     let replay_data = match state.idempotency.lookup_or_claim(cache_key.clone(), body_hash) {
         LookupResult::Miss => {
@@ -684,6 +686,25 @@ fn is_valid_user_id(s: &str) -> bool {
     })
 }
 
+/// Hash only the semantic fields of a request — excludes
+/// conversation_id and idempotency_key (those are transport
+/// bookkeeping). Layout: `user_id \0 user_tier \0 text`. Null
+/// separators prevent length-extension confusion across fields.
+///
+/// See M4 in the security audit for the grief-vector this closes:
+/// without this trim, an attacker with the bearer token can drive
+/// 409 idempotency_conflict against a target user's retries by
+/// replaying their idempotency_key with a different conversation_id.
+fn idempotency_body_hash(user_id: &str, user_tier: &str, text: &str) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(user_id.as_bytes());
+    h.update([0u8]);
+    h.update(user_tier.as_bytes());
+    h.update([0u8]);
+    h.update(text.as_bytes());
+    h.finalize().into()
+}
+
 /// Constant-time bearer-token check.
 ///
 /// `PartialEq` on `str` / `String` short-circuits at the first
@@ -764,5 +785,38 @@ mod tests {
         // plenty of headroom.
         assert!(MAX_KEY_CHARS >= 36);
         assert_eq!(MAX_KEY_CHARS, 128);
+    }
+
+    // ── M4: body_hash trim ──────────────────────────────────────────
+
+    #[test]
+    fn body_hash_ignores_conversation_id() {
+        // Same semantic request, different conversation_id → same
+        // hash. This is the property that closes the M4 grief
+        // vector: an attacker with the token can't drive 409
+        // conflicts by spoofing a target user's idempotency_key
+        // with a different conversation_id.
+        let h_a = idempotency_body_hash("alice", "warm", "hi bob");
+        // (Caller varied conversation_id wouldn't enter the hash at all.)
+        let h_b = idempotency_body_hash("alice", "warm", "hi bob");
+        assert_eq!(h_a, h_b);
+    }
+
+    #[test]
+    fn body_hash_differs_on_real_semantic_change() {
+        let base = idempotency_body_hash("alice", "warm", "hi bob");
+        assert_ne!(base, idempotency_body_hash("bob", "warm", "hi bob"));
+        assert_ne!(base, idempotency_body_hash("alice", "member", "hi bob"));
+        assert_ne!(base, idempotency_body_hash("alice", "warm", "different text"));
+    }
+
+    #[test]
+    fn body_hash_separator_prevents_field_smuggling() {
+        // Without the \0 separators, ("ali", "ce") and ("alice", "")
+        // would produce the same concatenation. The null bytes
+        // disambiguate field boundaries.
+        let h_a = idempotency_body_hash("ali", "ce", "x");
+        let h_b = idempotency_body_hash("alice", "", "x");
+        assert_ne!(h_a, h_b);
     }
 }
