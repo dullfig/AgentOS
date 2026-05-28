@@ -90,6 +90,12 @@ impl PreStreamError {
     /// metric is captured regardless of the failure mode. The status
     /// class (4xx → `client_error`, 5xx → `server_error`) is derived
     /// from `status` so callers don't have to think about it.
+    ///
+    /// Use this constructor for client errors where the message itself
+    /// is the diagnostic the client needs (e.g., "user_tier must be
+    /// one of warm/member"). Use `record_internal` instead for paths
+    /// whose error message would leak internal grammar / structure
+    /// (e.g., Address::parse error wording, router send error).
     fn record(
         started: Instant,
         status: StatusCode,
@@ -107,6 +113,54 @@ impl PreStreamError {
             status,
             code,
             message: message.into(),
+            request_id: request_id.to_string(),
+        }
+    }
+
+    /// Build an internal-error response where the detail goes to the
+    /// server log via `tracing::error!` but the client sees only a
+    /// generic message + the request_id (for correlation). Closes
+    /// audit finding L1 — prevents 5xx (and the rare 4xx whose error
+    /// wording reveals internal grammar) from teaching attackers
+    /// about Address::parse internals, router structure, etc.
+    ///
+    /// `status` is typically 500. For 4xx where the message would
+    /// leak (Address::parse failures), pass `BAD_REQUEST`; the
+    /// generic message `"invalid_request"` still tells the client
+    /// what category of failure happened.
+    fn record_internal(
+        started: Instant,
+        status: StatusCode,
+        code: &'static str,
+        detail: impl Into<String>,
+        request_id: &str,
+    ) -> Self {
+        let detail_str = detail.into();
+        let class = if status.is_client_error() {
+            metrics::STATUS_CLIENT_ERROR
+        } else {
+            metrics::STATUS_SERVER_ERROR
+        };
+        metrics::record_request(class, started.elapsed());
+        tracing::error!(
+            request_id = %request_id,
+            code = code,
+            status = status.as_u16(),
+            detail = %detail_str,
+            "/v1/messages pre-stream error (detail withheld from client)"
+        );
+        // Public-facing message: generic by status family. The
+        // request_id lets the operator correlate the client report
+        // with the server log line above.
+        let public_message = if status.is_server_error() {
+            "internal_error (see server logs)".to_string()
+        } else {
+            "invalid_request".to_string()
+        };
+        Self {
+            status,
+            code,
+            message: public_message,
             request_id: request_id.to_string(),
         }
     }
@@ -367,11 +421,16 @@ pub async fn post_messages(
     //    grammar so this also doubles as a sanity check on user_id shape.
     let address_str = format!("{}[{}]", state.agent_name, req.user_id);
     let address = Address::parse(&address_str).map_err(|e| {
-        PreStreamError::record(
+        // Generic 4xx message to the client; full grammar error to
+        // the log. Post-B2 validation, this path is largely
+        // unreachable (the user_id charset rules out the address-
+        // grammar characters that would trigger it). Defense in
+        // depth.
+        PreStreamError::record_internal(
             started,
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            format!("user_id produced invalid address: {e}"),
+            format!("Address::parse rejected '{address_str}': {e}"),
             &request_id,
         )
     })?;
@@ -385,7 +444,7 @@ pub async fn post_messages(
         .get_listener(&state.agent_name)
         .map(|l| l.payload_tag.clone())
         .ok_or_else(|| {
-            PreStreamError::record(
+            PreStreamError::record_internal(
                 started,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
@@ -411,7 +470,7 @@ pub async fn post_messages(
     //    is in flight. Errors here haven't reached "ack sent" yet so we
     //    surface as HTTP errors per the contract.
     state.router.send_to(&envelope).await.map_err(|e| {
-        PreStreamError::record(
+        PreStreamError::record_internal(
             started,
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
@@ -436,7 +495,7 @@ pub async fn post_messages(
                 .map(|b| b.thread_id.clone())
         })
         .ok_or_else(|| {
-            PreStreamError::record(
+            PreStreamError::record_internal(
                 started,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
